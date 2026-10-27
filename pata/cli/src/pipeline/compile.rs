@@ -723,18 +723,62 @@ fn diag_err(stage: &str, diags: Vec<Diagnostic>) -> CliError {
             d.stage, d.code, d.message, where_
         ));
         if let Some(map) = d.context_map {
-            msg.push_str(&format!(
-                "  context_map symbol={} created={:?} moved={:?} borrowed={:?} dropped={:?}\n",
-                map.symbol, map.created_at, map.moved_at, map.borrowed_at, map.dropped_at
-            ));
+            msg.push_str(&muktadha_wa_kitu(&map));
         }
     }
     CliError::new(msg, 2)
 }
 
+/// Mstari wa muktadha wa kitu kimoja: kilipotangazwa, kilipohamishwa, kilipokopwa, kilipotupwa.
+/// Nomino za kitenzi (`kutangazwa`, `kuhamishwa`…) zinatumika ili lisihitaji makubaliano ya kiima.
+fn muktadha_wa_kitu(map: &asili_diagnostics::ContextMap) -> String {
+    let mahali = |s: &asili_diagnostics::Span| format!("mstari {}:{}", s.line, s.column);
+    let mut sehemu: Vec<String> = Vec::new();
+    if let Some(s) = &map.created_at {
+        sehemu.push(format!("kutangazwa {}", mahali(s)));
+    }
+    if let Some(s) = &map.moved_at {
+        sehemu.push(format!("kuhamishwa {}", mahali(s)));
+    }
+    for s in &map.borrowed_at {
+        sehemu.push(format!("kukopwa {}", mahali(s)));
+    }
+    if let Some(s) = &map.dropped_at {
+        sehemu.push(format!("kutupwa {}", mahali(s)));
+    }
+    if sehemu.is_empty() {
+        return String::new();
+    }
+    format!("  muktadha wa {}: {}\n", map.symbol, sehemu.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muktadha_wa_kitu_hutumia_maneno_ya_kiswahili() {
+        use asili_diagnostics::{ContextMap, Span};
+        let span = |line, column| Span { line, column };
+        let map = ContextMap {
+            symbol: "s".to_string(),
+            created_at: Some(span(3, 1)),
+            moved_at: Some(span(5, 2)),
+            borrowed_at: vec![span(7, 4)],
+            dropped_at: None,
+        };
+        assert_eq!(
+            muktadha_wa_kitu(&map),
+            "  muktadha wa s: kutangazwa mstari 3:1, kuhamishwa mstari 5:2, kukopwa mstari 7:4\n"
+        );
+        let tupu = ContextMap {
+            created_at: None,
+            moved_at: None,
+            borrowed_at: vec![],
+            ..map
+        };
+        assert_eq!(muktadha_wa_kitu(&tupu), "");
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         crate::test_support::temp_dir(&format!("compile-{label}"))
