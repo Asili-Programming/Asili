@@ -243,9 +243,10 @@ fn udp_datagrams_between_tasks() {
 
         kazi jaribu() -> Neno {
             weka seva = jaribu (udp_fungua("127.0.0.1:0"))
+            weka anwani = seva.anwani()
             weka k = mwangwi(seva)
             weka mteja = jaribu (udp_fungua("127.0.0.1:0"))
-            jaribu (mteja.unganisha(seva.anwani()))
+            jaribu (mteja.unganisha(anwani))
             jaribu (mteja.tuma("habari"))
             weka jibu = jaribu (mteja.pokea())
             subiri k

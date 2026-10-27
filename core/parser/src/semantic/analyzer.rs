@@ -1434,8 +1434,20 @@ impl<'a> Analyzer<'a> {
                 };
                 if let Some(name) = callee_name {
                     if let Some(f) = self.fn_map.get(name.as_str()).cloned() {
-                        let use_mode = UseMode::BorrowImm;
-                        for a in args {
+                        // A value passed by value moves into the callee; only a parameter declared
+                        // as `Rejeo`/`Rejeo_Tenda` borrows it. Copy types are unaffected.
+                        for (i, a) in args.iter().enumerate() {
+                            let borrows = f.params.get(i).is_some_and(|p| {
+                                matches!(
+                                    self.type_from_decl(&p.ty.name),
+                                    ValueType::Rejeo(_, _)
+                                )
+                            });
+                            let use_mode = if borrows {
+                                UseMode::BorrowImm
+                            } else {
+                                UseMode::Move
+                            };
                             let _ = self.check_expr(*a, scopes, use_mode);
                         }
                         if f.params.len() != args.len() {
@@ -1554,7 +1566,7 @@ impl<'a> Analyzer<'a> {
                 args,
                 line,
             } => {
-                let receiver_ty = self.check_expr(*receiver, scopes, UseMode::BorrowImm);
+                let receiver_ty = lookup_type(self.check_expr(*receiver, scopes, UseMode::BorrowImm));
                 // A built-in type's methods come from the builtin tables (`method_receiver`);
                 // anything else needs to be a `umbo` or `jenum` with a `shughuli` block.
                 let builtin = method_receiver(&receiver_ty);
@@ -1814,7 +1826,7 @@ impl<'a> Analyzer<'a> {
                 line,
                 ..
             } => {
-                let rec_ty = self.check_expr(*receiver, scopes, UseMode::BorrowImm);
+                let rec_ty = lookup_type(self.check_expr(*receiver, scopes, UseMode::BorrowImm));
                 match &rec_ty {
                     ValueType::Struct(name) => {
                         let Some(shape) = self.struct_shape(name) else {
@@ -2269,6 +2281,15 @@ pub(crate) fn run_semantic_check_with_modules(
     );
     a.run();
     std::mem::take(&mut a.errors)
+}
+
+/// The type a method or field is looked up on: a `Rejeo<T>`/`Rejeo_Tenda<T>` reads as the `T` it
+/// borrows. The borrow itself is still tracked on the binding it came from.
+fn lookup_type(ty: ValueType) -> ValueType {
+    match ty {
+        ValueType::Rejeo(inner, _) => lookup_type(*inner),
+        other => other,
+    }
 }
 
 /// The built-in method table a receiver type uses, if it has one.
