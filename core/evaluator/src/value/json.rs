@@ -192,11 +192,11 @@ fn variant_name(v: &Value) -> &'static str {
 
 fn from_json_depth(j: &serde_json::Value, depth: usize) -> Value {
     if depth > MAX_DEPTH {
-        return Value::Hamna;
+        return Value::Chaguo(None);
     }
     use serde_json::Value as J;
     match j {
-        J::Null => Value::Hamna,
+        J::Null => Value::Chaguo(None),
         J::Bool(b) => Value::Ukweli(*b),
         J::Number(n) => Value::Namba(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::neno(s.clone()),

@@ -61,7 +61,7 @@ pub(crate) fn index_value(base: &Value, index: &Value) -> Result<Value, EvalErro
     match base {
         Value::Kamusi(m) => {
             let key = MapKey::try_from_value(index)?;
-            Ok(m.get(&key).cloned().unwrap_or(Value::Hamna))
+            Ok(m.get(&key).cloned().unwrap_or(Value::Chaguo(None)))
         }
 
         Value::Orodha(v) => {
