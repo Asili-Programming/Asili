@@ -63,7 +63,7 @@ unwrap::jaribu_sawa	Tokeo(Sawa(Namba(3.0)))
 unwrap::kosa	Tokeo(Kosa(Struct("KosaMipaka", [("ujumbe", Neno("fahirisi nje ya mipaka: 9 (urefu 2)"))])))
 unwrap::sawa	N4008000000000000
 user_methods::t	[N4028000000000000,N402c000000000000,N4054000000000000,N4028000000000000]
-values::maandishi	Neno("Struct(\"Nukta\", [(\"x\", Namba(1.0)), (\"y\", Namba(2.0)), (\"jina\", Neno(\"nukta\"))]) nukta Enum(\"Rangi\", \"Kijani\", Some(Namba(7.0))) Enum(\"Rangi\", \"Nyekundu\", None) 2 Chaguo(Kuna(Namba(3.0))) Chaguo(Kuna(Neno(\"nukta\")))")
+values::maandishi	Neno("Nukta { x: 1, y: 2, jina: \"nukta\" } nukta Enum(\"Rangi\", \"Kijani\", Some(Namba(7.0))) Enum(\"Rangi\", \"Nyekundu\", None) 2 Kuna(3) Kuna(\"nukta\")")
 values::si_umbo	ERR aina: uga unahitaji kitu cha aina ya umbo
 values::t	[N4039000000000000,N401c000000000000,N7ff0000000000000,Nfff0000000000000,N400921fb54442d18]
 values::uga_mbaya	ERR aina: uga haijulikani: z
