@@ -36,7 +36,7 @@ Neno("Haijulikani")
 ```
 
 **Kumbuka:** `kama Neno` **hai**fungui `Chaguo<Neno>` — `m.pata("mji") kama Neno` hutoa
-mfuatano wa muundo wa utatuzi `Neno("Chaguo(Kuna(Neno(\"Nairobi\")))")`, si `"Nairobi"` safi.
+mfuatano `Neno("Kuna(\"Nairobi\")")`, si `"Nairobi"` safi.
 Tumia `.angu(default)` kufungua kwanza, kama ilivyoonyeshwa juu.
 
 ## Ufunguo wa Aina Tofauti

@@ -189,7 +189,7 @@ m.ingiza("umri", 30)
 
 m.pata("jina").angu("")        # "Amara" — unwrap with .angu() first;
                                 # `kama Neno` on a Chaguo does NOT unwrap it
-                                # (produces a debug-format string instead)
+                                # (produces the text `Kuna("Amara")` instead)
 m.pata("nchi").angu("Kenya")   # "Kenya" (default)
 m.vipo("jina")                 # kweli
 m.vipo("xyz")                  # si_kweli

@@ -104,12 +104,12 @@ pub(crate) fn concat_text(a: &str, b: &str) -> super::Text {
     super::Text::concat(a, b)
 }
 
+/// The text of a scalar, as `jiunge` and string building show it; `None` for other values.
 pub(crate) fn to_display_string(v: &Value) -> Option<String> {
     match v {
-        Value::Neno(s) => Some(s.to_string()),
-        Value::Namba(n) => Some(format_namba(*n)),
-        Value::Ukweli(b) => Some(if *b { "kweli" } else { "si_kweli" }.to_string()),
-        Value::Herufi(c) => Some(c.to_string()),
+        Value::Neno(_) | Value::Namba(_) | Value::Ukweli(_) | Value::Herufi(_) => {
+            Some(super::display_value(v))
+        }
         _ => None,
     }
 }

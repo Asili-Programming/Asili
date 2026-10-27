@@ -1469,7 +1469,7 @@ pub(crate) fn cast_value(v: Value, ty: &str) -> Result<Value, EvalError> {
             Value::Anuani(a) => a.to_string(),
             Value::NambaKuu(b) => b.to_string(),
             Value::NambaSahihi(b) => b.to_string(),
-            _ => format!("{v:?}"),
+            _ => value::display_value(&v),
         }))
     } else if t == "Herufi" {
         let ch = value::as_char(&v)

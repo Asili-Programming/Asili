@@ -14,9 +14,11 @@
     )
 )]
 
+mod display;
 mod json;
 mod numeric;
 mod text;
+pub(crate) use display::display_value;
 pub use text::Text;
 
 use std::cell::{RefCell, UnsafeCell};
