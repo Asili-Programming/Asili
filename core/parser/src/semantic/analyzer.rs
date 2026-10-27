@@ -607,7 +607,7 @@ impl<'a> Analyzer<'a> {
                     .as_ref()
                     .map(|t| self.type_from_decl(&t.name))
                     .unwrap_or(inferred.clone());
-                if ty.is_some() && !self.compatible(&declared, &inferred) {
+                if ty.is_some() && !self.binding_fits(&declared, &inferred) {
                     self.errors.push(
                         Diagnostic::new("SEM010", "aina ya weka/thabiti haitalingana na thamani")
                             .with_stage("semantiki")
@@ -694,16 +694,19 @@ impl<'a> Analyzer<'a> {
                         }
                         match op {
                             AssignOp::Assign => {
-                                self.check_type_compatibility(
-                                    &b.ty,
-                                    &rhs_ty,
-                                    "SEM013",
-                                    "aina ya thamani mpya haitalingani na aina ya jina".to_string(),
-                                    Span {
-                                        line: *line,
-                                        column: 1,
-                                    },
-                                );
+                                if !self.binding_fits(&b.ty, &rhs_ty) {
+                                    self.check_type_compatibility(
+                                        &b.ty,
+                                        &rhs_ty,
+                                        "SEM013",
+                                        "aina ya thamani mpya haitalingani na aina ya jina"
+                                            .to_string(),
+                                        Span {
+                                            line: *line,
+                                            column: 1,
+                                        },
+                                    );
+                                }
                                 b.moved = false;
                                 b.moved_at = None;
                             }
@@ -2128,6 +2131,20 @@ impl<'a> Analyzer<'a> {
         )
     }
 
+    /// Whether a value of type `inferred` may be stored in a binding declared `declared`
+    /// (`weka`, `thabiti`, or a reassignment). A `T?` binding also takes a bare `T`, which is
+    /// wrapped on store, and `Hamna`. Only bindings do this: a parameter or a return value
+    /// still needs the exact type, since nothing wraps it there.
+    fn binding_fits(&self, declared: &ValueType, inferred: &ValueType) -> bool {
+        if self.compatible(declared, inferred) {
+            return true;
+        }
+        match declared {
+            ValueType::Chaguo(inner) => self.compatible(inner, inferred),
+            _ => false,
+        }
+    }
+
     // TODO(Phase II): compatible() is a simple structural equality check. Missing cases:
     // - Trait bounds: `T: Sifa` constraints are not verified
     // - Generic instantiation: Orodha<Namba> vs Orodha<Neno> are not distinguished (both Unknown)
@@ -2150,6 +2167,8 @@ impl<'a> Analyzer<'a> {
                 self.compatible(a1, b1) && self.compatible(a2, b2)
             }
             (ValueType::Chaguo(a1), ValueType::Chaguo(b1)) => self.compatible(a1, b1),
+            // `Hamna` is the empty value of any `T?`.
+            (ValueType::Chaguo(_), ValueType::Hamna) => true,
             (ValueType::Ahadi(a1), ValueType::Ahadi(b1)) => self.compatible(a1, b1),
             // `Tokeo::Kosa(e)` / `Chaguo::Hamna` are typed by their enum alone.
             (ValueType::Tokeo(..), ValueType::Struct(n))

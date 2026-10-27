@@ -27,6 +27,12 @@ use asili_parser::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Whether a declared type name is a `T?` or `Chaguo<T>`: a binding of it holds a `Chaguo`.
+fn is_nullable_type(name: &str) -> bool {
+    let compact: String = name.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.ends_with('?') || compact.starts_with("Chaguo<")
+}
+
 /// Register index within one register file of a frame.
 pub type Reg = u32;
 
@@ -542,7 +548,7 @@ impl StoredConstant {
             StoredConstant::Herufi(c) => Value::Herufi(*c),
             StoredConstant::Computed(_) => Value::Tupu,
             StoredConstant::Tupu => Value::Tupu,
-            StoredConstant::Hamna => Value::Hamna,
+            StoredConstant::Hamna => Value::Chaguo(None),
         }
     }
 }
@@ -1189,6 +1195,16 @@ impl<'a> FunctionCompiler<'a> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// Store `dst` as the one runtime shape of a `T?` binding (`Value::Chaguo`): a bare value is
+    /// wrapped, and `Hamna` is normalized. Done by the `Cast` opcode (`methods::cast_value`).
+    fn wrap_chaguo(&mut self, dst: Operand) {
+        self.emit(Opcode::Cast {
+            dst: dst.reg,
+            src: dst.reg,
+            ty: "Chaguo".into(),
+        });
+    }
+
     fn num_const(&mut self, n: f64) -> Reg {
         if let Some(reg) = self.const_regs.get(&n.to_bits()) {
             return *reg;
@@ -1503,6 +1519,9 @@ impl<'a> FunctionCompiler<'a> {
                 // The initializer is evaluated before the new binding is visible.
                 let dst = self.temp(declared);
                 self.expr_into(self.node(*value), dst)?;
+                if type_name.as_deref().is_some_and(is_nullable_type) {
+                    self.wrap_chaguo(dst);
+                }
                 self.scopes
                     .last_mut()?
                     .insert(name.to_string(), Local { op: dst, type_name });
@@ -1512,7 +1531,17 @@ impl<'a> FunctionCompiler<'a> {
             } => {
                 let dst = self.lookup(name)?.op;
                 match op {
-                    AssignOp::Assign => self.expr_into(self.node(*value), dst)?,
+                    AssignOp::Assign => {
+                        self.expr_into(self.node(*value), dst)?;
+                        let nullable = self
+                            .lookup(name)?
+                            .type_name
+                            .as_deref()
+                            .is_some_and(is_nullable_type);
+                        if nullable {
+                            self.wrap_chaguo(dst);
+                        }
+                    }
                     compound => {
                         let bin = match compound {
                             AssignOp::AddAssign => BinaryOp::Add,

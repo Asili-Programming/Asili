@@ -1354,8 +1354,25 @@ pub(crate) fn callback_method(
     }
 }
 
-/// `expr kama ty` conversion, shared by the evaluator and native code's host.
+/// The one runtime shape of a `T?` (`Chaguo<T>`): `Value::Chaguo`. A bare value is wrapped,
+/// `Hamna` is the empty one, and a `Chaguo` built as an enum value is normalized.
+fn as_chaguo(v: Value) -> Value {
+    match v {
+        Value::Chaguo(_) => v,
+        Value::Hamna => Value::Chaguo(None),
+        Value::Enum(en, vn, data) if en == "Chaguo" => {
+            Value::Chaguo(if vn == "Kuna" { data } else { None })
+        }
+        other => Value::Chaguo(Some(Box::new(other))),
+    }
+}
+
+/// `expr kama ty` conversion, shared by the evaluator and native code's host. The type name
+/// `"Chaguo"` is the wrap a `T?` binding applies on store (see `bytecode::wrap_chaguo`).
 pub(crate) fn cast_value(v: Value, ty: &str) -> Result<Value, EvalError> {
+    if ty == "Chaguo" {
+        return Ok(as_chaguo(v));
+    }
     // The common `n kama Neno`, before any type-name handling.
     if let (Value::Namba(n), "Neno") = (&v, ty) {
         return Ok(Value::Neno(value::namba_text(*n)));
