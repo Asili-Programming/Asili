@@ -1649,6 +1649,10 @@ impl<'a> Analyzer<'a> {
                 }
 
                 let Some(func) = method_decl else {
+                    // Every `umbo` can be copied with `.clona()`, unless its program defines one.
+                    if method_name.as_str() == "clona" && args.is_empty() {
+                        return receiver_ty.clone();
+                    }
                     // Check for built-in methods on Tokeo and Chaguo before emitting SEM040
                     if is_enum {
                         let builtin_ret = match (receiver_ty_name.as_str(), method_name.as_str()) {

@@ -129,7 +129,7 @@ Asili uses **ownership and borrowing** as its default memory model. Every value 
   - `azima_tenda` — mutable borrow (desugars to `Rejeo_Tenda<T>`).
 - **Aliasing rules:** Many immutable borrows or a single mutable borrow are allowed, but not both at the same time.
 - **Drop (`tupa`):** When an owner goes out of scope, its value is dropped deterministically. The `tupa` operation explicitly drops a value early; it cannot be used afterwards.
-- **Copy and clone:** Types that implement `Nakala` may be copied implicitly in some contexts; other types must be explicitly cloned via `.nakala()`.
+- **Copy and clone:** Types that implement `Nakala` may be copied implicitly in some contexts; other types must be explicitly cloned via `.clona()`.
 
 Lifetimes are inferred by default; explicit lifetime annotations are only required when references cross complex structural boundaries (e.g. stored in `umbo` fields or returned from functions with non-obvious relationships). See [Execution and Roadmap](07-execution-and-roadmap.md) for the feature–phase map.
 

@@ -114,7 +114,7 @@ These are the definitive resolutions for the Asili v1.1 **Substrate**, following
 | **Reference types** | `Rejeo<T>` and `Rejeo_Tenda<T>` are the underlying immutable and mutable reference types; `azima`/`azima_tenda` desugar to these. |
 | **Aliasing rules** | Many immutable borrows or one mutable borrow at a time; not both simultaneously. |
 | **Drop (`tupa`)** | Owned values are dropped deterministically at end of scope. `tupa x` explicitly drops `x` early; `x` cannot be used afterwards. Resources such as `Faili` and `Mkondo` must release underlying OS/hardware handles on drop. |
-| **Copy/clone** | Types implementing `Nakala` may be copied implicitly in limited contexts; other types must be cloned explicitly via `.nakala()`. |
+| **Copy/clone** | Types implementing `Nakala` may be copied implicitly in limited contexts; other types must be cloned explicitly via `.clona()`. |
 
 ---
 

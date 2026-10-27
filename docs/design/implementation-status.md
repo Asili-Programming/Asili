@@ -419,7 +419,7 @@ examples job that lints, builds and tests every example). Those steps are done.
 
 1. **Language semantics defects** — the 11 defects in
    [language-semantics-fix-plan.md](language-semantics-fix-plan.md) (fixed-width integers,
-   moves on call, borrows, nullable annotations, `.nakala()`, `Nakala`, display of `Chaguo`).
+   moves on call, borrows, nullable annotations, `.nakala()`, `Nakala`, display of `Chaguo`; `.clona()` is the clone method).
    These are wrong behavior that programs can hit today.
 2. **Semantic-analyzer test sweep** — target the ~50 untested `SEM0xx` codes. Natural occasion to
    split `core/parser/src/semantic/analyzer.rs` (~2300 lines) and `core/parser/src/parse.rs`

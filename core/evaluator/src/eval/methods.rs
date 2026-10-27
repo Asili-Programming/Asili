@@ -546,6 +546,7 @@ pub(crate) fn pure_method(
                 None => mbadala,
             })
         }
+        (Value::Chaguo(_) | Value::Tokeo(_), "clona") => Ok(recv.clone()),
         (Value::Chaguo(opt), "ni_tupu") => Ok(Value::Ukweli(opt.is_none())),
         (Value::Chaguo(opt), "ni_po") => Ok(Value::Ukweli(opt.is_some())),
         (Value::Chaguo(opt), "hakikisha") => {
@@ -761,6 +762,7 @@ pub(crate) fn pure_method(
                 ("Chaguo", "ni_tupu") => Ok(Value::Ukweli(vn == "Hamna")),
                 ("Chaguo", "angu") => Ok(if vn == "Kuna" { inner() } else { mbadala() }),
                 ("Chaguo", "hakikisha") if vn == "Kuna" => Ok(inner()),
+                ("Tokeo" | "Chaguo", "clona") => Ok(recv.clone()),
                 ("Chaguo", "hakikisha") => Err(EvalError::Panic(
                     value::as_string(args_val.first().unwrap_or(&Value::Hamna))
                         .unwrap_or_else(|| "Chaguo: Hamna".into()),

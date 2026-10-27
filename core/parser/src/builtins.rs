@@ -867,8 +867,8 @@ pub const PURE_METHODS: &[&[&str]] = &[
         "tofauti",
         "ni_sehemu_ya",
     ],
-    &["angu", "ni_tupu", "ni_po", "hakikisha"],
-    &["ni_kosa", "ni_sawa", "kosa", "angu"],
+    &["angu", "ni_tupu", "ni_po", "hakikisha", "clona"],
+    &["ni_kosa", "ni_sawa", "kosa", "angu", "clona"],
     &["clona", "kwanza", "pili"],
     &["sekunde"],
     &["pata", "weka", "idadi", "shirikisha"],
@@ -1005,6 +1005,7 @@ pub fn has_builtin_method(receiver: MethodReceiver, name: &str) -> bool {
 pub fn method_return_type(receiver: &ValueType, method: &str) -> ValueType {
     match (receiver.clone(), method) {
         (ValueType::Neno, "clona") => ValueType::Neno,
+        (ValueType::Chaguo(_) | ValueType::Tokeo(_, _), "clona") => receiver.clone(),
         (ValueType::Neno, "urefu" | "biti_ngapi") => ValueType::Namba,
         (ValueType::Neno, "herufi_kwa") => ValueType::Chaguo(Box::new(ValueType::Herufi)),
         (ValueType::Neno, "kwa_herufi_ndogo" | "kwa_herufi_kubwa" | "badilisha" | "rudia") => {

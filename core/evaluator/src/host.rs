@@ -539,7 +539,14 @@ impl<'p> Host<'p> {
                 )))
             }
         };
-        let index = self.program.user_method(kind, &target, method)?;
+        let index = match self.program.user_method(kind, &target, method) {
+            Ok(index) => index,
+            // Every `umbo` can be copied with `.clona()`, unless its program defines one.
+            Err(_) if method == "clona" && args.is_empty() && matches!(recv, Value::Struct(..)) => {
+                return Ok(recv)
+            }
+            Err(e) => return Err(e),
+        };
         let mut call_args = Vec::with_capacity(args.len() + 1);
         call_args.push(recv);
         call_args.extend(args);
