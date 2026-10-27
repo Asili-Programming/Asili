@@ -374,18 +374,14 @@ Also fixed this cycle, found while verifying every code example under `docs/lang
 
 Known, deliberately-not-fixed gaps in the type checker (small, contained, not yet done):
 
-- The builtin-method-call fallback (`analyzer.rs`, method dispatch on Neno/Orodha/Kamusi/etc.)
-  silently returns `Unknown` for any unrecognized method name, instead of raising the same
-  "unknown method" diagnostic that struct/enum methods already get. A typo'd method call on a
-  builtin type is currently invisible to the checker.
+- ~~The builtin-method-call fallback silently returns `Unknown` for an unrecognized method name.~~
+  Re-checked in the semantics audit: an unknown method on `Neno` now reports SEM040
+  (`njia 'hakuna_kitu' haipo kwa 'Neno'`). Closed.
 - Generic constructors (`kamusi()`, `kosa()`, `kasha_gc_unda()`) don't propagate their argument's
   real type the way `orodha`/`jozi`/`chaguo` already do — same fix shape, just missing arms.
-- **Trait-impl method dispatch (`shughuli ya X kwa Trait`) doesn't wire the method into method
-  lookup at all** — calling it (`x.method()`) fails with `SEM040: njia haipo`, even though the
-  identical body under a plain `shughuli ya X { ... }` (no `kwa Trait`) dispatches correctly.
-  Not a "static dispatch in progress" nuance — trait impls are simply invisible to method
-  resolution today. Bigger than a one-arm fix (needs impl-block-to-trait association wired into
-  whatever resolves `x.method()`); found while verifying `docs/language/07-mfumo-wa-aina.md`.
+- ~~Trait-impl method dispatch (`shughuli ya X kwa Trait`) doesn't wire into method lookup.~~
+  Re-checked in the semantics audit: `p.onyesha()` on a `shughuli ya P kwa Onyesha` method runs
+  and prints the result. Closed.
 - **A `Tokeo` binding is only marked "consumed" by `linganisha` or `?`/`jaribu`, not by calling
   a method like `.ni_kosa()`/`.kosa()` on it.** `weka r = f(); ikiwa r.ni_kosa() { ... }` fails
   `SEM048` even though `.ni_kosa()` is a legitimate, documented way to inspect a `Tokeo`. Since
@@ -415,22 +411,25 @@ Known, deliberately-not-fixed gaps in the type checker (small, contained, not ye
 
 ---
 
-## Recommended order of work (not yet started, prioritized)
+## Recommended order of work (prioritized; status re-checked)
 
-1. **Fix the decimal-literal lexer bug** (#7 above) — this is a correctness bug affecting any
-   program that uses a float literal directly, not just a doc-polish item.
-2. **Stand up CI** — `cargo test --workspace`, `pata-lint` across `examples/`, `pata jenga` on
-   every example project, on every push/PR. Everything else is unverifiable without this.
-3. **Semantic-analyzer test sweep** — target the ~50 untested `SEM0xx` codes. Natural occasion to
-   split `core/parser/src/semantic/analyzer.rs` (~1650 lines) and `core/parser/src/parse.rs`
-   (~1380 lines, one `impl` with every `parse_*` method) by concern, since that's exactly where
-   all the bugs above were hiding, untested.
-4. **The two small analyzer fixes** listed above.
-5. **Defer Phase III** until per-character string indexing is added and a lifetime-inference
+Status as of the semantics audit: the decimal-literal item (#7) no longer reproduces, and CI
+exists (`.github/workflows/ci.yml`: workspace build and tests, fuzzing, Cortex-M, wasm, and an
+examples job that lints, builds and tests every example). Those steps are done.
+
+1. **Language semantics defects** — the 11 defects in
+   [language-semantics-fix-plan.md](language-semantics-fix-plan.md) (fixed-width integers,
+   moves on call, borrows, nullable annotations, `.nakala()`, `Nakala`, display of `Chaguo`).
+   These are wrong behavior that programs can hit today.
+2. **Semantic-analyzer test sweep** — target the ~50 untested `SEM0xx` codes. Natural occasion to
+   split `core/parser/src/semantic/analyzer.rs` (~2300 lines) and `core/parser/src/parse.rs`
+   by concern, since that's where the bugs above were hiding, untested.
+3. **Tokeo methods** — `.ni_kosa()`/`.kosa()` on a stored `Tokeo` still hit SEM048 (see above).
+4. **Defer Phase III** until per-character string indexing is added and a lifetime-inference
    strategy is actually decided — starting the borrow checker before that is building on a
    decision that hasn't been made yet, which the roadmap itself already warns against. See
    [phase3-self-hosting-borrow-checker-design.md](phase3-self-hosting-borrow-checker-design.md).
-6. Lower priority, not blocking: DAP, a one-command install script, a broader example set (most
+5. Lower priority, not blocking: DAP, a one-command install script, a broader example set (most
    of the 11 current examples are single-feature test fixtures rather than realistic programs —
    `examples/astar` is the one exception).
 
