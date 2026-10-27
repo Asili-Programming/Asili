@@ -607,7 +607,13 @@ impl<'a> Analyzer<'a> {
                     .as_ref()
                     .map(|t| self.type_from_decl(&t.name))
                     .unwrap_or(inferred.clone());
-                if ty.is_some() && !self.binding_fits(&declared, &inferred) {
+                // A literal bound to a fixed-width type is checked against its range instead.
+                let literal = if ty.is_some() {
+                    self.fixed_literal_check(&declared, *value, *line)
+                } else {
+                    None
+                };
+                if ty.is_some() && literal.is_none() && !self.binding_fits(&declared, &inferred) {
                     self.errors.push(
                         Diagnostic::new("SEM010", "aina ya weka/thabiti haitalingana na thamani")
                             .with_stage("semantiki")
@@ -694,7 +700,8 @@ impl<'a> Analyzer<'a> {
                         }
                         match op {
                             AssignOp::Assign => {
-                                if !self.binding_fits(&b.ty, &rhs_ty) {
+                                let literal = self.fixed_literal_check(&b.ty, *value, *line);
+                                if literal.is_none() && !self.binding_fits(&b.ty, &rhs_ty) {
                                     self.check_type_compatibility(
                                         &b.ty,
                                         &rhs_ty,
@@ -1251,6 +1258,9 @@ impl<'a> Analyzer<'a> {
             } => {
                 let l = self.check_expr(*left, scopes, UseMode::BorrowImm);
                 let r = self.check_expr(*right, scopes, UseMode::BorrowImm);
+                if let Some(result) = self.fixed_binary(op, *left, *right, &l, &r, *line) {
+                    return result;
+                }
                 // Namba_Kuu/Namba_Sahihi arithmetic widens the same way the evaluator's
                 // big_numeric_binary_op does at runtime: Namba paired with either widens to
                 // match; Namba_Kuu paired with Namba_Sahihi promotes to Namba_Sahihi. Checked
@@ -2129,6 +2139,100 @@ impl<'a> Analyzer<'a> {
                 | ValueType::MkondoSikilizaji
                 | ValueType::TlsUsanidi
         )
+    }
+
+    /// The value of a numeric literal (`5`, `-5`, `2.5`), or `None` for any other expression.
+    fn numeric_literal(&self, e: ExprId) -> Option<f64> {
+        match &self.module[e] {
+            Expr::Number(s) => s.parse().ok(),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+                ..
+            } => self.numeric_literal(*expr).map(|n| -n),
+            _ => None,
+        }
+    }
+
+    /// For a fixed-width integer type `declared` and an expression that is a numeric literal:
+    /// whether the literal is a whole number in the type's range. `None` when the rule does not
+    /// apply. An out-of-range literal is reported (`SEM108`) here, not left to the binding check.
+    fn fixed_literal_check(&mut self, declared: &ValueType, e: ExprId, line: usize) -> Option<bool> {
+        let ValueType::Biti { bits, signed } = *declared else {
+            return None;
+        };
+        let n = self.numeric_literal(e)?;
+        let (lo, hi) = crate::ast::fixed_int_range(bits, signed);
+        let fits = n.fract() == 0.0 && n >= lo as f64 && n <= hi as f64;
+        if !fits {
+            self.errors.push(
+                Diagnostic::new(
+                    "SEM108",
+                    format!("namba {} haiingii kwenye {}", n, declared),
+                )
+                .with_stage("semantiki")
+                .with_span(line, 1),
+            );
+        }
+        Some(fits)
+    }
+
+    /// The type of `l op r` when a side is a fixed-width integer, or `None` when neither is.
+    /// Both sides share one width; an integer literal takes the width of the other side.
+    fn fixed_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: ExprId,
+        right: ExprId,
+        l: &ValueType,
+        r: &ValueType,
+        line: usize,
+    ) -> Option<ValueType> {
+        let (width, other_expr, other) = match (l, r) {
+            (ValueType::Biti { .. }, _) => (l.clone(), right, r),
+            (_, ValueType::Biti { .. }) => (r.clone(), left, l),
+            _ => return None,
+        };
+        let literal = if *other == ValueType::Namba {
+            self.fixed_literal_check(&width, other_expr, line)
+        } else {
+            None
+        };
+        match literal {
+            // In range: the literal takes the other side's width.
+            Some(true) => {}
+            // Out of range: `SEM108` was reported, so no second error for the same operand.
+            Some(false) => return Some(ValueType::Unknown),
+            None if *other == width => {}
+            None => {
+                self.errors.push(
+                    Diagnostic::new(
+                        "SEM033",
+                        "opereta ya namba kamili inahitaji aina moja pande zote mbili",
+                    )
+                    .with_stage("semantiki")
+                    .with_span(line, 1),
+                );
+                return Some(ValueType::Unknown);
+            }
+        }
+        Some(match op {
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Gt
+            | BinaryOp::Lt
+            | BinaryOp::Ge
+            | BinaryOp::Le => ValueType::Ukweli,
+            BinaryOp::And | BinaryOp::Or => {
+                self.errors.push(
+                    Diagnostic::new("SEM033", "opereta hii haitumiki kwa namba kamili")
+                        .with_stage("semantiki")
+                        .with_span(line, 1),
+                );
+                ValueType::Unknown
+            }
+            _ => width,
+        })
     }
 
     /// Whether a value of type `inferred` may be stored in a binding declared `declared`

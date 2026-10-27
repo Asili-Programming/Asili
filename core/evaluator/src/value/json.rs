@@ -35,6 +35,12 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
     use serde_json::Value as J;
     Ok(match v {
         Value::Namba(n) => json_number(*n),
+        // Exact: an `i64` or `u64` keeps every digit; `f64` would round the largest ones.
+        Value::Biti(x, _) => match (i64::try_from(*x), u64::try_from(*x)) {
+            (Ok(n), _) => J::from(n),
+            (_, Ok(n)) => J::from(n),
+            _ => json_number(*x as f64),
+        },
         Value::Neno(s) => J::String(s.to_string()),
         // Bytes have no JSON form; base64 is the usual carrier.
         Value::Baiti(b) => {

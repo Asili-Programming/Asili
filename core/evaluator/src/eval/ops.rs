@@ -82,6 +82,11 @@ pub(crate) fn binary_value(op: &BinaryOp, l: &Value, r: &Value) -> Result<Value,
             _ => {}
         }
     }
+    // Fixed-width integers: both sides share one width, or the other side is a whole-number
+    // literal (the analyzer keeps it in range).
+    if let Some(v) = fixed_binary(op, l, r)? {
+        return Ok(v);
+    }
     match op {
         BinaryOp::Add => match (l, r) {
             // One allocation of exactly the result's size; neither operand is copied first.
@@ -242,4 +247,44 @@ pub(crate) fn propagate(v: Value) -> Result<Value, EvalError> {
 /// Condition truthiness for `ikiwa`/`wakati`: only `kweli` is true.
 pub(crate) fn truthy(v: &Value) -> bool {
     matches!(v, Value::Ukweli(true))
+}
+
+/// `l op r` on fixed-width integers: the result wraps at the width. `None` when neither side is
+/// one, or for `na`/`au`, which do not apply to them. Dividing by zero halts (`paparika`).
+/// A shift count is taken modulo the width.
+fn fixed_binary(op: &BinaryOp, l: &Value, r: &Value) -> Result<Option<Value>, EvalError> {
+    let (a, w, b) = match (l, r) {
+        (Value::Biti(a, w), Value::Biti(b, _)) => (*a, *w, *b),
+        (Value::Biti(a, w), Value::Namba(n)) if n.fract() == 0.0 => (*a, *w, *n as i128),
+        (Value::Namba(n), Value::Biti(b, w)) if n.fract() == 0.0 => (*n as i128, *w, *b),
+        _ => return Ok(None),
+    };
+    let b = w.wrap(b);
+    let by_zero = || EvalError::Panic("kugawanya kwa sifuri".into());
+    let bits = i128::from(w.bits);
+    Ok(Some(match op {
+        BinaryOp::Add => Value::Biti(w.wrap(a.wrapping_add(b)), w),
+        BinaryOp::Sub => Value::Biti(w.wrap(a.wrapping_sub(b)), w),
+        BinaryOp::Mul => Value::Biti(w.wrap(a.wrapping_mul(b)), w),
+        BinaryOp::Div if b == 0 => return Err(by_zero()),
+        BinaryOp::Div => Value::Biti(w.wrap(a.wrapping_div(b)), w),
+        BinaryOp::Rem if b == 0 => return Err(by_zero()),
+        BinaryOp::Rem => Value::Biti(w.wrap(a.wrapping_rem(b)), w),
+        BinaryOp::Pow if b < 0 => {
+            return Err(EvalError::TypeErr("nguvu hasi haiwezi kwa namba kamili".into()))
+        }
+        BinaryOp::Pow => Value::Biti(w.wrap(a.wrapping_pow(b.min(u32::MAX.into()) as u32)), w),
+        BinaryOp::BitAnd => Value::Biti(w.wrap(a & b), w),
+        BinaryOp::BitOr => Value::Biti(w.wrap(a | b), w),
+        BinaryOp::BitXor => Value::Biti(w.wrap(a ^ b), w),
+        BinaryOp::Shl => Value::Biti(w.wrap(a << b.rem_euclid(bits)), w),
+        BinaryOp::Shr => Value::Biti(w.wrap(a >> b.rem_euclid(bits)), w),
+        BinaryOp::Eq => Value::Ukweli(a == b),
+        BinaryOp::Ne => Value::Ukweli(a != b),
+        BinaryOp::Gt => Value::Ukweli(a > b),
+        BinaryOp::Lt => Value::Ukweli(a < b),
+        BinaryOp::Ge => Value::Ukweli(a >= b),
+        BinaryOp::Le => Value::Ukweli(a <= b),
+        BinaryOp::And | BinaryOp::Or => return Ok(None),
+    }))
 }

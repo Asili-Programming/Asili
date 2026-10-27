@@ -1367,11 +1367,31 @@ fn as_chaguo(v: Value) -> Value {
     }
 }
 
+/// Store `v` in a binding declared as the fixed-width integer `name` (see `cast_value`).
+fn coerce_fixed(v: Value, name: &str) -> Result<Value, EvalError> {
+    let Some((bits, signed)) = asili_parser::fixed_int_parts(name) else {
+        return Ok(v);
+    };
+    let w = crate::value::IntWidth { bits, signed };
+    match v {
+        Value::Biti(x, _) => Ok(Value::Biti(w.wrap(x), w)),
+        Value::Namba(n) if n.is_finite() && n.fract() == 0.0 && w.fits(n as i128) => {
+            Ok(Value::Biti(n as i128, w))
+        }
+        _ => Err(EvalError::TypeErr(format!("thamani haiingii kwenye {name}"))),
+    }
+}
+
 /// `expr kama ty` conversion, shared by the evaluator and native code's host. The type name
 /// `"Chaguo"` is the wrap a `T?` binding applies on store (see `bytecode::wrap_chaguo`).
 pub(crate) fn cast_value(v: Value, ty: &str) -> Result<Value, EvalError> {
     if ty == "Chaguo" {
         return Ok(as_chaguo(v));
+    }
+    // `=Biti8`: the store of a value into a binding declared as that width. The analyzer has
+    // checked the value, so this is exact, not the fallible `kama`.
+    if let Some(name) = ty.strip_prefix('=') {
+        return coerce_fixed(v, name);
     }
     // The common `n kama Neno`, before any type-name handling.
     if let (Value::Namba(n), "Neno") = (&v, ty) {
@@ -1488,27 +1508,21 @@ pub(crate) fn cast_value(v: Value, ty: &str) -> Result<Value, EvalError> {
     } else if t == "Anuani" {
         let n = value::as_f64(&v).unwrap_or(0.0);
         Ok(Value::Anuani(n as u64))
-    // TODO(Phase II): Biti8/uBiti8/Biti32 etc. should map to distinct runtime types,
-    // not just range-checked f64. Fixed-width integer arithmetic currently overflows silently.
-    } else if t.starts_with("Biti") || t.starts_with("uBiti") {
-        let n = value::as_f64(&v).unwrap_or(0.0);
-        let n_i = n as i64;
-        let fits = match &*t {
-            "Biti8" => n_i >= i8::MIN as i64 && n_i <= i8::MAX as i64,
-            "Biti16" => n_i >= i16::MIN as i64 && n_i <= i16::MAX as i64,
-            "Biti32" => n_i >= i32::MIN as i64 && n_i <= i32::MAX as i64,
-            "Biti64" => true,
-            "uBiti8" => n_i >= 0 && n_i <= u8::MAX as i64,
-            "uBiti16" => n_i >= 0 && n_i <= u16::MAX as i64,
-            "uBiti32" => n_i >= 0 && n_i <= u32::MAX as i64,
-            "uBiti64" => n_i >= 0,
-            _ => true,
+    } else if let Some((bits, signed)) = asili_parser::fixed_int_parts(&t) {
+        // A fallible cast (spec 04): the value, truncated toward zero, when it fits the width;
+        // `Hamna` otherwise.
+        let w = crate::value::IntWidth { bits, signed };
+        let exact = match &v {
+            Value::Biti(x, _) => Some(*x),
+            Value::Namba(n) if n.is_finite() => Some(n.trunc() as i128),
+            Value::Neno(s) => s.trim().parse::<i128>().ok(),
+            _ => None,
         };
-        if fits {
-            Ok(Value::Chaguo(Some(Box::new(Value::Namba(n)))))
-        } else {
-            Ok(Value::Chaguo(None))
-        }
+        Ok(Value::Chaguo(
+            exact
+                .filter(|x| w.fits(*x))
+                .map(|x| Box::new(Value::Biti(x, w))),
+        ))
     } else {
         Ok(v)
     }

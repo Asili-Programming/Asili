@@ -41,7 +41,7 @@ pub use bytecode::{
 pub use compiled::NativeProgram;
 pub use repl::ReplSession;
 pub use tir::{emit_asb_from_tir, lower_to_tir, validate_module, TypedIrFunction, TypedIrModule};
-pub use value::{ErrorKind, EvalError, Value};
+pub use value::{ErrorKind, EvalError, IntWidth, Value};
 
 use asili_parser::{Function, Module};
 

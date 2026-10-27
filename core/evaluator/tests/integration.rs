@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use asili_evaluator::{
     execute_tests, execute_tests_with_timeout, run_function, run_main, run_test_with_coverage,
-    run_test_with_fixtures, run_test_with_module, Value,
+    run_test_with_fixtures, run_test_with_module, IntWidth, Value,
 };
 use asili_lexer::tokenize;
 use asili_parser::{parse_tokens, semantic_check_with_env, FnContract, Module, ValueType};
@@ -707,11 +707,18 @@ fn kipeo_and_mizizi() {
 fn cast_to_biti8_fallible() {
     let module = parse_only(
         "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }
-         kazi cast_ok() -> Chaguo<Namba> { rejesha 100 kama Biti8 }
-         kazi cast_fail() -> Chaguo<Namba> { rejesha 1000 kama Biti8 }",
+         kazi cast_ok() -> Chaguo<Biti8> { rejesha 100 kama Biti8 }
+         kazi cast_fail() -> Chaguo<Biti8> { rejesha 1000 kama Biti8 }",
     );
     let v = run_function(&module, "cast_ok", vec![]).expect("run");
-    assert_eq!(v, Value::Chaguo(Some(Box::new(Value::Namba(100.0)))));
+    let biti8 = IntWidth {
+        bits: 8,
+        signed: true,
+    };
+    assert_eq!(
+        v,
+        Value::Chaguo(Some(Box::new(Value::Biti(100, biti8))))
+    );
     let v2 = run_function(&module, "cast_fail", vec![]).expect("run");
     assert_eq!(
         v2,
@@ -998,7 +1005,7 @@ fn unary_ops_stress() {
          kazi bitnot_neg_one() -> Namba { rejesha siyo_biti (0 - 1) }
          kazi bitnot_three() -> Namba { rejesha siyo_biti 3 }
          kazi jaribu_tokeo_ok() -> Namba { rejesha jaribu gawio(10, 2) }
-         kazi jaribu_chaguo_some() -> Namba { rejesha jaribu (100 kama Biti8) }
+         kazi jaribu_chaguo_some() -> Biti8 { rejesha jaribu (100 kama Biti8) }
          kazi precedence_binary_minus() -> Namba { rejesha 0 - 1 }
          kazi precedence_unary_neg() -> Namba { rejesha - 1 }
          kazi borrow_imm() -> Namba { weka x = 7 rejesha azima x }
@@ -1058,7 +1065,13 @@ fn unary_ops_stress() {
     );
     assert_eq!(
         run_function(&module, "jaribu_chaguo_some", vec![]).unwrap(),
-        Value::Namba(100.0),
+        Value::Biti(
+            100,
+            IntWidth {
+                bits: 8,
+                signed: true,
+            }
+        ),
         "jaribu (100 kama Biti8)"
     );
     assert_eq!(

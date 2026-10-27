@@ -238,7 +238,7 @@ kazi chaguo_hamna_match() -> Neno {
 }
 
 # `jaribu` unwrapping a successful Biti8 cast.
-kazi chaguo_some_cast() -> Namba {
+kazi chaguo_some_cast() -> Biti8 {
   rejesha jaribu (100 kama Biti8)
 }
 

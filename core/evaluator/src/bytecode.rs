@@ -1195,6 +1195,24 @@ impl<'a> FunctionCompiler<'a> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// Convert `dst`, just stored into a binding, to what its declared type name asks for: a
+    /// `T?` becomes a `Chaguo`, a fixed-width integer its width. Other types are left as they are.
+    fn store_as(&mut self, dst: Operand, declared: Option<&str>) {
+        let Some(name) = declared else {
+            return;
+        };
+        if is_nullable_type(name) {
+            self.wrap_chaguo(dst);
+        } else if asili_parser::fixed_int_parts(name).is_some() {
+            // `=Biti8`: an exact store, not the fallible `kama` (`methods::cast_value`).
+            self.emit(Opcode::Cast {
+                dst: dst.reg,
+                src: dst.reg,
+                ty: format!("={name}").into(),
+            });
+        }
+    }
+
     /// Store `dst` as the one runtime shape of a `T?` binding (`Value::Chaguo`): a bare value is
     /// wrapped, and `Hamna` is normalized. Done by the `Cast` opcode (`methods::cast_value`).
     fn wrap_chaguo(&mut self, dst: Operand) {
@@ -1519,9 +1537,7 @@ impl<'a> FunctionCompiler<'a> {
                 // The initializer is evaluated before the new binding is visible.
                 let dst = self.temp(declared);
                 self.expr_into(self.node(*value), dst)?;
-                if type_name.as_deref().is_some_and(is_nullable_type) {
-                    self.wrap_chaguo(dst);
-                }
+                self.store_as(dst, type_name.as_deref());
                 self.scopes
                     .last_mut()?
                     .insert(name.to_string(), Local { op: dst, type_name });
@@ -1533,14 +1549,8 @@ impl<'a> FunctionCompiler<'a> {
                 match op {
                     AssignOp::Assign => {
                         self.expr_into(self.node(*value), dst)?;
-                        let nullable = self
-                            .lookup(name)?
-                            .type_name
-                            .as_deref()
-                            .is_some_and(is_nullable_type);
-                        if nullable {
-                            self.wrap_chaguo(dst);
-                        }
+                        let declared = self.lookup(name)?.type_name.clone();
+                        self.store_as(dst, declared.as_deref());
                     }
                     compound => {
                         let bin = match compound {

@@ -38,7 +38,7 @@ kazi namba_nan_eq() -> Ukweli {
 }
 
 # `jaribu` unwrapping a successful Biti8 cast.
-kazi chaguo_some() -> Namba {
+kazi chaguo_some() -> Biti8 {
   rejesha jaribu (100 kama Biti8)
 }
 

@@ -62,7 +62,7 @@ kazi jaribu_tokeo_ok() -> Namba {
 }
 
 # `jaribu` unwrapping a successful cast (Chaguo).
-kazi jaribu_chaguo_some() -> Namba {
+kazi jaribu_chaguo_some() -> Biti8 {
   rejesha jaribu (100 kama Biti8)
 }
 

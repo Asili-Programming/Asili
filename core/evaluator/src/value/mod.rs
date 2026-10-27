@@ -15,9 +15,11 @@
 )]
 
 mod display;
+mod fixed;
 mod json;
 mod numeric;
 mod text;
+pub use fixed::IntWidth;
 pub(crate) use display::display_value;
 pub use text::Text;
 
@@ -128,6 +130,8 @@ pub type Seti = HashSet<MapKey, foldhash::fast::RandomState>;
 #[derive(Clone)]
 pub enum Value {
     Namba(f64),
+    /// A fixed-width integer: its value, exact, and its width (`Biti8` … `uBiti64`).
+    Biti(i128, IntWidth),
     /// Text; never changed in place, so copies share it.
     Neno(Text),
     /// A `sawia` task (`kazi_sawia`): its outcome once it has finished. Bound to the thread
@@ -302,6 +306,7 @@ impl FungoCell {
 #[derive(Clone)]
 pub enum SendValue {
     Namba(f64),
+    Biti(i128, IntWidth),
     Neno(String),
     Baiti(Vec<u8>),
     Ukweli(bool),
@@ -357,6 +362,7 @@ impl Value {
     pub fn try_into_send(&self) -> Option<SendValue> {
         Some(match self {
             Value::Namba(n) => SendValue::Namba(*n),
+            Value::Biti(x, w) => SendValue::Biti(*x, *w),
             Value::Neno(s) => SendValue::Neno(s.to_string()),
             Value::Baiti(b) => SendValue::Baiti(b.to_vec()),
             Value::Ukweli(b) => SendValue::Ukweli(*b),
@@ -436,6 +442,7 @@ impl SendValue {
     pub fn into_value(self) -> Value {
         match self {
             SendValue::Namba(n) => Value::Namba(n),
+            SendValue::Biti(x, w) => Value::Biti(x, w),
             SendValue::Neno(s) => Value::neno(s),
             SendValue::Baiti(b) => Value::Baiti(b.into()),
             SendValue::Ukweli(b) => Value::Ukweli(b),
@@ -564,6 +571,7 @@ impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Namba(n) => f.debug_tuple("Namba").field(n).finish(),
+            Value::Biti(x, w) => f.debug_tuple(&w.name()).field(x).finish(),
             Value::Neno(s) => f.debug_tuple("Neno").field(s).finish(),
             Value::Baiti(b) => f.write_str(&asili_parser::bytes_literal(b)),
             Value::Ahadi(t) => write!(f, "Ahadi({t:?})"),
@@ -663,6 +671,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Namba(a), Value::Namba(b)) => a == b,
+            (Value::Biti(a, wa), Value::Biti(b, wb)) => a == b && wa == wb,
             (Value::Neno(a), Value::Neno(b)) => a == b,
             (Value::Baiti(a), Value::Baiti(b)) => a == b,
             (Value::Ahadi(a), Value::Ahadi(b)) => Rc::ptr_eq(a, b),

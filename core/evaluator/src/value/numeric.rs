@@ -19,6 +19,7 @@ pub(crate) fn parse_number(s: &str) -> f64 {
 pub(crate) fn as_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Namba(n) => Some(*n),
+        Value::Biti(n, _) => Some(*n as f64),
         Value::Wakati(n) => Some(*n),
         Value::Anuani(n) => Some(*n as f64),
         _ => None,
@@ -107,7 +108,7 @@ pub(crate) fn concat_text(a: &str, b: &str) -> super::Text {
 /// The text of a scalar, as `jiunge` and string building show it; `None` for other values.
 pub(crate) fn to_display_string(v: &Value) -> Option<String> {
     match v {
-        Value::Neno(_) | Value::Namba(_) | Value::Ukweli(_) | Value::Herufi(_) => {
+        Value::Neno(_) | Value::Namba(_) | Value::Biti(..) | Value::Ukweli(_) | Value::Herufi(_) => {
             Some(super::display_value(v))
         }
         _ => None,

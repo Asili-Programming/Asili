@@ -1,9 +1,4 @@
 //! Type string parsing: split_generic_args and parse_value_type.
-//
-// TODO(Phase II): parse_value_type collapses Biti8/uBiti8/Biti32/Biti64/uBiti32/uBiti64 into
-// ValueType::Namba, losing all fixed-width information. The type checker cannot distinguish
-// Biti8 from Namba, so overflow and range errors are invisible at compile time.
-// Fix: add ValueType::FixedInt(BitWidth, Signed) variants and propagate them through type checking.
 
 use crate::ValueType;
 
@@ -44,7 +39,10 @@ pub fn parse_value_type(s: &str) -> ValueType {
 /// `umbo`/`jenum` names), at any depth: `Orodha<Nukta>` is a list of `Nukta`.
 pub fn parse_value_type_with(s: &str, resolve: &dyn Fn(&str) -> Option<ValueType>) -> ValueType {
     let s = s.replace(' ', "");
-    if s == "Namba" || s.starts_with("Biti") || s.starts_with("uBiti") {
+    if let Some((bits, signed)) = crate::ast::fixed_int_parts(&s) {
+        return ValueType::Biti { bits, signed };
+    }
+    if s == "Namba" {
         return ValueType::Namba;
     }
     if s == "Neno" {
@@ -207,6 +205,7 @@ pub fn parse_value_type_with(s: &str, resolve: &dyn Fn(&str) -> Option<ValueType
 pub fn format_value_type(t: &ValueType) -> String {
     match t {
         ValueType::Namba => "Namba".to_string(),
+        ValueType::Biti { bits, signed } => crate::ast::fixed_int_name(*bits, *signed),
         ValueType::Neno => "Neno".to_string(),
         ValueType::Ukweli => "Ukweli".to_string(),
         ValueType::Tupu => "Tupu".to_string(),

@@ -15,6 +15,7 @@ pub(crate) fn display_value(v: &Value) -> String {
 fn write_value(out: &mut String, v: &Value, nested: bool) {
     match v {
         Value::Namba(n) => out.push_str(&format_namba(*n)),
+        Value::Biti(x, _) => out.push_str(&x.to_string()),
         Value::NambaKuu(b) => out.push_str(&b.to_string()),
         Value::NambaSahihi(b) => out.push_str(&b.to_string()),
         Value::Neno(s) => {

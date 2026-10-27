@@ -733,12 +733,42 @@ pub enum BinaryOp {
     Or,
 }
 
+/// The width and signedness a fixed-width integer type name stands for: `Biti8` is `(8, true)`,
+/// `uBiti32` is `(32, false)`. `None` for any other name. The one table of these names.
+pub fn fixed_int_parts(name: &str) -> Option<(u8, bool)> {
+    let (signed, digits) = match name.strip_prefix("uBiti") {
+        Some(d) => (false, d),
+        None => (true, name.strip_prefix("Biti")?),
+    };
+    let bits: u8 = digits.parse().ok()?;
+    matches!(bits, 8 | 16 | 32 | 64).then_some((bits, signed))
+}
+
+/// The smallest and largest value of a fixed-width integer of this width and signedness.
+pub fn fixed_int_range(bits: u8, signed: bool) -> (i128, i128) {
+    if signed {
+        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    } else {
+        (0, (1i128 << bits) - 1)
+    }
+}
+
+/// The type name of a fixed-width integer, `Biti32` or `uBiti8`.
+pub fn fixed_int_name(bits: u8, signed: bool) -> String {
+    if signed {
+        format!("Biti{bits}")
+    } else {
+        format!("uBiti{bits}")
+    }
+}
+
 use std::fmt;
 
 impl fmt::Display for ValueType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ValueType::Namba => write!(f, "Namba"),
+            ValueType::Biti { bits, signed } => write!(f, "{}", fixed_int_name(*bits, *signed)),
             ValueType::Neno => write!(f, "Neno"),
             ValueType::Ukweli => write!(f, "Ukweli"),
             ValueType::Tupu => write!(f, "Tupu"),
@@ -789,6 +819,9 @@ pub enum ValueType {
     Herufi,
     NambaKuu,
     NambaSahihi,
+    /// A fixed-width integer (`Biti8`…`Biti64`, `uBiti8`…`uBiti64`): `bits` wide, two's
+    /// complement when `signed`. See [`fixed_int_parts`].
+    Biti { bits: u8, signed: bool },
     Chaguo(Box<ValueType>),
     Tokeo(Box<ValueType>, Box<ValueType>),
     Rejeo(Box<ValueType>, bool),
