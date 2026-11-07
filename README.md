@@ -66,7 +66,7 @@ pata jenga --tenda
 | `docs/` | How-to and design notes. |
 
 Generated API reference (rustdoc + TypeDoc) for reading the code is published at
-<https://victorkariuki.github.io/Asili/> — see [CONTRIBUTING.md](CONTRIBUTING.md#api-documentation)
+<https://asili-programming.github.io/Asili/> — see [CONTRIBUTING.md](CONTRIBUTING.md#api-documentation)
 to build it locally.
 
 ## Standard library modules

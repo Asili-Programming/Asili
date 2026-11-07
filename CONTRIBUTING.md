@@ -16,8 +16,8 @@ Contributions are welcome. This document outlines how to build, test, and submit
 ## API documentation
 
 Generated API reference (for reading the code, not for using the `pata` CLI or the Asili
-language — see the [wiki](https://github.com/victorKariuki/Asili/wiki) for that) is published at
-<https://victorkariuki.github.io/Asili/>, rebuilt automatically on every push to `main`
+language — see the [wiki](https://github.com/Asili-Programming/Asili/wiki) for that) is published at
+<https://asili-programming.github.io/Asili/>, rebuilt automatically on every push to `main`
 (`.github/workflows/docs.yml`).
 
 To build it locally:

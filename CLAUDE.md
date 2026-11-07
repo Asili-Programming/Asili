@@ -2,7 +2,7 @@
 
 ## Keep the wiki and docs/ in sync — both directions
 
-This repo has a GitHub wiki at `github.com/victorKariuki/Asili/wiki` (separate git repo,
+This repo has a GitHub wiki at `github.com/Asili-Programming/Asili/wiki` (separate git repo,
 `Asili.wiki.git`) documenting the language, stdlib, CLI, architecture, roadmap, and contributor
 info across 27 pages. Each wiki page is derived from a specific `docs/` file or repo file (full
 mapping in the `update-wiki` skill) — the wiki and `docs/` must always say the same thing, so this

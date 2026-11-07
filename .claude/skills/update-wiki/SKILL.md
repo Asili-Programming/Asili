@@ -1,11 +1,11 @@
 ---
 name: update-wiki
-description: Update the Asili GitHub wiki (github.com/victorKariuki/Asili/wiki) to reflect a change just made in this repo, AND keep the matching docs/ file(s) in step — this is a two-sided sync, not a one-way copy. Use whenever a change touches something the wiki documents — CLI commands/flags (pata/cli/commands/*.md, pata/cli/src/commands/*.rs), stdlib modules/builtins (core/evaluator/src/builtins/*.rs), language syntax/keywords, LSP/Mwalimu features, the linter's rule set (pata/lint/src/rules/*.rs), the formatter, package management, examples/*, the roadmap/implementation status, or CONTRIBUTING.md/SECURITY.md/CODE_OF_CONDUCT.md/CHANGELOG.md. Also use when the user says "update the wiki" or "sync the wiki", or when editing a wiki page directly reveals that docs/ is stale.
+description: Update the Asili GitHub wiki (github.com/Asili-Programming/Asili/wiki) to reflect a change just made in this repo, AND keep the matching docs/ file(s) in step — this is a two-sided sync, not a one-way copy. Use whenever a change touches something the wiki documents — CLI commands/flags (pata/cli/commands/*.md, pata/cli/src/commands/*.rs), stdlib modules/builtins (core/evaluator/src/builtins/*.rs), language syntax/keywords, LSP/Mwalimu features, the linter's rule set (pata/lint/src/rules/*.rs), the formatter, package management, examples/*, the roadmap/implementation status, or CONTRIBUTING.md/SECURITY.md/CODE_OF_CONDUCT.md/CHANGELOG.md. Also use when the user says "update the wiki" or "sync the wiki", or when editing a wiki page directly reveals that docs/ is stale.
 ---
 
 # Update the Asili wiki — and keep docs/ in step
 
-The wiki is a **separate git repository** from this project — `github.com/victorKariuki/Asili.wiki.git` — not a folder inside this repo. It is not cloned anywhere persistent by default; clone it fresh into the scratchpad each time.
+The wiki is a **separate git repository** from this project — `github.com/Asili-Programming/Asili.wiki.git` — not a folder inside this repo. It is not cloned anywhere persistent by default; clone it fresh into the scratchpad each time.
 
 **This is a two-sided sync.** Every wiki page (except FAQ, which is synthesized) has a specific
 `docs/` file or repo file it's derived from — see the table below. Whichever side changed first,
@@ -90,7 +90,7 @@ The right column is the file (or files) to update **in the same pass** — never
 
 1. **Clone the wiki fresh** into the scratchpad (never assume a stale local copy is current — someone else may have edited via the GitHub web UI):
    ```bash
-   git clone https://github.com/victorKariuki/Asili.wiki.git <scratchpad>/Asili.wiki
+   git clone https://github.com/Asili-Programming/Asili.wiki.git <scratchpad>/Asili.wiki
    ```
 2. **Identify affected pages AND their docs/ counterparts** using the table above. A single code
    change often touches 2+ wiki pages (e.g. a new CLI flag → CLI-Reference, possibly

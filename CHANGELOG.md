@@ -324,6 +324,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The repository moved to the `Asili-Programming` organization:
+  <https://github.com/Asili-Programming/Asili>, with the wiki alongside it and the API
+  documentation at <https://asili-programming.github.io/Asili/>. Old `victorKariuki/Asili` links
+  redirect; the old GitHub Pages address does not.
+
 - The HTTP server writes header names in lowercase (`content-length`), as HTTP/2 requires;
   header names are case-insensitive in HTTP/1.1.
 

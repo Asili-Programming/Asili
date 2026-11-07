@@ -1,6 +1,6 @@
-![Asili Banner](https://raw.githubusercontent.com/victorKariuki/Asili/main/extensions/vscode/assets/Asili_Banner.png)
+![Asili Banner](https://raw.githubusercontent.com/Asili-Programming/Asili/main/extensions/vscode/assets/Asili_Banner.png)
 
-# <img src="https://raw.githubusercontent.com/victorKariuki/Asili/main/extensions/vscode/assets/Asili_Logo.png" alt="" width="40" valign="middle" /> Asili Language Support
+# <img src="https://raw.githubusercontent.com/Asili-Programming/Asili/main/extensions/vscode/assets/Asili_Logo.png" alt="" width="40" valign="middle" /> Asili Language Support
 
 Syntax highlighting and full language server support (Mwalimu) for the Asili language
 (`.as`, `.asi`), plus syntax highlighting for `pata.toml`/`pata.lock` project manifests.
