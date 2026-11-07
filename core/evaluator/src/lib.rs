@@ -1,6 +1,6 @@
 //! Asili's runtime: programs are lowered to bytecode ([`compile_module`]) and run as native
 //! code built by Asili's own backend ([`nguvu`]: machine code, or a wasm module in the browser),
-//! whose host ([`host`]) runs what the machine code hands back on the shared value semantics
+//! whose host (`host`) runs what the machine code hands back on the shared value semantics
 //! (`eval`). Also builtins, `.asb` artifacts and the test runner.
 
 pub mod alloc;
