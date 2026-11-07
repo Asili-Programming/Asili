@@ -1,105 +1,231 @@
 # Takwimu/Safu (tensors/data) and Akili (NLP/LLM) design
 
-**Status: not started, and not phased at all.** Unlike every other unimplemented subsystem in
-this repo's design docs, Takwimu/Safu and Akili have **no entry anywhere in
-[docs/spec/07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md)'s feature–phase
-map** — confirmed by grep, neither "Takwimu," "Akili," "safu," nor "pakia" appears in that file
-at all. Every other aspirational feature this session documented (borrow checker, data shapes,
-concurrency, `wazi`/hardware, macros) has at least a phase assignment (III or IV) and a
-dependency note. This doesn't. Nothing in the codebase references any of these names either —
-confirmed by grep across `core/evaluator/src/builtins/*.rs` and `core/parser/src/*.rs`. This is
-the earliest-stage of every subsystem covered in this batch of design docs.
+**Status: not started. Phased below.** This doc was first written as a scoping note that deferred
+phasing. It now proposes a phase order, lists every feature the spec names plus the ones they
+need, and records what the code already provides. Sizes are rough (S/M/L/XL) and assume the
+existing engine (`nguvu`, native-only, see [CLAUDE.md](../../CLAUDE.md)).
 
-## What the spec describes
+Normative description: [05-standard-library.md](../spec/05-standard-library.md) ("Moduli ya Takwimu
+na Safu") and [06-tooling-and-ecosystem.md](../spec/06-tooling-and-ecosystem.md) ("Akili /
+Takwimu"). Neither appears in the feature–phase map in
+[07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md).
 
-Two subsections under `05-standard-library.md`'s "Moduli ya Takwimu na Safu (Data)":
+## What the code already provides
 
-- **Tensors and linear algebra**: `safu.umbo(dim)` (shape), `safu.zao_dot(a, b)` (dot product),
-  `safu.geuza()` (transform/transpose), `safu.kawaida()` (normalize).
-- **Transformation and calculus**: `safu.gradienti(kazi)` (gradient), `safu.takwimu(aina)`
-  (statistics), `safu.badili(asili, lengo)` (convert between representations).
-- **Data loading**: `pakia.csv(njia)`, `pakia.jozi(njia)` (load from JSON/pairs), `pakia.gawanya(data,
-  uwiano)` (train/test split).
+Checked against the code, not the spec:
 
-Separately, `06-tooling-and-ecosystem.md` describes **Akili** ("first-class primitives for
-Swahili NLP and LLM interaction") as, for v1.1, "a submodule of Msingi (StdLib) under the
-Takwimu/Safu surface" — i.e., the spec already positions Akili as living *inside* whatever
-Takwimu/Safu becomes, not as a separate subsystem with its own module. It's also specified as
-"conditionally compiled" (presumably via `#[sharti]`, though the spec doesn't say so explicitly)
-"and can be excluded for minimal embedded targets" — a real constraint worth carrying into
-whatever design eventually covers this: Akili/Takwimu needs to be a genuinely optional,
-excludable compilation unit from day one, not bolted on as always-present later.
+| Need | Already there | Where |
+|---|---|---|
+| Scalar math (`exp` = `upeo_wa_e`, `tanh` = `tanjenti_h`, `kipeo`, `logi`, `mizizi`) | yes | `core/parser/src/builtins.rs` |
+| Seeded random numbers (`nasibu`, `nasibu_mbegu`) | yes | `builtins/hisabati.rs` |
+| Contiguous `f64`/narrow-int storage for `Orodha<Namba>` in native code | yes, **internal only** (`pub(crate)`) | `core/evaluator/src/numlist.rs` |
+| Immutable byte buffer | `Baiti(Rc<[u8]>)` | `core/evaluator/src/value/mod.rs:44` |
+| Byte encoding of unsigned integers | `baiti_ya_nambari` (1/2/4/8 bytes, `be`/`le`) | `builtins/msingi.rs` |
+| Float ↔ bit pattern conversion | **no** | — |
+| JSON read/write | `kutoka_json`, `kwa_json` | `builtins/json.rs` |
+| Regex, hashes, base64 | `ruwaza_*`, `hashi_*`, `base64_*` | `builtins/ruwaza.rs`, `usimbaji.rs` |
+| HTTP(S) client, TLS, custom headers | `http_ombi`, `tls_sanidi`, `vichwa` | `builtins/http_mteja.rs`, `builtins/mkondo.rs` |
+| Environment variables (for API keys) | `pata_env` | `builtins/mfumo.rs` |
+| Opaque values through native code | yes: native frames hold `Vec<Value>` (`host.rs:40`) | `core/evaluator/src/host.rs` |
+| Opt-in modules (not ambient) | yes, `OPT_IN_MODULES` (currently `kasha_gc`) | `core/parser/src/builtins.rs:10` |
+| Callable Asili functions from Rust | `call_by_name` (native host) | `core/evaluator/src/host.rs:309` |
 
-## Why this is a fundamentally different kind of "aspirational" than the others
+Corrections to earlier claims in this doc and in the spec notes:
 
-Every other subsystem in this batch of design docs (borrow checker, data shapes, concurrency,
-`wazi`) is a **language or runtime primitive** — something that extends what the interpreter
-itself can express or execute, buildable with the tools already in this repo (Rust, the existing
-`Value`/`ValueType` machinery, the existing evaluator). Takwimu/Safu is different: real tensor
-operations, linear algebra, and gradient computation are themselves substantial pieces of
-software (this is what libraries like `ndarray`, `nalgebra`, or bindings to BLAS/LAPACK exist to
-provide in the Rust ecosystem) — implementing `safu.zao_dot`/`safu.gradienti` isn't "add a new
-`Value` variant and a few evaluator match arms" the way `Seti<T>` is; it's "decide which
-numerical-computing foundation to build or bind to, and design an entire tensor type and
-operation set on top of it." Akili is further still: NLP/LLM primitives imply either shipping
-model weights/inference code, or binding to an external inference runtime — neither of which
-this interpreter's current architecture (a tree-walking evaluator over an AST, no FFI/dynamic
-loading working yet per [wazi-hardware-design.md](wazi-hardware-design.md)) has any story for
-yet.
+- **There is an HTTP client.** The earlier version said none existed. `http_ombi` and `tls_sanidi`
+  are builtins. A hosted-LLM client therefore needs no new network stack.
+- **The evaluator is not tree-walking.** The tree-walker was removed; the test suite refers to it
+  only as a past reference. `CLAUDE.md` says native code is the only execution path.
+- **Asili functions are not first-class values.** There is no lambda or closure in `Expr`
+  (`core/parser/src/ast.rs`), and `Value` has no function variant. `safu.gradienti(kazi)` cannot
+  receive a function as written. This needs a language decision (see D-2 below).
+- **`umbo` is a keyword.** `safu.umbo(dim)` clashes with `KwUmbo` (`core/lexer`). Whether a keyword
+  can follow `.` depends on `check_ident` (`core/parser/src/cursor.rs:83`), which was not verified
+  by building. The name should be changed in the spec regardless.
 
-## Open questions, before any implementation work is plausible
+## Decisions needed before implementation
 
-- **Should this even be built in-tree, or as an external package?** This repo already has a real
-  (if narrow — path deps and locally-vendored version deps only, see
-  [package-manager-design.md](package-manager-design.md)) package-dependency mechanism via
-  `[tegemezi]`. A tensor/NLP library is exactly the kind of large, independently-versioned,
-  optional-at-the-edges functionality that a package ecosystem is usually better suited to than
-  a bundled stdlib module — especially given the spec's own "conditionally compiled... excluded
-  for minimal embedded targets" framing already implies it should behave like an optional
-  dependency, not a core language feature. This is worth deciding explicitly rather than
-  defaulting to "it's stdlib because the spec put it under Msingi."
-- **What does `safu`'s tensor type actually need at the `Value` level?** A dense, contiguous,
-  typed numeric array is a fundamentally different shape from every existing `Value` variant —
-  closer to `Bafa<T>` (the aligned-buffer type from
-  [wazi-hardware-design.md](wazi-hardware-design.md)'s hardware surface) than to `Orodha<T>`
-  (which is a `Vec<Value>` — boxed, heterogeneous-capable, not suited to numeric-array
-  operations that need contiguous `f64`/`f32` storage for any real performance). Whether `safu`'s
-  tensor type is built on the same `Bafa<T>` primitive `wazi` needs, or is its own independent
-  `Value` variant, is a real design decision with a dependency on that doc's own open questions.
-- **`pakia.csv`/`pakia.jozi` (file loading) interact with the file-I/O story already established
-  for Wasm** (see [wasm-driver-design.md](wasm-driver-design.md)'s file-I/O section) — a browser
-  target has no filesystem, so `pakia.*` functions need the same explicit-error-not-silent-no-op
-  treatment `faili.rs`'s builtins already establish for `wasm32-unknown-unknown`, rather than
-  inventing a new convention.
-- **Does Akili need network access (for a hosted LLM API) or purely local inference?** These
-  have completely different implementation shapes (an HTTP client + API-key management vs. an
-  embedded model + inference engine) and the spec doesn't specify which. Given this
-  interpreter's stdlib currently has no HTTP client anywhere (confirmed: no such builtin exists),
-  network-based Akili would need that groundwork first — itself unscoped in any phase.
+These block the features that depend on them. Each choice is recorded below and must also go into
+`docs/spec/08-resolved-decisions.md` before any stub is generated.
 
-## Recommendation: defer scoping until phased
+- **D-1 Location: in-tree, opt-in (decided).** Takwimu/Safu and Akili are modules gated by
+  `leta safu` / `leta akili`, added to `OPT_IN_MODULES`. The heavy inference code sits behind a
+  Cargo feature so the default build stays small. This matches the spec's "excluded for minimal
+  embedded targets" rule.
+- **D-2 `gradienti` mechanism: reverse-mode tape (decided).** Tensor ops record on a tape inside a
+  `safu.rekodi` scope, and `safu.tofauti(loss, params)` returns gradients. No function argument
+  and no language change are needed.
+- **D-3 Element type: f32 from the start (decided).** Tensors store `f32` and arithmetic is `f32`.
+  `Namba` stays `f64`, so every crossing between the two is an explicit conversion. Rust's `f32`
+  arithmetic is IEEE and deterministic on native and wasm, provided no fused multiply-add is
+  introduced.
+  **Reduction accumulation: hybrid (decided).** Speed and precision together:
+  1. Split the input into fixed-size chunks of 32 elements (chunk size is a spec constant).
+  2. Sum each chunk in `f32` with a fixed pairwise tree, the shape fixed by the spec and not by the
+     SIMD width. Vector code must follow the same tree, so SIMD and scalar code agree.
+  3. Add the chunk partials in `f64`, then round once to `f32`.
+  Pairwise summation keeps the error near O(log n) instead of O(n), and the `f64` combination
+  removes the remaining drift across chunks. The `f32` inner loop stays vectorizable. Matmul uses
+  the same rule along the inner dimension. Compensated (Kahan) summation is the fallback if the
+  measured error is too high, at roughly 4× the cost of the chunk sum.
+- **D-4 Naming: `safu.sura_ya` for the shape query (decided).** `umbo` is a keyword, so the spec's
+  `safu.umbo(dim)` is replaced. `safu.zao_dot` stays, and `safu.geuza` becomes
+  `safu.badili_mpangilio`. Settle in the spec before any stub is generated (`lib/std/*.asi` is
+  generated).
+- **D-5 Determinism: one fixed order everywhere (decided).** Reductions run in the same fixed
+  order on native and wasm, so tensor results match bit for bit. Parallelism is allowed only where
+  chunks are combined in that fixed order.
 
-Given the total absence of phase assignment, the likely dependency on package-manager maturity
-(registry/git fetching, currently explicitly out of scope per
-[package-manager-design.md](package-manager-design.md), might be a prerequisite if this ends up
-external), and the genuinely open "in-tree vs. external package" question above, this doc
-intentionally stops short of proposing an order-of-work the way the other five docs in this batch
-do. The first real step isn't implementation-shaped — it's deciding whether Takwimu/Safu/Akili
-belongs in this repository's roadmap at all, or should be the first real test of the package
-ecosystem once registry/git dependency fetching exists.
+## Phased plan
+
+### Phase 1: tensor foundation (P0)
+
+- **1.1 `Tensor` value type** (L). A new `Value::Tensor(Rc<Tensor>)` where
+  `Tensor { shape: Vec<usize>, data: Rc<[f32]> }` (D-3). Copy-on-write like `Orodha`
+  (`Rc::make_mut`). Needs: `ValueType` and `format_value_type` entries, JSON and display
+  handling, a `SendValue` variant (`Rc` → `Arc` for `sawia` threads), and a native-host
+  pass-through test. Explicit `Namba` ↔ `f32` conversion builtins are part of this item.
+  Follows D-5 for all reductions.
+- **1.2 Module skeleton and stubs** (S). `safu` added to `BUILTIN_MODULES` and `OPT_IN_MODULES`;
+  `lib/std/safu.asi` generated with `ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs`;
+  LSP docs, Swahili diagnostics, `pata-lint` naming rules. Follows
+  [sync-pata-toolchain](../../CLAUDE.md) rules.
+- **1.3 Construction and shape** (S). `unda` (from `Orodha`), `sifuri` (zeros), `moja`
+  (ones), `nasibu_umbo` (seeded random via `nasibu_mbegu`), and a shape query (named per D-4;
+  not `umbo`, which is a keyword).
+- **1.4 Elementwise, broadcasting, reductions** (M). `+ - * /` between tensors and scalars,
+  `jumla` (sum), `wastani` (mean), `kubwa_zaidi`/`ndogo_zaidi` (max/min), with
+  broadcasting rules written once and reused.
+- **1.5 Reshape, transpose, index, slice** (M). `geuza`/`badili_mpangilio`, `kata` (slice),
+  and `tensor[i, j]` indexing in the parser and evaluator. Index syntax needs a parser change
+  and an `Expr` variant, which triggers [performance-guardrails](../../CLAUDE.md).
+- **1.6 Tests** (M). Hand-checked golden results under `tests/golden/`, an `engines_agree`
+  case, and wasm agreement.
+
+### Phase 2: linear algebra and float bits (P0/P1)
+
+- **2.1 Float bit conversion** (S). `namba_kwa_biti(x, upana)` and `biti_kwa_namba(b, upana)`
+  for 4 and 8 bytes, plus 2 bytes for `f16`/`bf16`. Without these no weight file can be read or
+  written, since `baiti_ya_nambari` encodes integers only.
+- **2.2 Matrix multiply `zao_dot`** (M). Cache-blocked pure-Rust kernel, deterministic reduction
+  order (D-5). Benchmark it against a naive triple loop and record the measured numbers.
+  Not a `blas` binding: the repo keeps dependencies pure Rust and wasm-compatible.
+- **2.3 Outer product, dot, matrix–vector** (S).
+- **2.4 Normalize `kawaida`** (S). Mean/variance over a chosen axis; epsilon as an explicit
+  argument.
+- **2.5 Statistics `takwimu`** (S). Mean, variance, standard deviation, quantile, min/max over
+  an axis.
+
+### Phase 3: data (P1)
+
+- **3.1 CSV reader and writer** (M). Hand-written RFC 4180 parser with quoted fields and embedded
+  newlines. No `csv` crate. On `wasm32-unknown-unknown`, return an explicit `KOSA`, as `faili`
+  does, rather than silently failing ([wasm-driver-design.md](wasm-driver-design.md)).
+- **3.2 `pakia.jozi`** (S). Wrapper over `kutoka_json`, producing a `Tensor` from nested
+  arrays.
+- **3.3 `pakia.gawanya`** (S). Train/test split with a seeded shuffle through `nasibu_mbegu`.
+  The result must be reproducible.
+- **3.4 Batching** (S). A builtin that yields fixed-size batches of rows.
+- **3.5 Binary tensor format `.safu`** (M). Magic bytes, version, dtype, shape, then the raw
+  data. Versioned like `.asb` (`BYTECODE_VERSION`/`IMAGE_VERSION` rules apply).
+
+### Phase 4: autodiff and training (P1, depends on D-2)
+
+- **4.1 Reverse-mode tape** (L). Tensor ops record their inputs and backward closures on a tape
+  while a `safu.rekodi` scope is active. `safu.tofauti(loss, params)` runs the backward pass.
+  Each op's gradient is written once in Rust and covered by a test.
+- **4.2 Gradient checker** (S). Finite-difference comparison for every op, run in `cargo test`.
+- **4.3 Optimizers** (M). SGD and Adam, as Rust builtins that update tensors in place. Mutation
+  here conflicts with copy-on-write and needs an explicit `safu.sasisha` (update) operation.
+- **4.4 `f16`/`bf16` storage** (M). `f32` is already the element type (D-3), so this phase only adds
+  the half-precision formats needed to read real weights. Conversion to `f32` happens at load time.
+
+### Phase 5: Akili, hosted mode (P1, no tensor dependency)
+
+- **5.1 Hosted client `akili.zungumza`** (M). Calls an LLM HTTP API through `http_ombi`, reads the
+  key from `pata_env`, parses the JSON response. Returns `Tokeo<Neno, Neno>`. This is useful on
+  its own and needs no tensor work.
+- **5.2 Error and retry policy** (S). Uses the existing `jaribu_tena` and timeout options. Rate
+  limits and retries are explicit, not hidden.
+- **5.3 Swahili prompts and messages** (S). User-facing text follows
+  [swahili-docs-and-errors](../../CLAUDE.md).
+
+### Phase 6: Akili, local inference (P2, depends on phases 1–4)
+
+- **6.1 Tokenizer** (M). Byte-level BPE, pure Rust, tested on Swahili text. Vocabulary loaded
+  from a file. Not a dependency on the `tokenizers` crate unless D-1 allows it.
+- **6.2 Weight loading** (M). `safetensors` (JSON header plus raw data) first, since it is the
+  simplest format. Then GGUF. Needs 2.1 for `f16`/`bf16`.
+- **6.3 Transformer kernels** (L). Embedding, RMSNorm or LayerNorm, RoPE, causal attention with a
+  KV cache, softmax, sampling (greedy, temperature, top-p). Everything runs on `Tensor` ops.
+- **6.4 Generation loop** (M). The `akili.zalisha` (generate) builtin: tokenize, run, sample,
+  detokenize, stop tokens.
+
+### Phase 7: accelerators (P3, optional)
+
+- **7.1 `Bafa<T>` aligned buffer** (M). The buffer type from [wazi-hardware-design.md](wazi-hardware-design.md).
+  Needed before any device transfer.
+- **7.2 `vuta_vifaani` device offload** (XL). A GPU backend (for example `wgpu`) behind a Cargo
+  feature. Not compatible with the wasm target without a separate path. Only worth doing after
+  the CPU kernels in 2.2 and 6.3 are measured and found to be the limit.
+
+### Not recommended in-tree: LLM training from scratch (P3, research)
+
+Training a useful language model needs GPU or accelerator throughput and days of compute.
+Phases 1–4 make training small models possible on CPU for tests and examples. Pretraining a
+production-scale model is not a reasonable goal for this interpreter. Revisit once phase 7 exists
+and there is a concrete user.
+
+## Full ML/AI scope (the goal, not only the phases above)
+
+The target is full coverage of the ML/AI space, not a subset. Phases 1 to 7 are the foundation.
+Each tier below is tracked as issues on project 17. Priorities order the work; they do not drop
+any tier. Issue ranges: tier 1 #105–#111, tier 2 #112–#115, tier 3 #116–#117, tier 4 #118–#121,
+tier 5 #122–#125, tier 6 #126–#127, tier 7 #128–#129, tier 8 #130.
+
+| Tier | Scope | Priority |
+|---|---|---|
+| 1 | Core ops: shape ops, conv and pooling, activations, losses, layers, attention, RoPE, autodiff for all of them, gradient checkpointing | P0 to P2 |
+| 2 | Training: Adam and AdamW, schedules, clipping, accumulation, mixed precision, data pipeline, full checkpoints | P0 to P1 |
+| 3 | Classical ML: linear and logistic regression, kNN, naive Bayes, k-means, PCA, trees, forests, SVM; metrics; cross-validation | P2 |
+| 4 | Compute: SIMD (AVX2, NEON, simd128), multithreading with fixed-order reductions, GPU backend, fusion, memory pool, int8/int4 kernels | P1 to P2 |
+| 5 | LLM: KV cache, paged attention, sampling, chat templates, LoRA/QLoRA, DPO/RLHF, speculative decoding | P1 to P2 |
+| 6 | Distributed: data parallel all-reduce, model and pipeline parallelism, sharded optimizer, fault tolerance | P2 |
+| 7 | Vision, audio, generative: image and audio I/O, augmentation, ViT, U-Net, diffusion | P2 |
+| 8 | Tooling: experiment tracking, profiling, tensor inspector | P2 |
+
+**Open decisions for these tiers:**
+- **D-6 GPU backend: both from the start (decided).** `wgpu` (portable across vendors and
+  browsers) and CUDA are maintained in parallel. Every GPU kernel needs a test on both backends,
+  and results must match the CPU path within a documented tolerance, since GPU reductions may
+  differ from the D-5 order. The CUDA toolkit is a build-time requirement only for the CUDA
+  feature, so the default build does not need it.
+- **D-7 Distributed transport: deferred (decided).** Tier 6 waits until single-machine training
+  and the GPU backends are measured and working. When it starts, the default proposal still builds
+  on `asili-mtandao`.
+
+## Cross-cutting requirements
+
+Every phase above, when it lands:
+
+- Adds the builtin to `core/parser/src/builtins.rs` (`BUILTIN_MODULES`, the one source of truth),
+  then regenerates `lib/std/*.asi`.
+- Uses Rust implementations in `core/evaluator/src/builtins/*` only (native code calls them
+  through `BuiltinTable`). No second implementation in the native backend.
+- Adds a golden test and an `engines_agree` case. Wasm agreement is checked by
+  `driver/wasm/tests/agree.sh`.
+- Adds a CHANGELOG entry and updates the wiki pages it affects
+  ([update-wiki](../../CLAUDE.md)).
+- Keeps user-facing diagnostics in Swahili.
 
 ## Cross-references
 
-- [implementation-status.md](implementation-status.md) — no existing checklist entry for this
-  subsystem; it isn't in any phase list because it isn't in the roadmap's phase/feature map at
-  all (confirmed above).
-- [package-manager-design.md](package-manager-design.md) — the "should this be external" question
-  depends on registry/git fetching maturity, which that doc documents as explicitly out of scope
-  today.
-- [wazi-hardware-design.md](wazi-hardware-design.md) — `Bafa<T>`'s potential relevance to a
-  tensor `Value` representation.
-- [wasm-driver-design.md](wasm-driver-design.md) — the file-I/O convention `pakia.*` should
-  follow on Wasm targets.
-- [docs/spec/05-standard-library.md](../spec/05-standard-library.md#moduli-ya-takwimu-na-safu-data)
-  / [docs/spec/06-tooling-and-ecosystem.md](../spec/06-tooling-and-ecosystem.md#akili--takwimu)
-  — normative (but unphased) description this doc is drawn from.
+- [implementation-status.md](implementation-status.md) — this subsystem is listed in the
+  recommended-work section.
+- [package-manager-design.md](package-manager-design.md) — relevant to D-1.
+- [wazi-hardware-design.md](wazi-hardware-design.md) — `Bafa<T>` and `vuta_vifaani` (phase 7).
+- [wasm-driver-design.md](wasm-driver-design.md) — file-I/O conventions for `pakia.*` on wasm.
+- [docs/spec/05-standard-library.md](../spec/05-standard-library.md#moduli-ya-takwimu-na-safu-data),
+  [docs/spec/06-tooling-and-ecosystem.md](../spec/06-tooling-and-ecosystem.md#akili--takwimu),
+  [docs/spec/08-resolved-decisions.md](../spec/08-resolved-decisions.md) — normative sources; D-1
+  through D-5 must be recorded here before implementation starts.
