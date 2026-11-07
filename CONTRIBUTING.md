@@ -45,7 +45,7 @@ To build it locally:
 - **pata/** — the toolchain, one crate per concern: `cli` (the `pata` binary — entrypoint
   `pata/cli/src/main.rs`, commands in `commands/`, pipeline in `pipeline/`), `core` (shared
   module resolver, used by both `cli` and `lsp` so they don't reimplement it separately), `fmt`
-  (`pata nadhifu`), `lint` (`pata-lint`), `package` (dependency resolution/lockfile/registry),
+  (`pata nadhifu`), `lint` (`pata kagua`), `package` (dependency resolution/lockfile/registry),
   `runner` (`.asb` bytecode execution), `lsp` (Mwalimu language server), `dap` (Debug Adapter
   Protocol server), `config` (finding `pata.toml` and reading a tool's section of it, shared by
   `fmt`, `lint` and `lsp`).

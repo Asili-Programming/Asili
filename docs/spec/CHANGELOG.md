@@ -4,6 +4,8 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Tooling ([06-tooling-and-ecosystem.md](06-tooling-and-ecosystem.md)): `pata kagua` lints `.as`
+  sources (`LINT001`–`LINT301`, `[lint.rules]`, `--makosa-tu`); the linter has no separate binary.
 - Standard library ([05-standard-library.md](05-standard-library.md)): WebSocket (`ws_unganisha`,
   `MkondoWs`, `JibuHttp.ws`) and HTTP/3 (`ChaguoSeva.h3`, `ChaguoHttp.h3`).
 - Standard library ([05-standard-library.md](05-standard-library.md)): `http_ombi` speaks HTTP/2

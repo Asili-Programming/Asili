@@ -14,32 +14,10 @@ use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Every `.as`/`.asi` file under `root` (sorted; `kilele/` and hidden directories skipped) —
+/// `pata_fmt::walk`, the one walker, with its error as a CLI error.
 pub fn collect_asili_files(root: &Path) -> Result<Vec<PathBuf>, CliError> {
-    let mut out = Vec::new();
-    walk(root, &mut out)?;
-    out.sort();
-    Ok(out)
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> {
-    for entry in fs::read_dir(dir)
-        .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", dir.display()), 1))?
-    {
-        let entry =
-            entry.map_err(|e| CliError::new(format!("hitilafu ya kusoma kiingilio: {e}"), 1))?;
-        let path = entry.path();
-        if path.file_name().map(|n| n == "kilele").unwrap_or(false) {
-            continue;
-        }
-        if path.is_dir() {
-            walk(&path, out)?;
-        } else if let Some(ext) = path.extension() {
-            if ext == "as" || ext == "asi" {
-                out.push(path);
-            }
-        }
-    }
-    Ok(())
+    pata_fmt::walk::collect_asili_files(root).map_err(|e| CliError::new(format!("{e:#}"), 1))
 }
 
 /// Format `input` using the real canonical formatter, honoring `[fmt]` indent settings from the

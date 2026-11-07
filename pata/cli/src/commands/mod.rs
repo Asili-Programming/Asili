@@ -1,6 +1,7 @@
 pub mod fuatilia;
 pub mod jaribu;
 pub mod jenga;
+pub mod kagua;
 pub mod mwalimu;
 pub mod nadhifu;
 pub mod njozi;
@@ -62,6 +63,7 @@ pub fn dispatch(args: &[String]) -> CliResult {
         "jaribu" => jaribu::run(rest),
         "mwalimu" => mwalimu::run(rest),
         "nadhifu" => nadhifu::run(rest),
+        "kagua" => kagua::run(rest),
         "repl" => repl::run(rest),
         "tenda" => tenda::run(rest),
         "fuatilia" => fuatilia::run(rest),
@@ -90,6 +92,7 @@ Amri:
   ongeza <lib> [chagua...]     Ongeza tegemezi.
   ondoa <lib>                  Ondoa tegemezi.
   nadhifu [chagua...]          Nadhifisha chanzo.
+  kagua [njia] [chagua...]     Kagua mtindo na mazoea ya chanzo.
   thibitisha [chagua...]       Thibitisha mradi.
 
 Onyesha msaada kwa amri: pata <amri> --msaada.

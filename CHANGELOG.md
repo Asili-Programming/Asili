@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`pata kagua`**: the linter is a `pata` subcommand. `pata kagua [njia] [--makosa-tu]` lints `.as`
+  files with the `pata-lint` rules and the nearest `pata.toml`'s `[lint.rules]`, skipping `.asi`
+  stubs, `kilele/` and hidden directories. It exits 1 when a file can't be read or parsed (the old
+  `pata-lint` binary always exited 0, so CI's lint step could never fail) and, without
+  `--makosa-tu`, on any finding. CI and the VS Code extension's lint commands now run it.
 - **WebSocket**: `ws_unganisha(anwani, chaguo?: ChaguoMkondo)` connects to `ws://` or `wss://` and
   gives a `MkondoWs` with `.tuma(Neno)`, `.tuma_baiti(Baiti)`, `.pokea()` / `.pokea_neno()` (the
   next message, `Hamna` once the peer closes) and `.funga()`. A server answers an upgrade request
@@ -679,6 +684,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **The `pata-lint` and `pata-fmt` binaries**: both crates are libraries only. Lint with
+  `pata kagua` (same rules, same `--makosa-tu`) and format with `pata nadhifu`, whose `--diff`
+  replaces `pata-fmt --tofauti` (which, unlike `--diff`, also rewrote the files). `make install` no
+  longer installs `pata-lint`, and `pata nadhifu`'s file walk is `pata_fmt::walk`, so it now skips
+  hidden directories too.
 - **The tree-walking evaluator**: every program runs as native code — machine code on x86-64
   and AArch64, a wasm module in the browser — and nothing interprets a syntax tree any more
   (`eval/expr.rs`, `eval/stmt.rs`, `runtime.rs`, `Env`, `TreeContext`, `Engine::Tree`,

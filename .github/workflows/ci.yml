@@ -124,8 +124,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build pata-cli and pata-lint
-        run: cargo build -p pata-cli -p pata-lint
+      - name: Build pata-cli
+        run: cargo build -p pata-cli
 
       - name: Lint every example
         run: |
@@ -133,8 +133,8 @@ jobs:
           status=0
           for dir in examples/*/; do
             name=$(basename "$dir")
-            echo "::group::pata-lint $name"
-            if ! ./target/debug/pata-lint --makosa-tu "$dir"; then
+            echo "::group::pata kagua $name"
+            if ! ./target/debug/pata-cli kagua --makosa-tu "$dir"; then
               echo "lint failed: $name"
               status=1
             fi

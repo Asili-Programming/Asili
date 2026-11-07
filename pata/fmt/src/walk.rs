@@ -14,7 +14,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in
         fs::read_dir(dir).with_context(|| format!("imeshindwa kusoma {}", dir.display()))?
     {
-        let entry = entry.with_context(|| "hitilafu ya kusoma entry")?;
+        let entry = entry.with_context(|| "hitilafu ya kusoma kiingilio")?;
         let path = entry.path();
 
         // Skip target directories

@@ -48,7 +48,8 @@ pata jenga --tenda
 | `pata repl` | Start interactive REPL. Use `?mada` for help topics, `?lugha en`/`?lugha sw` to switch languages. |
 | `pata njozi <dir>` | Create a new project (e.g. `pata.toml`, `src/kuu.as`). |
 | `pata ongeza <lib>` | Add a dependency to `pata.toml`. |
-| `pata nadhifu` | Format Asili source (line-based, best-effort). |
+| `pata nadhifu` | Format Asili source (token-stream printer; `--kagua`, `--diff`). |
+| `pata kagua` | Lint Asili source (`LINT001`–`LINT301`, `[lint.rules]`). |
 | `pata thibitisha` | Check public API documentation. |
 | `pata mwalimu` | Start LSP server (Mwalimu) for editors. |
 
@@ -58,7 +59,7 @@ pata jenga --tenda
 |------|----------|
 | `core/` | Lexer, parser, semantic analysis, evaluator, diagnostics. |
 | `driver/` | Target adapters: `wasm` (implemented, browser + WASI); `embedded`, `posix`, `win32` (stub placeholders, not yet in the Cargo workspace). |
-| `pata/` | CLI (`pata-cli`), shared module resolver (`pata-core`), runner, LSP (`pata-lsp`), formatter (`pata-fmt`), linter (`pata-lint`), package resolver (`pata-package`), Debug Adapter Protocol server (`pata-dap`), shared `pata.toml` discovery (`pata-config`). |
+| `pata/` | CLI (`pata-cli`), shared module resolver (`pata-core`), runner, LSP (`pata-lsp`), formatter (`pata-fmt`, behind `pata nadhifu`), linter (`pata-lint`, behind `pata kagua`), package resolver (`pata-package`), Debug Adapter Protocol server (`pata-dap`), shared `pata.toml` discovery (`pata-config`). |
 | `extensions/vscode/` | VS Code extension — syntax highlighting, LSP client, bundled `pata-lsp`. |
 | `lib/` | Standard library surface (`lib/std/*.asi` stubs). |
 | `docs/spec/` | Language specification. |

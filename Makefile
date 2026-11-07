@@ -12,7 +12,7 @@ build-release:
 test:
 	cargo test
 
-# Install pata, pata-lsp, pata-lint and the standalone runner `tenda` to DESTDIR. `tenda` sits
+# Install pata, pata-lsp and the standalone runner `tenda` to DESTDIR. `tenda` sits
 # beside `pata` so `pata jenga --namna release` can build standalone executables from it. (default: no prefix; copy to ~/.local/bin if desired)
 # Usage: make install [DESTDIR=~/.local/bin]
 DESTDIR ?= /usr/local/bin
@@ -20,7 +20,6 @@ install: build-release
 	install -d "$(DESTDIR)"
 	install -m 755 target/release/pata-cli "$(DESTDIR)/pata"
 	install -m 755 target/release/pata-lsp "$(DESTDIR)/pata-lsp"
-	install -m 755 target/release/pata-lint "$(DESTDIR)/pata-lint"
 	install -m 755 target/release/tenda "$(DESTDIR)/tenda"
 
 # Build the VSCode extension (bundles pata-lsp + its own TS sources into a .vsix) and

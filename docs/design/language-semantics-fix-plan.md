@@ -388,7 +388,7 @@ Before a branch is merged:
 
 1. The new semantic and golden tests fail on the old code and pass on the new.
 2. `cargo test --workspace` passes. `cargo clippy -p asili-evaluator --lib` passes.
-3. `pata-lint`, `jenga` and `jaribu` pass for every example (the CI `examples` job).
+3. `pata kagua`, `jenga` and `jaribu` pass for every example (the CI `examples` job).
 4. For evaluator changes: `engines_agree`, `native_tiers`, `fuzz` (with the CI settings),
    `driver/wasm/tests/agree.sh`, and `run.sh` (90,665 exact, speed at or below clang `-O2`).
 5. `CHANGELOG.md` and, for spec changes, `docs/spec/CHANGELOG.md`.

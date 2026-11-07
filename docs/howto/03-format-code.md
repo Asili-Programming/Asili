@@ -26,6 +26,16 @@ Doesn't write anything — exits 1 if any file isn't already in canonical form (
 `format haijafuata viwango: mafaili N/M`), exits 0 with `sawa: mafaili yote N yako katika
 muundo sahihi` if everything's already formatted. Use this in CI instead of the write mode.
 
+## Diff mode and JSON
+
+```bash
+pata nadhifu --diff          # never writes; prints a unified diff of what would change
+pata nadhifu --kagua --json  # {sawa, jumla, yamebadilishwa: [paths]} instead of text
+```
+
+`--diff` exits like `--kagua` (1 if any file would change). `--json` works with `--kagua` or the
+default write mode.
+
 ## Scoping to a path
 
 ```bash
@@ -55,3 +65,19 @@ the exact formatting rules.
 `pata thibitisha` (see [04-validate-docs.md](04-validate-docs.md)) requires the project to
 already be in canonical format — run `pata nadhifu` first if `thibitisha` fails with `nadhifu
 check imefeli`.
+
+## Linting
+
+`pata kagua` runs the linter (`LINT001`–`LINT301`, the `pata-lint` rules) over `.as` files:
+
+```bash
+pata kagua                 # the current directory, recursively (skips kilele/ and hidden dirs)
+pata kagua src/kuu.as      # one file
+pata kagua --makosa-tu src/  # errors only, hiding lint-stage warnings
+```
+
+Each finding prints as `<file>:<line>:<column> (<code>): <message>`; a clean file prints
+`✓ <file> - hakuna tatizo lililopatikana`. `.asi` interface stubs are not linted. It exits 1 when
+any file can't be read or parsed, and — without `--makosa-tu` — when any finding is reported.
+Rules are configured per project in `pata.toml`'s `[lint.rules]` (severity, `severity = "ignore"`
+to disable a rule, LINT101's `line_limit`). Mwalimu runs the same rules on every edit.
