@@ -1,32 +1,31 @@
 leta matumizi
 
 # This file demonstrates the enhanced syntax highlighting
-
 # Adds two numbers together.
 #[sharti(os = "linux", toleo = 1)]
 kazi jumla(x: Namba, y: Namba) -> Namba {
-  # Function parameters (x, y) are visually distinct from regular variables
-  weka ufumbuzi = x + y
-  rejesha ufumbuzi
+# Function parameters (x, y) are visually distinct from regular variables
+    weka ufumbuzi = x + y
+    rejesha ufumbuzi
 }
 
 # Raises msingi to the power of kielelezo.
 kazi hesabu_nguvu(msingi: Namba, kielelezo: Namba) -> Namba {
-  weka matokeo = msingi ** kielelezo
-  rejesha matokeo
+    weka matokeo = msingi ** kielelezo
+    rejesha matokeo
 }
 
 umbo Mtu {
-  jina: Neno
-  umri: Biti32
-  ni_hai: Ukweli
+    jina: Neno
+    umri: Biti32
+    ni_hai: Ukweli
 }
 
 # Returns a person's full name from their Mtu struct.
 kazi jina_kamili(mtu: Mtu) -> Neno {
-  # Member access: mtu.jina gets variable.other.member scope
-  weka sehemu_a: Neno = mtu.jina
-  rejesha sehemu_a
+# Member access: mtu.jina gets variable.other.member scope
+    weka sehemu_a: Neno = mtu.jina
+    rejesha sehemu_a
 }
 
 # Operators are semantically grouped:
@@ -34,59 +33,66 @@ kazi jina_kamili(mtu: Mtu) -> Neno {
 # - Comparison: == != < > <= >=
 # - Logical: && ||
 # - Bitwise: na_biti au_biti xor_biti
-kazi onyesha_waendeshaji() -> Tupu {
-  weka idadi = 10
+kazi onyesha_waendeshaji() -> {
+    weka idadi = 10
 
-  # Arithmetic operators
-  weka jumla = 5 + 3
-  weka tofauti = 10 - 4
-  weka bidhaa = 6 * 7
-  weka mgawanyiko = 20 / 4
+# Arithmetic operators
+    weka jumla = 5 + 3
+    weka tofauti = 10 - 4
+    weka bidhaa = 6 * 7
+    weka mgawanyiko = 20 / 4
 
-  # Comparison operators
-  ikiwa idadi == 10 {
-    chapisha("Sawa")
-  }
+    chapisha("Jumla: " + jumla kama Neno)
+    chapisha("Tofauti: " + tofauti kama Neno)
+    chapisha("Bidhaa: " + bidhaa kama Neno)
+    chapisha("Mgawanyiko: " + mgawanyiko kama Neno)
 
-  ikiwa idadi != 5 {
-    chapisha("Tofauti")
-  }
+# Comparison operators
+    ikiwa idadi == 10 {
+        chapisha("Sawa")
+    }
 
-  # Logical operators
-  ikiwa kweli na kweli {
-    chapisha("Mantiki")
-  }
+    ikiwa idadi != 5 {
+        chapisha("Tofauti")
+    }
 
-  # Bitwise operators
-  weka bits = 12 na_biti 8
+# Logical operators
+    ikiwa kweli na kweli {
+        chapisha("Mantiki")
+    }
+
+# Bitwise operators
+    weka bits = 12 na_biti 8
+    rejesha bits
 }
 
 # Control flow keywords
 kazi mzunguko_rahisi() -> Tupu {
-  wakati kweli {
-    chapisha("Kurudia")
-    vunja
-  }
-
-  kwa i kutoka 0 hadi 10 {
-    ikiwa i == 5 {
-      endelea
+    wakati kweli {
+        chapisha("Kurudia")
+        vunja
     }
-    chapisha(i kama Neno)
-  }
+
+    kwa i kutoka 0 hadi 10 {
+        ikiwa i == 5 {
+            endelea
+        }
+        chapisha(i kama Neno)
+    }
 }
 
 # Attributes
 #[jaribio]
 kazi mtihani_huru() -> Ukweli {
-  rejesha kweli
+    rejesha kweli
 }
 
 # Lists
 kazi nguvu_zote() -> Tupu {
-  weka orodha = [1, 2, 3, 4, 5]
+    weka orodha = [1, 2, 3, 4, 5]
 
-  kwa kipengee katika orodha {
-    chapisha(kipengee kama Neno)
-  }
+    kwa kipengee katika orodha {
+        chapisha(kipengee kama Neno)
+    }
 }
+

@@ -301,6 +301,7 @@ kazi kuu(hoja: Orodha<Neno>) -> Tupu {
   chapisha("--- mwisho ---")
 }
 
+# TODO: eleza baiti_mfano.
 kazi baiti_mfano() -> Neno {
   weka b = b"Hi\x00\xff" + "!".baiti()
   weka jumla = 0

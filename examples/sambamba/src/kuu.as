@@ -2,6 +2,9 @@ leta sambamba
 leta matumizi
 leta kasha_gc
 
+
+
+# TODO: eleza mfanyakazi.
 kazi mfanyakazi(tx: NjiaTx<Namba>, n: Namba) -> Tupu {
     weka jumla = n * n
     jaribu (tx.tuma(jumla))
