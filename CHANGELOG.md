@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **REPL line editing and history**: `pata repl` reads lines with `rustyline`, so the arrow keys
+  move through the line and through earlier input, and history is kept between sessions in
+  `.asili_history` in the current directory.
 - **`pata kagua`**: the linter is a `pata` subcommand. `pata kagua [njia] [--makosa-tu]` lints `.as`
   files with the `pata-lint` rules and the nearest `pata.toml`'s `[lint.rules]`, skipping `.asi`
   stubs, `kilele/` and hidden directories. It exits 1 when a file can't be read or parsed (the old

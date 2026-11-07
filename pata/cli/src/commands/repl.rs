@@ -7,37 +7,59 @@ use asili_evaluator::{ReplSession, Value};
 use asili_lexer::tokenize;
 use asili_parser::parse_tokens;
 use pulldown_cmark::{Event, Parser};
-use std::io::{self, BufRead, Write};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
+use std::io::{self, Write};
 use std::path::Path;
 
 const REPL_FUNC: &str = "__repl__";
 const PROMPT: &str = "> ";
+const HISTORY_PATH: &str = ".asili_history";
 
 pub fn run(_args: &[String]) -> CliResult {
     let mut session = ReplSession::new();
     let mut lang = "sw".to_string();
 
-    let stdin = io::stdin();
+    // Initialize rustyline editor for arrow keys, line editing, and history
+    let mut rl = DefaultEditor::new()
+        .map_err(|e| CliError::new(format!("imeshindwa kuanzisha kihariri cha mstari: {}", e), 1))?;
+    
+    // Load persistent history from disk if it exists
+    let _ = rl.load_history(HISTORY_PATH);
+
     let mut stdout = io::stdout();
-    let mut lines = stdin.lock().lines();
+    writeln!(
+        stdout,
+        "Asili REPL. Andika 'toka' au 'exit' kuondoka. ?mada = msaada (mf. ?hisabati). ?lugha en/sw = badilisha lugha ya msaada."
+    )
+    .map_err(|e| CliError::new(e.to_string(), 1))?;
 
-    writeln!(stdout, "Asili REPL. Andika 'toka' au 'exit' kuondoka. ?mada = msaada (mf. ?hisabati). ?lugha en/sw = badilisha lugha ya msaada.").map_err(|e| CliError::new(e.to_string(), 1))?;
     loop {
-        write!(stdout, "{}", PROMPT).map_err(|e| CliError::new(e.to_string(), 1))?;
-        stdout
-            .flush()
-            .map_err(|e| CliError::new(e.to_string(), 1))?;
-
-        let Some(Ok(line)) = lines.next() else {
-            break;
+        // Readline handles prompt rendering, cursor control, and arrow key history navigation
+        let line = match rl.readline(PROMPT) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+                break; // Graceful exit on Ctrl+C or Ctrl+D
+            }
+            Err(err) => {
+                eprintln!("kosa la usomaji: {:?}", err);
+                break;
+            }
         };
+
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
+
+        // Add valid expressions to the in-memory command history
+        let _ = rl.add_history_entry(line);
+
         if matches!(line, "toka" | "exit" | "quit") {
             break;
         }
+
+        // Handle help topics and language toggles prefixed with '?'
         if let Some(topic) = line.strip_prefix('?') {
             let topic = topic.trim();
             if let Some(requested) = topic.strip_prefix("lugha") {
@@ -57,6 +79,7 @@ pub fn run(_args: &[String]) -> CliResult {
             continue;
         }
 
+        // Parse the REPL line into an executable module and block
         let (module, body) = match parse_repl_line(line) {
             Ok(m) => m,
             Err(diags) => {
@@ -73,6 +96,7 @@ pub fn run(_args: &[String]) -> CliResult {
             }
         };
 
+        // Evaluate code within the persistent session context
         match session.run(&module, &body) {
             Ok(v) => {
                 if !matches!(v, Value::Tupu) {
@@ -82,6 +106,10 @@ pub fn run(_args: &[String]) -> CliResult {
             Err(e) => eprintln!("kosa: {}", e),
         }
     }
+
+    // Save command history to disk upon exit
+    let _ = rl.save_history(HISTORY_PATH);
+
     Ok(())
 }
 
