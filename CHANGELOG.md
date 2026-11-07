@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stubs, `kilele/` and hidden directories. It exits 1 when a file can't be read or parsed (the old
   `pata-lint` binary always exited 0, so CI's lint step could never fail) and, without
   `--makosa-tu`, on any finding. CI and the VS Code extension's lint commands now run it.
+- **Debugger: stepping, pause, `setVariable`, `evaluate`, `restart`**: `pata-dap` handles `next`,
+  `stepIn` and `stepOut` (decided by call depth; a debug build inlines no call), `pause` (stops at
+  the next statement), `setVariable` on a local holding a `Namba`, `Ukweli` or `Neno` (the value is
+  an Asili literal of the same kind; native code reloads the register after the pause),
+  `evaluate` of a visible name or a literal, and `restart` (ends the run at its next statement and
+  launches again). The client now gets `stopped` events (`breakpoint`/`step`/`pause`), `exited` and
+  `terminated` when the run ends, and an `output` event when the launched file can't be read or
+  parsed; `setBreakpoints` during a run takes effect at once; `disconnect` ends the run. `attach`
+  is refused with a reason: only a debug build launched by the debugger can be debugged.
+
 - **WebSocket**: `ws_unganisha(anwani, chaguo?: ChaguoMkondo)` connects to `ws://` or `wss://` and
   gives a `MkondoWs` with `.tuma(Neno)`, `.tuma_baiti(Baiti)`, `.pokea()` / `.pokea_neno()` (the
   next message, `Hamna` once the peer closes) and `.funga()`. A server answers an upgrade request

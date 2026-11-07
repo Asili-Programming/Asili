@@ -390,8 +390,15 @@ pub(crate) fn num_writes(op: &Opcode) -> Vec<Reg> {
         | Opcode::Field { .. }
         | Opcode::MakeEnum { .. }
         | Opcode::MakeMap { .. }
-        | Opcode::CheckDepth
-        | Opcode::Line { .. } => Vec::new(),
+        | Opcode::CheckDepth => Vec::new(),
+        // A debugger paused here may write the numeric locals it shows (`set_variable`), so
+        // they are reloaded afterwards and nothing is assumed about their range (only a debug
+        // build's `Line` names locals; a coverage build's names none).
+        Opcode::Line { binds, .. } => binds
+            .iter()
+            .filter(|(_, op)| matches!(op.ty, Ty::Num | Ty::Bool))
+            .map(|(_, op)| op.reg)
+            .collect(),
     }
 }
 

@@ -1,31 +1,47 @@
 //! A fake `DebugHook`, real enough to exercise `pata-dap`'s protocol handling end-to-end
-//! (breakpoints causing a real pause, `continue` causing a real resume, `variables` returning
-//! real data) without actually running a target program — `core/evaluator`'s own
+//! (breakpoints causing a real pause, `continue`/steps causing a real resume, `variables`
+//! returning real data) without actually running a target program — `core/evaluator`'s own
 //! `debug_hook::RealDebugHook` (used by `pata-dap`'s real `launch` handling, see `runner.rs`) is
 //! the implementation that drives an actual `.as` program. Kept as a real, always-buildable
 //! module (not `#[cfg(test)]`-gated) so `pata-dap`'s protocol layer can still be exercised in a
 //! "canned" mode independent of compiling/running a real program — useful for testing the DAP
 //! wire format itself without needing a `.as` source file on disk.
 
-use asili_evaluator::debug_hook::{DebugHook, RealDebugHook};
+use asili_evaluator::debug_hook::{
+    write_binding, Binding, DebugHook, DebugLiteral, LiteralKind, RealDebugHook, StepKind,
+};
 use std::sync::Mutex;
 
-/// A fake debug session: pauses exactly like `RealDebugHook` (it wraps one — a real mutex +
-/// condvar, so `should_pause` genuinely blocks until `resume()` is called from another thread),
-/// but serves a fixed, canned set of variable bindings instead of the evaluator's live ones.
+/// A fake debug session: pauses, steps and stops exactly like `RealDebugHook` (it wraps one — a
+/// real mutex + condvar, so `should_pause` genuinely blocks until `resume()` is called from
+/// another thread), but serves a fixed, canned set of variable bindings instead of the
+/// evaluator's live ones.
 pub struct MockHook {
     gate: RealDebugHook,
-    bindings: Mutex<Vec<(String, String)>>,
+    bindings: Mutex<Vec<Binding>>,
+}
+
+/// A canned binding the debugger may write when its value is a `Namba`/`Ukweli`/`Neno` literal.
+fn canned(name: &str, value: &str) -> Binding {
+    let writable = if value.parse::<f64>().is_ok() {
+        Some(LiteralKind::Namba)
+    } else if value.starts_with('"') {
+        Some(LiteralKind::Neno)
+    } else {
+        None
+    };
+    Binding {
+        name: name.to_string(),
+        value: value.to_string(),
+        writable,
+    }
 }
 
 impl MockHook {
     pub fn new() -> Self {
         Self {
             gate: RealDebugHook::default(),
-            bindings: Mutex::new(vec![
-                ("x".to_string(), "42".to_string()),
-                ("jina".to_string(), "\"mfano\"".to_string()),
-            ]),
+            bindings: Mutex::new(vec![canned("x", "42"), canned("jina", "\"mfano\"")]),
         }
     }
 
@@ -34,11 +50,15 @@ impl MockHook {
     }
 
     pub fn set_bindings(&self, bindings: Vec<(String, String)>) {
-        *self.bindings.lock().unwrap() = bindings;
+        *self.bindings.lock().unwrap() = bindings.iter().map(|(n, v)| canned(n, v)).collect();
     }
 
     pub fn did_pause(&self) -> bool {
         self.gate.did_pause()
+    }
+
+    pub fn paused_at_line(&self) -> Option<usize> {
+        self.gate.paused_at_line()
     }
 }
 
@@ -51,18 +71,43 @@ impl Default for MockHook {
 impl DebugHook for MockHook {
     /// A no-op: `MockHook` serves fixed, canned bindings (set via `set_bindings`) regardless of
     /// what a real evaluator would have recorded.
-    fn record_bindings(&self, _bindings: Vec<(String, String)>) {}
+    fn record_bindings(&self, _bindings: Vec<Binding>) {}
 
-    fn should_pause(&self, line: usize) -> bool {
-        self.gate.should_pause(line)
+    fn should_pause(&self, line: usize, depth: u64) -> bool {
+        self.gate.should_pause(line, depth)
     }
 
     fn resume(&self) {
         self.gate.resume()
     }
 
-    fn current_bindings(&self) -> Vec<(String, String)> {
+    fn current_bindings(&self) -> Vec<Binding> {
         self.bindings.lock().unwrap().clone()
+    }
+
+    fn step(&self, kind: StepKind) {
+        self.gate.step(kind)
+    }
+
+    fn request_pause(&self) {
+        self.gate.request_pause()
+    }
+
+    /// Writes the canned binding directly (no running program to queue the write for).
+    fn set_variable(&self, name: &str, value: DebugLiteral) -> Result<(), String> {
+        write_binding(&mut self.bindings.lock().unwrap(), name, &value)
+    }
+
+    fn take_writes(&self) -> Vec<(String, DebugLiteral)> {
+        Vec::new()
+    }
+
+    fn should_stop(&self) -> bool {
+        self.gate.should_stop()
+    }
+
+    fn set_breakpoints(&self, lines: Vec<usize>) {
+        self.gate.set_breakpoints(lines)
     }
 }
 
@@ -76,7 +121,7 @@ mod tests {
         let hook = MockHook::new();
         hook.set_breakpoints(vec![10]);
         assert!(
-            !hook.should_pause(5),
+            !hook.should_pause(5, 1),
             "a line with no breakpoint must not pause"
         );
         assert!(!hook.did_pause());
@@ -90,7 +135,7 @@ mod tests {
         let hook_for_pause = Arc::clone(&hook);
         let pause_thread = std::thread::spawn(move || {
             // This call must genuinely block until resume() is called below.
-            hook_for_pause.should_pause(7)
+            hook_for_pause.should_pause(7, 1)
         });
 
         // Give the pause thread a real chance to reach and block in should_pause before we
@@ -118,7 +163,7 @@ mod tests {
     fn current_bindings_returns_the_canned_variables() {
         let hook = MockHook::new();
         let bindings = hook.current_bindings();
-        assert!(bindings.iter().any(|(k, _)| k == "x"));
+        assert!(bindings.iter().any(|b| b.name == "x"));
     }
 
     #[test]
@@ -126,6 +171,10 @@ mod tests {
         let hook = MockHook::new();
         hook.set_bindings(vec![("y".to_string(), "7".to_string())]);
         let bindings = hook.current_bindings();
-        assert_eq!(bindings, vec![("y".to_string(), "7".to_string())]);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(
+            (bindings[0].name.as_str(), bindings[0].value.as_str()),
+            ("y", "7")
+        );
     }
 }

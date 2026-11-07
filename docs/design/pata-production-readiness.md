@@ -65,7 +65,7 @@ issue templates, no `workflows/`. Every one of the ~180 passing tests, every lin
 **Floor fix:** a single workflow, run on every push/PR to `main`/`develop`:
 - `cargo build --workspace`
 - `cargo test --workspace`
-- `pata-lint` across `examples/`
+- `pata kagua --makosa-tu` across `examples/`
 - `pata jenga` (build, not run) on every project under `examples/`
 
 This is the precondition for trusting every other item on this list stays fixed. Cheapest, highest-
@@ -399,10 +399,13 @@ Workspace-wide rename needs explicit verification (currently only confirmed sing
 `DebugHook` implementation in `core/evaluator` (`debug_hook::RealDebugHook`, wired into
 `eval_stmt_impl` via `Runtime::debug_hook`) instead of only `MockHook` — a `launch`+
 `setBreakpoints`+`configurationDone` DAP sequence genuinely compiles and runs a target `.as` file,
-pauses it at a real breakpoint, and reports real live variable bindings. Verified via a real
-integration test (`pata/dap/src/runner.rs`) and manually against the compiled binary over a live
-stdio pipe. See [dap-later.md](dap-later.md) for the full write-up. Single-file `launch` only (no
-project/dependency-aware compilation) remains a real, documented gap.
+pauses it at a real breakpoint, and reports real live variable bindings. Stepping (`next`/
+`stepIn`/`stepOut`, by call depth), `pause`, `setVariable` (scalar locals), `evaluate` (visible
+names and literals) and `restart` work too, with `stopped`/`exited`/`terminated` events; `attach`
+is refused, since only a debug build launched by the debugger can be debugged. Verified via
+integration tests (`pata/dap/src/runner.rs`, `core/evaluator/tests/debug_hook.rs`). See
+[dap-later.md](dap-later.md) for the full write-up. Single-file `launch` only, a one-frame
+`stackTrace`, and the program's output sharing the DAP stdout stream remain real, documented gaps.
 
 ### 8. `pata-lint` rule depth + new rules — **M**
 

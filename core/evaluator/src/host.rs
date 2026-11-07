@@ -730,20 +730,43 @@ impl<'p> Host<'p> {
                     // A fresh snapshot before `should_pause` may block, so a `variables` request
                     // made while paused sees this line's values: the locals visible here, then
                     // the predefined names.
-                    let mut bindings: Vec<(String, String)> = binds
+                    use crate::debug_hook::{Binding, LiteralKind};
+                    let mut bindings: Vec<Binding> = binds
                         .iter()
                         .map(|(name, op)| {
-                            (name.clone(), format!("{:?}", operand_value(frame, *op)))
+                            let value = operand_value(frame, *op);
+                            Binding {
+                                name: name.clone(),
+                                value: format!("{value:?}"),
+                                writable: LiteralKind::of(&value),
+                            }
                         })
                         .collect();
                     bindings.extend(
                         crate::env::global_constants()
                             .into_iter()
                             .filter(|(n, _)| !binds.iter().any(|(b, _)| b == n))
-                            .map(|(n, v)| (n.to_string(), format!("{v:?}"))),
+                            .map(|(n, v)| Binding {
+                                name: n.to_string(),
+                                value: format!("{v:?}"),
+                                writable: None,
+                            }),
                     );
                     hook.record_bindings(bindings);
-                    hook.should_pause(*line as usize);
+                    if hook.should_pause(*line as usize, self.depth) {
+                        // Writes made while paused; native code reloads these registers after
+                        // `Line` (`native::num_writes` lists a debug build's numeric binds).
+                        for (name, literal) in hook.take_writes() {
+                            if let Some((_, op)) = binds.iter().find(|(b, _)| *b == name) {
+                                write_literal(frame, *op, &literal);
+                            }
+                        }
+                    }
+                    if hook.should_stop() {
+                        fail!(EvalError::Unknown(
+                            "programu imesimamishwa na kitatuzi".to_string()
+                        ));
+                    }
                 }
             }
             Opcode::ListRepeat { dst, value, count } => {
@@ -1209,6 +1232,20 @@ fn operand_value(frame: &Frame, op: Operand) -> Value {
                 .collect(),
         ),
         Ty::Val => frame.vals[op.reg as usize].clone(),
+    }
+}
+
+/// Store a value the debugger wrote (`set_variable`, which already checked that its kind is the
+/// kind the local holds) into the local's register.
+fn write_literal(frame: &mut Frame, op: Operand, literal: &crate::debug_hook::DebugLiteral) {
+    use crate::debug_hook::DebugLiteral;
+    match (op.ty, literal) {
+        (Ty::Num, DebugLiteral::Namba(n)) => frame.nums[op.reg as usize] = *n,
+        (Ty::Bool, DebugLiteral::Ukweli(b)) => {
+            frame.nums[op.reg as usize] = if *b { 1.0 } else { 0.0 }
+        }
+        (Ty::Val, _) => frame.vals[op.reg as usize] = literal.to_value(),
+        _ => {}
     }
 }
 

@@ -92,10 +92,12 @@ Per [spec/07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md)'s ph
       `ValueType`s dispatch through hardcoded Rust match arms that never reach the
       `module.impls` lookup the completeness checker walks. See
       [sifa-traits-design.md](sifa-traits-design.md) for the full architecture.
-- [x] DAP (debugger) protocol layer — `pata-dap` crate implements the minimum viable DAP surface
-      (`initialize`/`launch`/`setBreakpoints`/`continue`/`stackTrace`/`scopes`/`variables`/
-      `disconnect`) against a real mock hook; genuine step-through debugging is blocked on
-      `core/evaluator` implementing the `DebugHook` trait (out of `pata/`'s scope). See
+- [x] DAP (debugger) — `pata-dap` launches a real program and handles breakpoints,
+      `continue`, `next`/`stepIn`/`stepOut` (by call depth), `pause`, `stackTrace`, `scopes`,
+      `variables`, `setVariable` (scalar locals), `evaluate` (visible names and literals) and
+      `restart`, with `stopped`/`exited`/`terminated` events; `attach` is refused (only a debug
+      build launched by the debugger can be debugged). Open: conditional breakpoints, a real
+      call-stack view, routing the program's output into `output` events. See
       [dap-later.md](dap-later.md).
 
 ### Phase III — Resolution (self-hosting, borrow checker) — decision made, implementation not started

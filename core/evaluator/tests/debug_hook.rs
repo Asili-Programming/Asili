@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use asili_evaluator::debug_hook::{DebugHook, RealDebugHook};
+use asili_evaluator::debug_hook::{DebugHook, DebugLiteral, RealDebugHook, StepKind, StopReason};
 use asili_evaluator::run_main_with_debug_hook;
 use asili_lexer::tokenize;
 use asili_parser::parse_tokens;
@@ -100,11 +100,11 @@ fn current_bindings_reflect_real_state_while_paused() {
     assert!(
         bindings
             .iter()
-            .any(|(name, value)| name == "x" && value.contains("42")),
+            .any(|b| b.name == "x" && b.value.contains("42")),
         "expected x=42 to already be bound while paused at line 3, got: {bindings:?}"
     );
     assert!(
-        !bindings.iter().any(|(name, _)| name == "y"),
+        !bindings.iter().any(|b| b.name == "y"),
         "y is defined by the statement about to execute (not yet run) — it must not appear yet, got: {bindings:?}"
     );
 
@@ -160,9 +160,102 @@ fn inner_bindings_shadow_outer_ones_while_paused() {
         std::thread::sleep(Duration::from_millis(5));
     }
     let bindings = hook.current_bindings();
-    let xs: Vec<_> = bindings.iter().filter(|(n, _)| n == "x").collect();
+    let xs: Vec<_> = bindings.iter().filter(|b| b.name == "x").collect();
     assert_eq!(xs.len(), 1, "{bindings:?}");
-    assert!(xs[0].1.contains('2'), "{bindings:?}");
+    assert!(xs[0].value.contains('2'), "{bindings:?}");
     hook.resume();
     assert!(run_thread.join().unwrap());
+}
+
+fn wait_paused_at(hook: &RealDebugHook, line: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while hook.paused_at_line() != Some(line) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never paused at line {line} (now {:?})",
+            hook.paused_at_line()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Step over runs a call through; step into enters it; step out returns to the caller — on a
+/// real running program, where the host's call depth decides.
+#[test]
+fn stepping_through_a_real_program_follows_calls_by_depth() {
+    let module = compile(
+        "kazi ongeza(n: Namba) -> Namba {\n\
+           weka m = n + 1\n\
+           rejesha m\n\
+         }\n\
+         kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n\
+           weka a = ongeza(1)\n\
+           weka b = ongeza(a)\n\
+           weka c = a + b\n\
+         }",
+    );
+    let hook = Arc::new(RealDebugHook::new(vec![6]));
+    let h = Arc::clone(&hook);
+    let run = std::thread::spawn(move || run_main_with_debug_hook(&module, vec![], h).is_ok());
+
+    wait_paused_at(&hook, 6);
+    hook.step(StepKind::Over);
+    wait_paused_at(&hook, 7);
+    assert_eq!(hook.last_stop_reason(), Some(StopReason::Step));
+    hook.step(StepKind::Into);
+    wait_paused_at(&hook, 2);
+    hook.step(StepKind::Out);
+    wait_paused_at(&hook, 8);
+    hook.resume();
+    assert!(run.join().unwrap());
+}
+
+/// A value written while paused is the value the program goes on with: numeric (a register
+/// native code holds) and text alike.
+#[test]
+fn set_variable_changes_what_the_program_computes() {
+    let path = std::env::temp_dir().join(format!("asili-dbg-set-{}", std::process::id()));
+    let module = compile(&format!(
+        "kazi kuu(hoja: Orodha<Neno>) -> Tupu {{\n\
+           weka a = 1\n\
+           weka s = \"x\"\n\
+           weka b = a + 1\n\
+           weka r = andika_faili(\"{}\", s + (b kama Neno))\n\
+         }}",
+        path.display()
+    ));
+    let hook = Arc::new(RealDebugHook::new(vec![4]));
+    let h = Arc::clone(&hook);
+    let run = std::thread::spawn(move || run_main_with_debug_hook(&module, vec![], h).is_ok());
+
+    wait_paused_at(&hook, 4);
+    hook.set_variable("a", DebugLiteral::Namba(41.0)).unwrap();
+    hook.set_variable("s", DebugLiteral::Neno("y".into()))
+        .unwrap();
+    assert!(hook.set_variable("a", DebugLiteral::Ukweli(true)).is_err());
+    hook.resume();
+    assert!(run.join().unwrap());
+    let written = std::fs::read_to_string(&path).expect("program wrote its result");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(written, "y42");
+}
+
+/// Stopping (restart/disconnect) ends a paused run with an error instead of finishing it.
+#[test]
+fn stop_ends_a_paused_run() {
+    let module = compile(
+        "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n\
+           weka a = 1\n\
+           weka b = 2\n\
+         }",
+    );
+    let hook = Arc::new(RealDebugHook::new(vec![2]));
+    let h = Arc::clone(&hook);
+    let run = std::thread::spawn(move || run_main_with_debug_hook(&module, vec![], h).is_err());
+    wait_paused_at(&hook, 2);
+    hook.set_stop(true);
+    assert!(
+        run.join().unwrap(),
+        "a stopped run must not finish normally"
+    );
 }
