@@ -164,6 +164,9 @@ the change. The current single sources:
 | Tracing (events, spans, output formats) | the `asili-trace` crate (`emit`/`enter`/`phase`; sinks chosen by `install_spec`) |
 | Identifier interning, Fx hashing | `asili_parser::Name` / `FxHasher` / `FxHashMap` (`core/parser/src/name.rs`) |
 
-Hand-maintained mirrors that cannot share code (the VS Code TextMate grammar, the playground
-highlighter, `extension.ts`'s `findProjectRoot`) must be updated in the same change as their
-source of truth. `lib/std/*.asi` is generated, never edited by hand.
+Mirrors that cannot share code must be updated in the same change as their source of truth. Two
+live in their own repositories: the VS Code extension (`Asili-Programming/asili-vscode` — its
+TextMate grammar and `extension.ts`'s `findProjectRoot`) and the browser playground
+(`Asili-Programming/asili-playground` — its highlighter). Their word lists are generated from the
+compiler's by `pata/core/tests/editor_word_lists.rs`, run with `ASILI_VSCODE_DIR` /
+`ASILI_PLAYGROUND_DIR` pointing at those checkouts. `lib/std/*.asi` is generated, never edited by hand.

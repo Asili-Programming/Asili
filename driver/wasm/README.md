@@ -1,6 +1,6 @@
 # Asili Wasm driver
 
-Runs Asili in the browser (the playground, `examples/playground`). Build with:
+Runs Asili in the browser (the playground, [asili-playground](https://github.com/Asili-Programming/asili-playground)). Build with:
 
 ```bash
 cargo build --release --target wasm32-unknown-unknown -p asili-wasm --features wasm-browser
@@ -13,7 +13,7 @@ wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/as
   instantiate it beside this one — the page must define
   `globalThis.asili_nguvu_load(bytes, count, memory, table)`, which grows `table` by `count`,
   instantiates `bytes` with `{ env: { memory, table, base } }` (`base`: the table's old length)
-  and returns `base` (see `examples/playground/main.js`). The build exports a growable function
+  and returns `base` (see the playground's `main.js`). The build exports a growable function
   table for this (`build.rs`).
 - **I/O:** `chapisha`/`onyo`/`makosa` go to `console.log`/`console.error`; there is no stdin or
   file system in a browser.

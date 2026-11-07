@@ -30,7 +30,7 @@ pub const TOKEN_MODIFIERS: &[&str] = &["declaration", "readonly", "defaultLibrar
 // (ikiwa, wakati, weka, ...) are consumed and discarded during parsing — the AST keeps no
 // span for them — so recovering their positions would mean threading keyword spans through
 // every Stmt variant for no visible gain: the TextMate grammar already scopes every keyword
-// correctly on its own (see extensions/vscode/syntaxes/asili.tmLanguage.json). Same reasoning
+// correctly on its own (see syntaxes/asili.tmLanguage.json in the asili-vscode repository). Same reasoning
 // for *type references* beyond a struct/enum/trait's own declaration: TypeExpr carries no
 // position, but the grammar's `[A-Z][a-zA-Z0-9_]*` rule already colors every occurrence of a
 // capitalized identifier as a type, declaration or usage alike, so there's nothing missing.

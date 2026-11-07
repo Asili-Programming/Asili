@@ -199,7 +199,7 @@ fn read_entrypoint_and_deps(root: &Path) -> (PathBuf, BTreeMap<String, Dependenc
 /// root and stopping there would silently find nothing for any file that isn't directly under
 /// a project root that happens to coincide with the opened folder — exactly the false
 /// "unknown module" this whole module exists to prevent, just one level removed. Mirrors
-/// `findProjectRoot` in `extensions/vscode/src/extension.ts` (used there to find where to run
+/// `findProjectRoot` in `src/extension.ts` of the asili-vscode repository (used there to find where to run
 /// `pata jaribu` from) — keep the two in sync if this logic changes.
 pub fn find_project_root(file_path: &Path) -> Option<PathBuf> {
     pata_config::find_project_root(file_path)

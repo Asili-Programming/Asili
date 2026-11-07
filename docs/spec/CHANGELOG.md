@@ -4,6 +4,9 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Project structure ([02-architecture-and-files.md](02-architecture-and-files.md)): the VS Code
+  extension (`/extensions/vscode`) and the browser playground moved to their own repositories,
+  `Asili-Programming/asili-vscode` and `Asili-Programming/asili-playground`.
 - Standard library ([05-standard-library.md](05-standard-library.md)): WebSocket (`ws_unganisha`,
   `MkondoWs`, `JibuHttp.ws`) and HTTP/3 (`ChaguoSeva.h3`, `ChaguoHttp.h3`).
 - Standard library ([05-standard-library.md](05-standard-library.md)): `http_ombi` speaks HTTP/2

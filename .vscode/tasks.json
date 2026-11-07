@@ -35,34 +35,9 @@
       "dependsOn": []
     },
     {
-      "label": "Package + install VS Code extension",
-      "type": "shell",
-      "command": "make install-ext",
-      "group": "build",
-      "presentation": { "reveal": "always", "panel": "shared" },
-      "problemMatcher": ["$rustc", "$tsc"]
-    },
-    {
-      "label": "Install all (pata + VS Code extension)",
-      "type": "shell",
-      "command": "cargo build --release && install -m 755 target/release/pata-cli ~/.local/bin/pata && make install-ext",
-      "group": "build",
-      "presentation": { "reveal": "always", "panel": "shared" },
-      "problemMatcher": ["$rustc", "$tsc"]
-    },
-    {
-      "label": "Build VSCode extension",
-      "type": "shell",
-      "command": "npm run compile",
-      "options": { "cwd": "${workspaceFolder}/extensions/vscode" },
-      "group": "build",
-      "presentation": { "reveal": "always", "panel": "shared" },
-      "problemMatcher": "$tsc"
-    },
-    {
       "label": "Build + install all",
       "dependsOrder": "sequence",
-      "dependsOn": ["Install all (pata + VS Code extension)"],
+      "dependsOn": ["Install pata → ~/.local/bin"],
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "shared" },
       "problemMatcher": []

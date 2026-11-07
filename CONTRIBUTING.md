@@ -27,12 +27,8 @@ To build it locally:
   unescaped `<T>`/`[...]` in a doc comment fails the build, not just warns — fix it rather than
   working around it (wrap generic syntax like `` `Kasha_GC<T>` `` in backticks, escape `#[attr]`
   and `<placeholder>` text the same way).
-- **VS Code extension (TypeDoc):** `cd extensions/vscode/docs-tooling && npm install && npm run
-  typedoc` — outputs to `docs-site/typedoc/` at the repo root. TypeDoc is isolated in its own
-  `docs-tooling/` package with its own pinned TypeScript (`^5.9`), separate from the extension's
-  own `devDependencies` (`^7.0`) — TypeDoc's peer-dependency range doesn't support the newer
-  compiler yet. Don't move TypeDoc into `extensions/vscode/package.json` directly without checking
-  that range first.
+The VS Code extension's own API reference is built and published from its repository,
+[asili-vscode](https://github.com/Asili-Programming/asili-vscode).
 
 ## Project structure
 
@@ -49,14 +45,15 @@ To build it locally:
   `runner` (`.asb` bytecode execution), `lsp` (Mwalimu language server), `dap` (Debug Adapter
   Protocol server), `config` (finding `pata.toml` and reading a tool's section of it, shared by
   `fmt`, `lint` and `lsp`).
-- **extensions/vscode/** — the VS Code extension (`asili` on the Marketplace once published).
-  `src/extension.ts` is the entry point; bundled with `esbuild` (see `esbuild.js`) rather than
-  shipping `node_modules` in the packaged `.vsix`. `make install-ext` from the repo root builds,
-  packages, and installs it in one step.
 - **lib/std/** — `.asi` interface stubs for the standard library, generated from `core/parser/src/builtins.rs` (`BUILTIN_MODULES`). Never edit them by hand: change the table, then run `ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs` (`cargo test -p pata-core` fails while they differ).
 - **driver/** — targets beside the native runner: `wasm` (the browser playground build) and
   `kifaa` (`asili-kifaa`, the `no_std` runtime Cortex-M firmware links with strict code built by
   `pata jenga --lengo cortex-m`).
+- **Separate repositories:** the VS Code extension ([asili-vscode](https://github.com/Asili-Programming/asili-vscode)) and the browser
+  playground ([asili-playground](https://github.com/Asili-Programming/asili-playground)). Each builds against an Asili checkout (`pata-lsp` for
+  the extension, `driver/wasm` for the playground), and each one's CI runs
+  `pata/core/tests/editor_word_lists.rs` from this repository against its word lists (the
+  TextMate grammar, the playground's highlighter) so they stay generated from the compiler's.
 - **docs/assurance/** — safety requirements, traceability, risk register and tool-qualification
   evidence.
 - **docs/spec/** — Formal language specification. Spec changes should be reflected in [docs/spec/CHANGELOG.md](docs/spec/CHANGELOG.md).

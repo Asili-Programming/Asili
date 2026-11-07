@@ -16,12 +16,6 @@ updates:
       - dependency-name: "bincode"
         versions: [">= 2"]
 
-  - package-ecosystem: "npm"
-    directory: "/extensions/vscode"
-    schedule:
-      interval: "weekly"
-    target-branch: "develop"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

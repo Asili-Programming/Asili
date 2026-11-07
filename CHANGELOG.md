@@ -324,6 +324,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The VS Code extension and the browser playground moved out of this repository into their own:
+  [asili-vscode](https://github.com/Asili-Programming/asili-vscode) (was `extensions/vscode/`)
+  and [asili-playground](https://github.com/Asili-Programming/asili-playground) (was
+  `examples/playground/`), each building against an Asili checkout. `make install-ext` and the
+  TypeDoc part of the API docs went with the extension. `editor_word_lists` now checks the two
+  repositories' word lists through `ASILI_VSCODE_DIR` / `ASILI_PLAYGROUND_DIR`, and their CI runs
+  it.
+
 - The repository moved to the `Asili-Programming` organization:
   <https://github.com/Asili-Programming/Asili>, with the wiki alongside it and the API
   documentation at <https://asili-programming.github.io/Asili/>. Old `victorKariuki/Asili` links
