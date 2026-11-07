@@ -17,7 +17,6 @@ The wiki is broad (about 36,000 words across 29 pages) but has measurable gaps, 
 | Tracing undocumented | `pata fuatilia` and the `--fuatilia` flag appear on no wiki page |
 | Coverage undocumented for users | `jaribu --chanjo` appears only in Changelog and Production Readiness |
 | Debugger undocumented for users | `pata-dap` appears only in Changelog, Architecture, Contributing, Production Readiness |
-| Standalone formatter undocumented for users | `pata-fmt` appears only in Changelog, Architecture, Production Readiness |
 | No playground page | "playground" appears only in Changelog, Architecture, Contributing |
 | Two stdlib modules missing | `ruwaza` and `usimbaji` are in `BUILTIN_MODULE_NAMES` but on no wiki page |
 | One LSP feature missing | Inlay hints are not mentioned on Editor Support |
@@ -26,6 +25,11 @@ The wiki is broad (about 36,000 words across 29 pages) but has measurable gaps, 
 
 Already complete: all 8 lint rules (`LINT001`–`LINT301`) are on Formatting and Linting; every `pata`
 subcommand except `fuatilia` is on CLI Reference.
+
+Since the measurement, the Asili repo replaced the `pata-lint` and `pata-fmt` binaries with
+`pata kagua` and `pata nadhifu` (`4bfe016`) and gave the debugger stepping, pause, evaluate,
+set-variable and restart (`9e76e6f`). A wiki commit describing both (`140599a`: CLI Reference,
+Formatting and Linting, Editor Support and others) exists locally and is not pushed yet.
 
 Goals:
 
@@ -50,9 +54,9 @@ What must exist; "Page" is the target page (new pages in bold).
 
 | Feature set | Count | Page | Status |
 | --- | --- | --- | --- |
-| `pata` subcommands | 11 | CLI Reference | 10 of 11 (missing `fuatilia`) |
+| `pata` subcommands | 12 (including `kagua`) | CLI Reference | 11 of 12 once `140599a` is pushed (missing `fuatilia`) |
 | Their flags | All in `pata <amri> --msaada` | CLI Reference | Partial (missing `--fuatilia`, `--chanjo` in user terms) |
-| Standalone tools: `pata-lint`, `pata-fmt`, `pata-lsp`, `pata-dap`, `tenda` | 5 | CLI Reference (new section "Zana za pekee") | `pata-lint` only, on Formatting and Linting |
+| Standalone tools: `pata-lsp`, `pata-dap`, `tenda` | 3 | CLI Reference (new section "Zana za pekee") | `pata-lsp` mentioned once; `pata-dap` and the standalone `tenda` runner not documented |
 | Tracing (`--fuatilia`, `pata fuatilia`) | 1 feature | **Tracing** | Missing |
 | Debugging (`pata-dap`, VS Code F5) | 1 feature | **Debugging** | Missing |
 | Testing and coverage (`jaribu`, `#[jaribio]`, `--chanjo`) | 1 feature | **Testing** | Spread over CLI Reference |
@@ -80,7 +84,7 @@ source; wiki content rendered on the website (website PRD FR-11).
 | ID | Requirement | Priority | Release |
 | --- | --- | --- | --- |
 | WK-1 | Every `pata` subcommand and every flag from `--msaada` is on CLI Reference | Must | v1 |
-| WK-2 | The five standalone tools are documented with their flags | Must | v1 |
+| WK-2 | The three standalone tools (`pata-lsp`, `pata-dap`, `tenda`) are documented with their flags | Must | v1 |
 | WK-3 | New pages: Tracing, Debugging, Testing, Playground, REPL | Must | v1 |
 | WK-4 | Every LSP capability and VS Code command and setting is on Editor Support | Must | v1 |
 | WK-5 | Every stdlib module and function is on Standard Library or its topic page | Must | v1 |

@@ -54,8 +54,9 @@ Every page follows the same order, so readers know where to look:
 ## Journey 3: editor user sets up debugging
 
 1. Editor Support → "Debugging" link.
-2. Debugging page: install the extension, press F5, what works today (breakpoints, call stack,
-   variables), what is coming (stepping, evaluate), how to use `pata-dap` from another editor.
+2. Debugging page: install the extension, press F5, what works (breakpoints, step over, step in,
+   step out, pause, variables, set variable, evaluate, restart), what is still open (conditional
+   breakpoints, a multi-frame call stack), how to use `pata-dap` from another editor.
 3. Tracing page for when a debugger is not enough: `--fuatilia`, `pata fuatilia`, output formats.
 
 ## Journey 4: contributor adds a feature
