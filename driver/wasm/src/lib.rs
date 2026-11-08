@@ -40,13 +40,22 @@ pub fn run_board_source(source: &str, triples: &[f64]) -> Result<(), String> {
 /// diagnostic has no position). Lexing, parsing and the semantic checks run in the order the CLI
 /// runs them, so the editor cannot disagree with `pata kagua`'s compile front end.
 pub fn check_source(source: &str) -> String {
+    check_source_with(source, &[])
+}
+
+/// As `check_source`, for a file of a project: `modules` are the other modules the project
+/// provides (`leta <name>` resolves to them), so their imports are not reported as unknown.
+pub fn check_source_with(source: &str, modules: &[String]) -> String {
     let diags = match tokenize(source) {
         Err(d) => d,
         Ok(tokens) => match parse_tokens(&tokens) {
             Err(d) => d,
             Ok(module) => {
                 let (functions, constants) = extern_env_from_imports(&module);
-                match semantic_check_with_env(&module, true, functions, constants) {
+                let resolved: std::collections::HashSet<String> = modules.iter().cloned().collect();
+                match asili_parser::semantic_check_with_env_and_modules(
+                    &module, true, functions, constants, resolved,
+                ) {
                     Ok(()) => Vec::new(),
                     Err(d) => d,
                 }
@@ -137,6 +146,17 @@ mod browser_entry {
         super::check_source(source)
     }
 
+    /// As `check`, with `modules` a comma-separated list of the project's other module names.
+    #[wasm_bindgen(js_name = checkWithModules)]
+    pub fn check_with_modules(source: &str, modules: &str) -> String {
+        let names: Vec<String> = modules
+            .split(',')
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        super::check_source_with(source, &names)
+    }
+
     /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
     #[wasm_bindgen(js_name = runBoard)]
     pub fn run_board(source: &str, triples: &[f64]) -> Result<(), JsValue> {
@@ -194,7 +214,15 @@ kazi kuu(hoja: Orodha<Neno>) -> Tupu {
 
 #[cfg(test)]
 mod check_tests {
-    use super::check_source;
+    use super::{check_source, check_source_with};
+
+    #[test]
+    fn project_module_imports_resolve() {
+        let src = "leta msaidizi\n\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  chapisha(\"hi\")\n}\n";
+        assert!(check_source(src).contains("\"code\":\"SEM"), "unknown module is reported");
+        let names = vec!["msaidizi".to_string()];
+        assert_eq!(check_source_with(src, &names), "[]");
+    }
 
     #[test]
     fn clean_program_has_no_diagnostics() {
