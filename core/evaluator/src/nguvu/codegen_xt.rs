@@ -193,6 +193,20 @@ impl Pool {
     }
 }
 
+/// The libgcc comparison for `cond` and the branch on its result (in `a10`, against `T2` = 0)
+/// that means "true": the routines return <0, 0, >0, with unordered operands making each ordered
+/// test false (and `__nedf2` non-zero) — exactly the IR's semantics.
+fn fcmp_test(cond: FCond) -> (&'static str, BranchCond, u8, u8) {
+    match cond {
+        FCond::Olt => ("__ltdf2", BranchCond::Lt, ARG0, T2),
+        FCond::Ole => ("__ledf2", BranchCond::Ge, T2, ARG0),
+        FCond::Ogt => ("__gtdf2", BranchCond::Lt, T2, ARG0),
+        FCond::Oge => ("__gedf2", BranchCond::Ge, ARG0, T2),
+        FCond::Oeq => ("__eqdf2", BranchCond::Eq, ARG0, T2),
+        FCond::Une => ("__nedf2", BranchCond::Ne, ARG0, T2),
+    }
+}
+
 struct Gen<'f> {
     asm: Asm,
     func: &'f Func,
@@ -223,8 +237,35 @@ pub fn generate(func: &Func) -> Result<Code, String> {
         let block = &func.blocks[bi];
         g.asm.bind(labels[bi]);
         let next = order.get(k + 1).map(|&b| labels[b]);
-        for inst in &block.insts {
+        // A branch on a comparison made last in the block, read nowhere else, branches on the
+        // comparison itself instead of a 0/1 value.
+        let fused = match (block.insts.last(), &block.term) {
+            (Some(last), Term::Branch { cond, .. })
+                if matches!(
+                    last,
+                    Inst::ICmp { .. }
+                        | Inst::ICmpImm { .. }
+                        | Inst::FCmp { .. }
+                        | Inst::TestImm { .. }
+                ) && last.defs() == [*cond]
+                    && g.alloc.uses[cond.0 as usize] == 1 =>
+            {
+                Some(last)
+            }
+            _ => None,
+        };
+        let body = if fused.is_some() {
+            &block.insts[..block.insts.len() - 1]
+        } else {
+            &block.insts[..]
+        };
+        for inst in body {
             g.inst(inst)?;
+        }
+        if let (Some(cmp), Term::Branch { then_, else_, .. }) = (fused, &block.term) {
+            let (t, e) = (labels[then_.0 as usize], labels[else_.0 as usize]);
+            g.branch_on(cmp, t, e, next)?;
+            continue;
         }
         match &block.term {
             Term::Jump(t) => {
@@ -521,6 +562,109 @@ impl<'f> Gen<'f> {
         }
     }
 
+    /// Jump to `t` when comparison `cmp` holds, else to `e` (either may be the next block).
+    /// Short branches reach local labels only; the jumps to the blocks reach any distance.
+    fn branch_on(
+        &mut self,
+        cmp: &Inst,
+        t: Label,
+        e: Label,
+        next: Option<Label>,
+    ) -> Result<(), String> {
+        let yes = self.asm.new_label();
+        let no = self.asm.new_label();
+        match cmp {
+            Inst::ICmp { cond, a, b, .. } => {
+                let pa = self.operand(*a, S0)?;
+                let pb = self.operand(*b, S1)?;
+                self.icmp_branch(*cond, pa, pb, yes, no);
+            }
+            Inst::ICmpImm { cond, a, imm, .. } => {
+                let pa = self.operand(*a, S0)?;
+                self.const64(S1, *imm as i64)?;
+                self.icmp_branch(*cond, pa, S1, yes, no);
+            }
+            Inst::TestImm { zero, a, imm, .. } => {
+                let pa = self.operand(*a, S0)?;
+                self.const64(S1, *imm as i64)?;
+                self.asm.word(xt32::and(T, pa.0, S1.0));
+                self.asm.word(xt32::and(T2, pa.1, S1.1));
+                self.asm.word(xt32::or(T, T, T2));
+                self.emit(xt32::movi(T2, 0))?;
+                let bc = if *zero {
+                    BranchCond::Eq
+                } else {
+                    BranchCond::Ne
+                };
+                self.asm.branch(bc, T, T2, yes);
+            }
+            Inst::FCmp { cond, a, b, .. } => {
+                let (symbol, bc, x, y) = fcmp_test(*cond);
+                self.move_into(*a, (ARG0, ARG0 + 1))?;
+                self.move_into(*b, (ARG0 + 2, ARG0 + 3))?;
+                self.call_symbol(symbol);
+                self.emit(xt32::movi(T2, 0))?;
+                self.asm.branch(bc, x, y, yes);
+            }
+            _ => return Err("nguvu: si ulinganisho".into()),
+        }
+        // Falling through here means false.
+        if Some(t) == next {
+            self.asm.bind(no);
+            self.asm.jump(e);
+            self.asm.bind(yes);
+        } else {
+            self.asm.bind(no);
+            if Some(e) != next {
+                self.asm.jump(e);
+            } else {
+                let past = self.asm.new_label();
+                self.asm.jump(past);
+                self.asm.bind(yes);
+                self.asm.jump(t);
+                self.asm.bind(past);
+                return Ok(());
+            }
+            self.asm.bind(yes);
+            self.asm.jump(t);
+        }
+        Ok(())
+    }
+
+    /// Branch to `yes` when `a cond b`, to `no` (or fall through, meaning false) otherwise.
+    fn icmp_branch(&mut self, cond: ICond, a: Pair, b: Pair, yes: Label, no: Label) {
+        // `x < y` on 64-bit pairs: decided by the high words unless they are equal.
+        let lt = |g: &mut Self, x: Pair, y: Pair, signed: bool, t: Label, f: Label| {
+            let hi = if signed {
+                BranchCond::Lt
+            } else {
+                BranchCond::Ltu
+            };
+            g.asm.branch(hi, x.1, y.1, t);
+            g.asm.branch(BranchCond::Ne, x.1, y.1, f);
+            g.asm.branch(BranchCond::Ltu, x.0, y.0, t);
+            g.asm.jump(f);
+        };
+        match cond {
+            ICond::Lt => lt(self, a, b, true, yes, no),
+            ICond::Ge => lt(self, a, b, true, no, yes),
+            ICond::Gt => lt(self, b, a, true, yes, no),
+            ICond::Le => lt(self, b, a, true, no, yes),
+            ICond::Ult => lt(self, a, b, false, yes, no),
+            ICond::Ule => lt(self, b, a, false, no, yes),
+            ICond::Eq | ICond::Ne => {
+                let (t, f) = if cond == ICond::Eq {
+                    (yes, no)
+                } else {
+                    (no, yes)
+                };
+                self.asm.branch(BranchCond::Ne, a.1, b.1, f);
+                self.asm.branch(BranchCond::Ne, a.0, b.0, f);
+                self.asm.jump(t);
+            }
+        }
+    }
+
     // ----- integer arithmetic -------------------------------------------------------------
 
     /// `dst = a op b`; `a` is a register pair or `S0`, `b` one or `S1`.
@@ -588,14 +732,7 @@ impl<'f> Gen<'f> {
     fn fcmp(&mut self, cond: FCond, dst: VReg, a: VReg, b: VReg) -> Result<(), String> {
         // libgcc's comparisons return <0, 0, >0, with unordered operands making each
         // ordered test false (and `__nedf2` non-zero): exactly the IR's semantics.
-        let (symbol, bc, x, y) = match cond {
-            FCond::Olt => ("__ltdf2", BranchCond::Lt, ARG0, T2),
-            FCond::Ole => ("__ledf2", BranchCond::Ge, T2, ARG0),
-            FCond::Ogt => ("__gtdf2", BranchCond::Lt, T2, ARG0),
-            FCond::Oge => ("__gedf2", BranchCond::Ge, ARG0, T2),
-            FCond::Oeq => ("__eqdf2", BranchCond::Eq, ARG0, T2),
-            FCond::Une => ("__nedf2", BranchCond::Ne, ARG0, T2),
-        };
+        let (symbol, bc, x, y) = fcmp_test(cond);
         self.move_into(a, (ARG0, ARG0 + 1))?;
         self.move_into(b, (ARG0 + 2, ARG0 + 3))?;
         self.call_symbol(symbol);
@@ -627,6 +764,13 @@ impl<'f> Gen<'f> {
                 let pa = self.operand(*a, S0)?;
                 let pb = self.operand(*b, S1)?;
                 self.int_op(*op, *dst, pa, pb)?;
+            }
+            Inst::IntImm { op, dst, a, imm }
+                if matches!(op, IntOp::Shl | IntOp::Sar) && (0..64).contains(imm) =>
+            {
+                let pa = self.operand(*a, S0)?;
+                self.shift_imm(*op == IntOp::Shl, *imm as u32, pa)?;
+                self.put(*dst, S2)?;
             }
             Inst::IntImm { op, dst, a, imm } => {
                 let pa = self.operand(*a, S0)?;
@@ -833,6 +977,41 @@ impl<'f> Gen<'f> {
         Ok(())
     }
 
+    /// `S2 = a << k` (`left`) or `a >> k` (arithmetic) for a constant `k` in 0..64, inline:
+    /// the funnel shift `src` moves bits across the two words.
+    fn shift_imm(&mut self, left: bool, k: u32, a: Pair) -> Result<(), String> {
+        match (left, k) {
+            (_, 0) => self.mov_pair(S2, a),
+            (true, 1..=31) => {
+                self.emit(xt32::ssai(32 - k))?;
+                self.asm.word(xt32::src(S2.1, a.1, a.0));
+                self.emit(xt32::slli(S2.0, a.0, k))?;
+            }
+            (true, 32) => {
+                self.asm.word(xt32::mov(S2.1, a.0));
+                self.emit(xt32::movi(S2.0, 0))?;
+            }
+            (true, _) => {
+                self.emit(xt32::slli(S2.1, a.0, k - 32))?;
+                self.emit(xt32::movi(S2.0, 0))?;
+            }
+            (false, 1..=31) => {
+                self.emit(xt32::ssai(k))?;
+                self.asm.word(xt32::src(S2.0, a.1, a.0));
+                self.emit(xt32::srai(S2.1, a.1, k))?;
+            }
+            (false, 32) => {
+                self.asm.word(xt32::mov(S2.0, a.1));
+                self.emit(xt32::srai(S2.1, a.1, 31))?;
+            }
+            (false, _) => {
+                self.emit(xt32::srai(S2.0, a.1, k - 32))?;
+                self.emit(xt32::srai(S2.1, a.1, 31))?;
+            }
+        }
+        Ok(())
+    }
+
     /// `T = base + 8 * index` (low words).
     fn element_address(&mut self, base: u8, index: u8) {
         self.asm.word(xt32::add(T, index, index)); // 2i
@@ -853,6 +1032,9 @@ pub struct ThunkSpec {
     pub params: Vec<(u32, bool)>,
     /// `Return`s of a number or truth value: (pc, register returned).
     pub returns: Vec<(u32, u32)>,
+    /// Call the function's direct entry (numbers in, a number out): `(host, nums)` in, the
+    /// number back in registers with status 0, so no `Return` needs finding.
+    pub direct: bool,
 }
 
 /// Status kind in the high word of a function's return value meaning "returned"
@@ -902,6 +1084,27 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
         let to = if is_list { nums + 8 * reg } else { 8 * reg };
         store_word(&mut a, &mut pool, TS0.0, to)?;
         store_word(&mut a, &mut pool, TS0.1, to + 4)?;
+    }
+    if spec.direct {
+        // direct entry(host, nums): status in a10:a11 (0: returned), the number in a12:a13.
+        pool.const32(&mut a, T, host)?;
+        a.word(xt32::add(ARG0, SP, T));
+        a.word(xt32::mov(ARG0 + 1, SP));
+        pool.call_direct(&mut a, 0);
+        let failed = a.new_label();
+        a.word(xt32::or(T, ARG0, ARG0 + 1));
+        a.emit(xt32::movi(T2, 0))?;
+        a.branch(BranchCond::Ne, T, T2, failed);
+        a.emit(xt32::s32i(ARG0 + 2, matokeo, 0))?;
+        a.emit(xt32::s32i(ARG0 + 3, matokeo, 4))?;
+        a.emit(xt32::movi(2, 0))?;
+        a.word(xt32::RETW);
+        a.bind(failed);
+        a.word(xt32::mov(2, T)); // non-zero
+        a.word(xt32::RETW);
+        let mut code = pool.finish(a)?;
+        code.frame = frame;
+        return Ok(code);
     }
     // entry(runtime: unused on a device, host, frame = list references, nums)
     a.emit(xt32::movi(ARG0, 0))?;

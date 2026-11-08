@@ -121,12 +121,13 @@ fn units<C>(
     lengo: Lengo,
     program: &BytecodeProgram,
     functions: &[usize],
+    export_direct: impl Fn(usize) -> bool,
     generate: impl Fn(&Func) -> Result<C, String>,
     calls: impl Fn(&C) -> Vec<u32>,
 ) -> Result<Vec<(usize, bool, C)>, String> {
     let direct = super::direct_entries(program);
     let mut units: Vec<(usize, bool, C)> = Vec::new();
-    let mut queue: Vec<(usize, bool)> = functions.iter().map(|&i| (i, false)).collect();
+    let mut queue: Vec<(usize, bool)> = functions.iter().map(|&i| (i, export_direct(i))).collect();
     let mut seen: std::collections::BTreeSet<(usize, bool)> = queue.iter().copied().collect();
     while let Some((index, entry_direct)) = queue.pop() {
         let f = &program.functions[index];
@@ -154,6 +155,7 @@ fn object_t32(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>,
         Lengo::CortexM,
         program,
         functions,
+        |_| false,
         codegen_t32::generate,
         |c: &codegen_t32::Code| c.calls.iter().map(|&(_, f)| f).collect(),
     )?;
@@ -206,10 +208,14 @@ fn object_xt(
     program: &BytecodeProgram,
     functions: &[usize],
 ) -> Result<(Vec<u8>, Vec<(String, u32)>), String> {
+    // An export taking and returning only numbers calls its direct entry.
+    let direct = super::direct_entries(program);
+    let export_direct = |i: usize| direct.contains(&i);
     let units = units(
         Lengo::Esp32,
         program,
         functions,
+        export_direct,
         codegen_xt::generate,
         |c: &codegen_xt::Code| c.calls.iter().map(|&(_, f)| f).collect(),
     )?;
@@ -218,7 +224,8 @@ fn object_xt(
     let mut symbols: Vec<(String, usize, usize)> = Vec::new();
     // (literal offset in `text`, program function, whether its direct entry)
     let mut calls: Vec<(usize, usize, bool)> = Vec::new();
-    let mut thunk_frames: Vec<(String, usize, u32)> = Vec::new(); // (name, export, frame)
+    // (name, export, whether its direct entry, frame)
+    let mut thunk_frames: Vec<(String, usize, bool, u32)> = Vec::new();
     let place = |code: &codegen_xt::Code, text: &mut Vec<u8>, relocs: &mut Vec<ElfReloc>| {
         while !text.len().is_multiple_of(4) {
             text.push(0); // between functions: never executed
@@ -237,17 +244,18 @@ fn object_xt(
     };
     for &i in functions {
         let f = &program.functions[i];
-        let code = codegen_xt::thunk(&thunk_spec(f)).map_err(|e| kosa(Lengo::Esp32, f, &e))?;
+        let code = codegen_xt::thunk(&thunk_spec(f, export_direct(i)))
+            .map_err(|e| kosa(Lengo::Esp32, f, &e))?;
         let base = place(&code, &mut text, &mut relocs);
         for &(at, _) in &code.calls {
-            calls.push((base + at, i, false));
+            calls.push((base + at, i, export_direct(i)));
         }
         symbols.push((
             format!("asili_{}", f.name),
             base + code.entry,
             code.bytes.len() - code.entry,
         ));
-        thunk_frames.push((f.name.clone(), i, code.frame));
+        thunk_frames.push((f.name.clone(), i, export_direct(i), code.frame));
     }
     let mut placed: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
     // (literal offset in `text`, helper index)
@@ -328,16 +336,17 @@ fn object_xt(
     }
     let mut memo = Default::default();
     let mut stack = Vec::new();
-    for (name, index, frame) in thunk_frames {
-        let d = depth((index, false), &unit_of, &helper_frames, &mut memo, 0)?;
+    for (name, index, direct, frame) in thunk_frames {
+        let d = depth((index, direct), &unit_of, &helper_frames, &mut memo, 0)?;
         stack.push((name, frame + d));
     }
     Ok((elf_object(Lengo::Esp32, &text, &symbols, &relocs), stack))
 }
 
 /// What the ESP32 export thunk of `f` needs (see [`codegen_xt::thunk`]).
-fn thunk_spec(f: &BytecodeFunc) -> codegen_xt::ThunkSpec {
+fn thunk_spec(f: &BytecodeFunc, direct: bool) -> codegen_xt::ThunkSpec {
     codegen_xt::ThunkSpec {
+        direct,
         num_regs: f.num_regs as u32,
         list_regs: f.list_regs as u32,
         num_consts: f

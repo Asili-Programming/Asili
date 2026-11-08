@@ -22,7 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ESP32 code uses the 16-bit code-density instructions wherever one fits (about 23% smaller),
   keeps values in the registers a call preserves (`a2`–`a7`: two pairs for integers, one for
   doubles; about 24% smaller again and 7–8% faster on the controller example), and `pata jenga`
-  prints each export's stack need (`mrundikano ≤ baiti N`). See
+  prints each export's stack need (`mrundikano ≤ baiti N`). Constant shifts are inline,
+  comparisons branch directly and numbers-only exports call their direct entry. See
   `docs/howto/08-build-for-esp32.md`.
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
@@ -30,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Native code: exact float constant folds** (`nguvu::opt`): a division by a power-of-two
+  constant runs as a multiplication by its exact reciprocal, and a constant integer converted to
+  a double is folded. Results are unchanged on every input (signed zeros, infinities, NaN and
+  subnormal results included; `native_tiers` covers the edges). The ESP32, where doubles are
+  software, gains most: the controller example's `wastani` drops from 8.5 to 5.9 µs. Native
+  images are rebuilt (`IMAGE_VERSION` 9).
 - **License**: Asili is now licensed under the Apache License, Version 2.0 (previously GPL-2.0).
   The `LICENSE` file and the README are updated to match.
 

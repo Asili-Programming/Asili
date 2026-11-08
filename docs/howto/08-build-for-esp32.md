@@ -96,10 +96,10 @@ bit.
 ## Not yet
 
 - **Speed.** Values live in the registers a call preserves (`a2`–`a7`: two 64-bit pairs for
-  integers, one for doubles) or in stack slots shared by values never live together. Double
-  arithmetic is the GCC runtime's software routines (about 0.4 µs per addition on a 240 MHz
-  ESP32), and each call still pays for building the function's frame (about 0.8 µs) and each
-  list for its bounds checks: on the controller example Asili takes about twice as long as the
-  same functions in C (`gcc -O2`). Removing that overhead and faster double arithmetic are
-  next.
+  integers, one for doubles) or in stack slots shared by values never live together; constant
+  shifts are inline, comparisons branch directly, and an export taking and returning only
+  numbers calls its function's direct entry. Double arithmetic is the GCC runtime's software
+  routines (about 0.4 µs per addition on a 240 MHz ESP32), so float-heavy code is bounded by
+  them: the controller example takes about 1.45 times as long as the same functions in C
+  (`gcc -O2`) — `wastani` 5.9 µs against 4.2 µs.
 - Start-up code, RTOS integration and peripherals are the firmware's: the object is a library.

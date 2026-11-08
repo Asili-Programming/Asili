@@ -71,6 +71,32 @@ pub fn srl(ar: u8, at: u8) -> u32 {
 pub fn sra(ar: u8, at: u8) -> u32 {
     rrr(0xB, 1, ar, 0, at)
 }
+/// `slli ar, as, sa` (sa in 1..=31; the field holds `32 - sa`)
+pub fn slli(ar: u8, as_: u8, sa: u32) -> Option<u32> {
+    if !(1..=31).contains(&sa) {
+        return None;
+    }
+    let f = 32 - sa;
+    Some(rrr(f >> 4, 1, ar, as_, (f & 0xf) as u8))
+}
+/// `srai ar, at, sa` (sa in 0..=31)
+pub fn srai(ar: u8, at: u8, sa: u32) -> Option<u32> {
+    if sa > 31 {
+        return None;
+    }
+    Some(rrr(2 | (sa >> 4), 1, ar, (sa & 0xf) as u8, at))
+}
+/// `ssai sa`: set the shift amount for `src`/`srl`/`sra` to `sa` (0..=31)
+pub fn ssai(sa: u32) -> Option<u32> {
+    if sa > 31 {
+        return None;
+    }
+    Some(rrr(4, 0, 4, (sa & 0xf) as u8, (sa >> 4) as u8))
+}
+/// `src ar, as, at`: `ar` = the low word of `(as:at) >> SAR` (a funnel shift)
+pub fn src(ar: u8, as_: u8, at: u8) -> u32 {
+    rrr(0x8, 1, ar, as_, at)
+}
 /// `addi at, as, imm8` (imm8 in -128..=127)
 pub fn addi(at: u8, as_: u8, imm: i32) -> Option<u32> {
     if !(-128..=127).contains(&imm) {
@@ -425,6 +451,25 @@ mod tests {
         assert_eq!(narrow(s32i(4, 1, 0).unwrap()), Some(0x0149));
         assert_eq!(narrow(sub(2, 3, 4)), None);
         assert_eq!(narrow(or(2, 3, 4)), None);
+    }
+
+    /// Shift-immediate forms, checked against `xtensa-esp32-elf-as`.
+    #[test]
+    fn shift_forms_match_the_assembler() {
+        assert_eq!(slli(2, 3, 1), Some(0x1123f0));
+        assert_eq!(slli(2, 3, 5), Some(0x1123b0));
+        assert_eq!(slli(2, 3, 16), Some(0x112300));
+        assert_eq!(slli(2, 3, 31), Some(0x012310));
+        assert_eq!(slli(2, 3, 0), None);
+        assert_eq!(srai(2, 3, 0), Some(0x212030));
+        assert_eq!(srai(2, 3, 1), Some(0x212130));
+        assert_eq!(srai(2, 3, 16), Some(0x312030));
+        assert_eq!(srai(2, 3, 31), Some(0x312f30));
+        assert_eq!(ssai(0), Some(0x404000));
+        assert_eq!(ssai(1), Some(0x404100));
+        assert_eq!(ssai(16), Some(0x404010));
+        assert_eq!(ssai(31), Some(0x404f10));
+        assert_eq!(src(2, 3, 4), 0x812340);
     }
 
     #[test]

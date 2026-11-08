@@ -15,7 +15,7 @@
 //!   register rather than rebuilding a 64-bit constant each iteration).
 //! * **Dead code elimination**: pure instructions whose results are never read are dropped.
 
-use super::ir::{Class, Func, ICond, Inst, IntOp, Term, VReg};
+use super::ir::{Class, FloatOp, Func, ICond, Inst, IntOp, Term, VReg};
 use asili_parser::FxHashMap as HashMap;
 
 /// Run every pass over `func`. In debug builds (and so in every test) the IR is verified after
@@ -40,6 +40,8 @@ pub fn optimize_with(func: &mut Func, popcnt: bool) -> Result<(), String> {
         fold_all_constants(func);
         check(func, "fold_all_constants")?;
     }
+    fold_float_constants(func);
+    check(func, "fold_float_constants")?;
     merge_blocks(func);
     check(func, "merge_blocks")?;
     eliminate_dead_code(func); // folded guards leave their constants behind
@@ -70,6 +72,75 @@ pub fn optimize_with(func: &mut Func, popcnt: bool) -> Result<(), String> {
     check(func, "hoist_wide_constants")?;
     eliminate_dead_code(func);
     Ok(())
+}
+
+/// Exact rewrites of double arithmetic with constant operands:
+///
+/// * `IntToFloat` of a known integer becomes that double (every target converts with the same
+///   round-to-nearest-even).
+/// * `x / c` for a normal power of two `c` becomes `x * (1 / c)`: the reciprocal is exact, and
+///   both are one correctly rounded operation on the same real number, so they agree for every
+///   `x` — signed zeros, infinities, NaN and subnormal results included. Multiplication is far
+///   cheaper, above all where doubles are computed in software.
+fn fold_float_constants(func: &mut Func) {
+    let ints = constants(func);
+    // Doubles defined once, by an `FConst`.
+    let mut defs: HashMap<VReg, (u32, Option<f64>)> = HashMap::default();
+    for inst in func.blocks.iter().flat_map(|b| &b.insts) {
+        for d in inst.defs() {
+            let e = defs.entry(d).or_insert((0, None));
+            e.0 += 1;
+            e.1 = match inst {
+                Inst::FConst { value, .. } => Some(*value),
+                _ => None,
+            };
+        }
+    }
+    let float = |v: VReg| match defs.get(&v) {
+        Some(&(1, Some(x))) => Some(x),
+        _ => None,
+    };
+    let power_of_two = |c: f64| {
+        let bits = c.to_bits();
+        let e = (bits >> 52) & 0x7ff;
+        e != 0 && e != 0x7ff && bits & ((1u64 << 52) - 1) == 0
+    };
+    let mut classes = std::mem::take(&mut func.classes);
+    for block in &mut func.blocks {
+        let mut out = Vec::with_capacity(block.insts.len());
+        for inst in std::mem::take(&mut block.insts) {
+            match inst {
+                Inst::IntToFloat { dst, src } if ints.contains_key(&src) => {
+                    out.push(Inst::FConst {
+                        dst,
+                        value: ints[&src] as f64,
+                    });
+                }
+                Inst::Float {
+                    op: FloatOp::Div,
+                    dst,
+                    a,
+                    b,
+                } if float(b).is_some_and(power_of_two) => {
+                    classes.push(Class::Float);
+                    let r = VReg(classes.len() as u32 - 1);
+                    out.push(Inst::FConst {
+                        dst: r,
+                        value: 1.0 / float(b).unwrap(),
+                    });
+                    out.push(Inst::Float {
+                        op: FloatOp::Mul,
+                        dst,
+                        a,
+                        b: r,
+                    });
+                }
+                other => out.push(other),
+            }
+        }
+        block.insts = out;
+    }
+    func.classes = classes;
 }
 
 /// Registers whose every definition is an `IConst` of the same value, or a copy of such a
