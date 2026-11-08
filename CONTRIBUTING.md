@@ -2,6 +2,8 @@
 
 Contributions are welcome. This document outlines how to build, test, and submit changes.
 
+The project website, with the learning path and the browser playground, is at <https://asili-programming.github.io>. Its source is in [asili-programming.github.io](https://github.com/Asili-Programming/asili-programming.github.io).
+
 ## Development setup
 
 1. **Clone the repository** and open the workspace root.
