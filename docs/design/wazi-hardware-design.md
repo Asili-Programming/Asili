@@ -1,8 +1,11 @@
 # `wazi` (unsafe block) and hardware primitives design
 
-**Status: not started.** No `wazi` keyword exists anywhere in the lexer or parser — confirmed by
-grep across `core/lexer/src/*.rs` and `core/parser/src/*.rs`; the only occurrences of the string
-`wazi` in the whole repo are in spec prose. Phase IV, per
+**Status: partly implemented.** The `#[wazi]` function attribute is a grant that the analyzer
+enforces: `syscall` and the virtual board's pin calls (`ubao_andika`, `ubao_soma`) may only be called
+from a `#[wazi]` function (SEM121), and such a function may not also be `#[salama]` (SEM122). The
+`wazi { ... }` block keyword is still not in the lexer or parser, and none of `Kiashiria`, `Pini`,
+`Bafa<T>` or the hardware functions exist. The grant design is in
+[peripheral-io-design.md](peripheral-io-design.md). Phase IV, per
 [docs/spec/07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md). This doc is
 forward-looking, and notes one real inconsistency in what's already built.
 

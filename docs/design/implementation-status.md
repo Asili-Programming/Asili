@@ -148,11 +148,14 @@ Researched, decided, not built.
       `.funga()`/`.fungua()` needed the `parking_lot`/`lock_api` crates for real manual
       lock/unlock (`std::sync::Mutex`'s guard can't span two separate calls). See
       [concurrency-design.md](concurrency-design.md) for the full architecture.
-- [ ] **`syscall` (raw syscall stub, `core/evaluator/src/builtins/syscall.rs`) is callable from
-      anywhere via `leta syscall` with no `wazi`-block gating**, even though the spec positions
-      raw hardware/syscall-level access as `wazi`-only. A stub today (`FIXME(Phase IV)`, always
-      returns `Anuani(0)`), so nothing is broken, but this needs a decision before real syscall
-      dispatch is implemented. See [wazi-hardware-design.md](wazi-hardware-design.md).
+- [x] **`syscall` is gated** (`core/parser/src/semantic/analyzer.rs`, SEM121): a call is an error
+      unless the calling function is marked `#[wazi]`; a `#[wazi]` function may not also be
+      `#[salama]` (SEM122). The `wazi { ... }` block form is not implemented. The call itself is
+      still a stub (`FIXME(Phase IV)`, returns `Anuani(0)`). See
+      [wazi-hardware-design.md](wazi-hardware-design.md).
+- [x] **Virtual board `ubao`** (`core/evaluator/src/ubao.rs`, `builtins/ubao.rs`): pins and a clock
+      in the host, with the pin calls gated by `#[wazi]`. Not a device driver; see
+      [peripheral-io-design.md](peripheral-io-design.md).
 - [ ] `kiungo` (FFI) is a documented stub: `core/evaluator/src/builtins/kiungo.rs`
       unconditionally returns `Err` from both exported functions, with a `TODO(Phase IV)`
       comment about `libloading`. Correctly scoped to this phase, not a surprise gap.

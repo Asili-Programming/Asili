@@ -198,3 +198,13 @@ JS host.
   entry in the phase/feature map.
 - [mwalimu-design.md](mwalimu-design.md) / [package-manager-design.md](package-manager-design.md)
   — sibling design docs this one follows in structure/style.
+
+## Virtual board (added with `ubao`)
+
+`asili-wasm` also exports `runBoard(source, triples)` (`driver/wasm/src/lib.rs`, `run_board_source`).
+`triples` is the scenario flattened to `saa, pini, hali` repeated, and the run sees those scripted
+pin levels. Each pin write, pin read and clock step is sent to the page as one console line tagged
+`\u0001ASILI-EVT ` followed by JSON (`core/evaluator/src/platform.rs`, `write_event`). The page
+separates these from program output by the tag. `driver/wasm/tests/ubao_trace.mjs` runs a fixture
+under Node and checks it against the events the native test (`driver/wasm/tests/ubao_trace.rs`)
+expects.
