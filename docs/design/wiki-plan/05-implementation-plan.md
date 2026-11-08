@@ -33,7 +33,7 @@ flowchart LR
 | 7 | Editor Support: inlay hints; every VS Code command and setting | Editor Support; `docs/howto/02-use-lsp.md` | WK-4 | 0 | Not started |
 | 8 | Standard Library: `ruwaza` and `usimbaji` | Standard Library; `docs/spec/05-standard-library.md` | WK-5 | 0 | Not started |
 | 9 | Build targets `native`, `wasm`, `cortex-m` with examples | CLI Reference, Hardware and Data; `docs/howto/07-build-for-cortex-m.md` | WK-1 | 0 | Not started |
-| 10 | Every `pata` command answers `--msaada` (prerequisite) | CLI code | WK-6 | 1 | Not started |
+| 10 | Every `pata` command answers `--msaada` (prerequisite) | CLI code | WK-6 | 1 | Done (`776dcaf`) |
 | 11 | `pata/core/tests/wiki_coverage.rs` reading the sources of truth | — | WK-6 | 1 | Not started |
 | 12 | CI job with a wiki checkout running the coverage test | — | WK-6 | 1 | Not started |
 | 13 | Example check: compile every `asili` block in the wiki | — | WK-NFR-2 | 1 | Not started |

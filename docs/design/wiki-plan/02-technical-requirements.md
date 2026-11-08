@@ -22,9 +22,8 @@ reads these, never a hand-kept list:
 | REPL help topics | `docs/repl/sw/*.md` file names | File listing |
 | VS Code commands and settings | `contributes` in `asili-vscode/package.json` | Optional; read when the extension repo is checked out beside Asili |
 
-**Prerequisite in the CLI:** today `jaribu`, `njozi`, `nadhifu` and `thibitisha` reject `--msaada`,
-and `ongeza`/`ondoa` fail before printing help outside a project. Every command must answer
-`--msaada` before the check can rely on it (same issue as in the VS Code plan).
+**Prerequisite in the CLI (done):** every command answers `--msaada`, even outside a project
+(Asili `776dcaf`), and a `pata-cli` test checks every command listed in `pata --msaada`.
 
 ## The coverage check
 
