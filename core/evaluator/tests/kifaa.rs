@@ -500,8 +500,11 @@ fn the_controller_example_agrees() {
             ("dhibiti", vec![samples(40.0), n(5.0)]),
             ("dhibiti", vec![samples(1e300), n(-0.0)]),
             ("dhibiti", vec![samples(0.0), n(f64::NAN)]),
-            // Too short a list: an index out of range fails on both.
+            // Too short a list: an index out of range fails on both — at the first index or
+            // only at the last (the checks of the unrolled loop are one check on the device).
             ("wastani", vec![Arg::List(vec![1.0, 2.0])]),
+            ("wastani", vec![Arg::List((0..7).map(f64::from).collect())]),
+            ("wastani", vec![Arg::List((0..9).map(f64::from).collect())]),
         ],
     );
 }
@@ -601,6 +604,8 @@ fn integers_bits_and_calls_agree() {
         calls.push(("ni_kubwa", vec![n(x)]));
     }
     calls.push(("panga", vec![Arg::List(vec![5.0, 3.0, 9.0, 1.0, 4.0, 2.0])]));
+    // Stores between the index checks: too short a list fails after some of them.
+    calls.push(("panga", vec![Arg::List(vec![5.0, 3.0, 9.0, 1.0])]));
     agree("hesabu", source, &calls);
 }
 

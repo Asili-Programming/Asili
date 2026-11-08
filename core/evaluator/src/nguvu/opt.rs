@@ -13,6 +13,10 @@
 //! * **Constant hoisting**: integer constants too wide for an immediate, and float constants,
 //!   are materialized once on entry instead of at every use (a loop then compares against a
 //!   register rather than rebuilding a 64-bit constant each iteration).
+//! * **Bounds-check merging**: along a straight path of index checks `k <u len` against the
+//!   same length, all failing alike, one check of the largest `k` replaces them.
+//! * **Address offsets**: a load or store through `a + k` reads or writes at `a` with `k`
+//!   added to its offset.
 //! * **Dead code elimination**: pure instructions whose results are never read are dropped.
 
 use super::ir::{Class, FloatOp, Func, ICond, Inst, IntOp, Term, VReg};
@@ -46,6 +50,11 @@ pub fn optimize_with(func: &mut Func, popcnt: bool) -> Result<(), String> {
     check(func, "merge_blocks")?;
     eliminate_dead_code(func); // folded guards leave their constants behind
     check(func, "eliminate_dead_code")?;
+    if merge_bound_checks(func) {
+        check(func, "merge_bound_checks")?;
+        merge_blocks(func); // the checks that went leave straight chains behind
+        check(func, "merge_blocks")?;
+    }
     if_convert(func);
     check(func, "if_convert")?;
     merge_blocks(func); // converted triangles leave straight chains behind
@@ -66,12 +75,205 @@ pub fn optimize_with(func: &mut Func, popcnt: bool) -> Result<(), String> {
     }
     fold_all_constants(func); // `n = 0; n += popcnt(…)` is a copy
     check(func, "fold_all_constants")?;
+    fold_address_offsets(func);
+    check(func, "fold_address_offsets")?;
     reuse_values(func);
     check(func, "reuse_values")?;
     hoist_wide_constants(func);
     check(func, "hoist_wide_constants")?;
     eliminate_dead_code(func);
     Ok(())
+}
+
+/// A block ending in a branch on `k <u len` (`k` a constant), made by its last instruction.
+struct BoundCheck {
+    k: u64,
+    len: VReg,
+    /// Index of the comparison in the block.
+    at: usize,
+    then_: super::ir::Block,
+    else_: super::ir::Block,
+}
+
+fn bound_check(func: &Func, global: &HashMap<VReg, i64>, b: usize) -> Option<BoundCheck> {
+    let block = &func.blocks[b];
+    let Term::Branch { cond, then_, else_ } = block.term else {
+        return None;
+    };
+    let at = block.insts.len().checked_sub(1)?;
+    let Inst::ICmp {
+        cond: ICond::Ult,
+        dst,
+        a,
+        b: len,
+    } = block.insts[at]
+    else {
+        return None;
+    };
+    if dst != cond {
+        return None;
+    }
+    let mut known = Known::new(global);
+    for inst in &block.insts[..at] {
+        known.track(inst);
+    }
+    Some(BoundCheck {
+        k: known.get(&a)? as u64,
+        len,
+        at,
+        then_,
+        else_,
+    })
+}
+
+/// The status a block returns when all it does is return a constant.
+fn constant_return(func: &Func, b: super::ir::Block) -> Option<i64> {
+    let block = &func.blocks[b.0 as usize];
+    let Term::Return(v) = block.term else {
+        return None;
+    };
+    let mut value = None;
+    for inst in &block.insts {
+        match *inst {
+            Inst::IConst { dst, value: x } if dst == v => value = Some(x),
+            Inst::IConst { .. } => {}
+            _ => return None,
+        }
+    }
+    value
+}
+
+/// Along a straight path of index checks `k1 <u len`, `k2 <u len`, … — each block entered only
+/// from the previous one, nothing between them with an effect (no store, no call), and every
+/// failing branch returning the same constant status — the first check tests the largest `k`
+/// and the rest go. When any check fails the path returns that status, now at the first
+/// check instead of a later one; nothing done in between is observable, so the results are
+/// the same. (A fully unrolled loop's checks are one bytecode instruction's, so they fail
+/// alike where failing is just a status, as in device code; the host's failures carry the
+/// index in their message and are left alone.)
+fn merge_bound_checks(func: &mut Func) -> bool {
+    let global = constants(func);
+    let mut changed = false;
+    let nb = func.blocks.len();
+    let mut preds = vec![0u32; nb];
+    for block in &func.blocks {
+        for s in block.term.successors() {
+            preds[s.0 as usize] += 1;
+        }
+    }
+    let effect_free = |inst: &Inst| {
+        !matches!(
+            inst,
+            Inst::Store { .. }
+                | Inst::StoreIndex { .. }
+                | Inst::Call { .. }
+                | Inst::CallDirect { .. }
+        )
+    };
+    let mut merged = vec![false; nb];
+    for b in 0..nb {
+        if merged[b] {
+            continue;
+        }
+        let Some(first) = bound_check(func, &global, b) else {
+            continue;
+        };
+        let Some(status) = constant_return(func, first.else_) else {
+            continue;
+        };
+        let mut largest = first.k;
+        let mut later = Vec::new();
+        let mut cur = first.then_.0 as usize;
+        while cur != b && preds[cur] == 1 && !later.contains(&cur) {
+            let Some(c) = bound_check(func, &global, cur) else {
+                break;
+            };
+            let block = &func.blocks[cur];
+            let clean = block.insts[..c.at]
+                .iter()
+                .all(|i| effect_free(i) && !i.defs().contains(&first.len));
+            if c.len != first.len || !clean || constant_return(func, c.else_) != Some(status) {
+                break;
+            }
+            largest = largest.max(c.k);
+            later.push(cur);
+            cur = c.then_.0 as usize;
+        }
+        if later.is_empty() {
+            continue;
+        }
+        // The first check tests the largest index; the later ones always pass now.
+        let k = func.new_vreg(Class::Int);
+        let ok = func.new_vreg(Class::Int);
+        let block = &mut func.blocks[b];
+        block.insts.push(Inst::IConst {
+            dst: k,
+            value: largest as i64,
+        });
+        block.insts.push(Inst::ICmp {
+            cond: ICond::Ult,
+            dst: ok,
+            a: k,
+            b: first.len,
+        });
+        block.term = Term::Branch {
+            cond: ok,
+            then_: first.then_,
+            else_: first.else_,
+        };
+        for &l in &later {
+            let c = bound_check(func, &global, l).expect("checked above");
+            func.blocks[l].term = Term::Jump(c.then_);
+            merged[l] = true;
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// Largest offset a folded address may give a load or store (within every target's immediate
+/// offsets or offset sequences).
+const MAX_FOLDED_OFFSET: i64 = 32760;
+
+/// `Load`/`Store` through a register set by `a + k` in the same block (`a` unchanged since)
+/// address `a` with `k` added to the offset: the same address, with no sum to compute (the
+/// `IntImm` goes when nothing else reads it).
+fn fold_address_offsets(func: &mut Func) {
+    for block in &mut func.blocks {
+        // register → (a, k): it holds `a + k`.
+        let mut sums: HashMap<VReg, (VReg, i32)> = HashMap::default();
+        for inst in &mut block.insts {
+            let moved = |base: VReg, offset: i32| {
+                let &(a, k) = sums.get(&base)?;
+                let off = offset as i64 + k as i64;
+                (0..=MAX_FOLDED_OFFSET)
+                    .contains(&off)
+                    .then_some((a, off as i32))
+            };
+            match inst {
+                Inst::Load { base, offset, .. } | Inst::Store { base, offset, .. } => {
+                    if let Some((a, off)) = moved(*base, *offset) {
+                        *base = a;
+                        *offset = off;
+                    }
+                }
+                _ => {}
+            }
+            let defs = inst.defs();
+            sums.retain(|v, (a, _)| !defs.contains(v) && !defs.contains(a));
+            if let Inst::IntImm {
+                op: IntOp::Add,
+                dst,
+                a,
+                imm,
+            } = *inst
+            {
+                if dst != a {
+                    sums.insert(dst, (a, imm));
+                }
+            }
+        }
+    }
 }
 
 /// Exact rewrites of double arithmetic with constant operands:
@@ -222,12 +424,46 @@ fn eval_cmp(cond: ICond, a: i64, b: i64) -> bool {
 }
 
 /// One round of constant folding; whether anything changed.
+/// Largest constant index folded into a load or store offset (`8 * i` stays within every
+/// target's immediate offsets or its offset sequences).
+const MAX_CONSTANT_INDEX: i64 = 4095;
+
 fn fold_constants(func: &mut Func) -> bool {
     let global = constants(func);
     let mut changed = false;
     for block in &mut func.blocks {
         let mut k = Known::new(&global);
         for inst in &mut block.insts {
+            // An eight-byte element at a constant index (an unrolled loop's) is a load or store
+            // at a constant offset: the same bits, with no index register to build.
+            let offset = |index: VReg| {
+                k.get(&index)
+                    .filter(|i| (0..=MAX_CONSTANT_INDEX).contains(i))
+                    .map(|i| 8 * i as i32)
+            };
+            match *inst {
+                Inst::LoadIndex {
+                    dst,
+                    base,
+                    index,
+                    kind,
+                } if kind.width() == 8 && offset(index).is_some() => {
+                    let offset = offset(index).unwrap();
+                    *inst = Inst::Load { dst, base, offset };
+                    changed = true;
+                }
+                Inst::StoreIndex {
+                    src,
+                    base,
+                    index,
+                    kind,
+                } if kind.width() == 8 && offset(index).is_some() => {
+                    let offset = offset(index).unwrap();
+                    *inst = Inst::Store { src, base, offset };
+                    changed = true;
+                }
+                _ => {}
+            }
             let folded = match *inst {
                 Inst::Mov { dst, src } => k.get(&src).map(|v| (dst, v)),
                 // x + 0, 0 + x: a copy.
@@ -258,6 +494,12 @@ fn fold_constants(func: &mut Func) -> bool {
                     .get(&a)
                     .map(|x| (dst, eval_cmp(cond, x, imm as i64) as i64)),
                 Inst::Popcnt { dst, src } => k.get(&src).map(|x| (dst, x.count_ones() as i64)),
+                // `-10` in source is a negated constant: fold it, so a double use of it is a
+                // constant too (`fold_float_constants`) rather than a conversion at run time.
+                Inst::Neg { dst, src } => {
+                    k.get(&src).and_then(|x| x.checked_neg()).map(|v| (dst, v))
+                }
+                Inst::Not { dst, src } => k.get(&src).map(|x| (dst, !x)),
                 _ => None,
             };
             if let Some((dst, value)) = folded {
@@ -388,13 +630,16 @@ fn fold_immediates(func: &mut Func) {
     }
 }
 
-/// Values already computed on the way into a block: `IntImm` results and list elements.
+/// Values already computed on the way into a block: `IntImm` results, list elements, and
+/// what loads and stores at a constant offset last moved.
 #[derive(Clone, Default)]
 struct Available {
     /// (op, operand, immediate) → register currently holding that value.
     arith: HashMap<(IntOp, VReg, i32), VReg>,
     /// (list data, index, class) → register holding that element.
     elements: HashMap<(VReg, VReg, Class), VReg>,
+    /// (address, offset, class) → register holding what `Load`/`Store` last moved there.
+    loads: HashMap<(VReg, i32, Class), VReg>,
     /// Register → the register it is a copy of (keys above use the original).
     copies: HashMap<VReg, VReg>,
 }
@@ -405,6 +650,7 @@ impl Available {
         self.arith.retain(|(_, a, _), v| *a != d && *v != d);
         self.elements
             .retain(|(b, i, _), v| *b != d && *i != d && *v != d);
+        self.loads.retain(|(b, _, _), v| *b != d && *v != d);
         self.copies.retain(|c, o| *c != d && *o != d);
     }
 
@@ -414,8 +660,8 @@ impl Available {
 }
 
 /// Reuse a value instead of recomputing it: an `IntImm` whose result a register still holds (or,
-/// for a remainder, the matching quotient), and a list element loaded or stored earlier with no
-/// store or call in between. Blocks with a single predecessor start from what it ends with, so
+/// for a remainder, the matching quotient), and a list element — or a constant-offset `Load` —
+/// loaded or stored earlier with no store or call in between. Blocks with a single predecessor start from what it ends with, so
 /// the arms of a branch reuse what the test computed.
 fn reuse_values(func: &mut Func) {
     let nb = func.blocks.len();
@@ -496,11 +742,20 @@ fn reuse_values(func: &mut Func) {
                         emitted = vec![Inst::Mov { dst, src: p }];
                     }
                 }
+                Inst::Load { dst, base, offset } => {
+                    let key = (avail.original(base), offset, func.class(dst));
+                    if let Some(&p) = avail.loads.get(&key) {
+                        emitted = vec![Inst::Mov { dst, src: p }];
+                    }
+                }
                 // Memory may have changed (any list may share storage with another).
                 Inst::Store { .. }
                 | Inst::StoreIndex { .. }
                 | Inst::Call { .. }
-                | Inst::CallDirect { .. } => avail.elements.clear(),
+                | Inst::CallDirect { .. } => {
+                    avail.elements.clear();
+                    avail.loads.clear();
+                }
                 _ => {}
             }
             for e in &emitted {
@@ -524,6 +779,14 @@ fn reuse_values(func: &mut Func) {
                 } => {
                     let key = (avail.original(base), avail.original(index), func.class(src));
                     avail.elements.insert(key, src);
+                }
+                Inst::Load { dst, base, offset } if dst != base => {
+                    let key = (avail.original(base), offset, func.class(dst));
+                    avail.loads.insert(key, dst);
+                }
+                Inst::Store { src, base, offset } => {
+                    let key = (avail.original(base), offset, func.class(src));
+                    avail.loads.insert(key, src);
                 }
                 _ => {}
             }

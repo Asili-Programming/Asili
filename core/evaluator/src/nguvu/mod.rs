@@ -60,13 +60,17 @@ pub struct Code {
 
 /// Functions that get a direct entry: numeric signature, and a body that lowers without calls
 /// into the host given that exactly these functions are callable directly (an optimistic
-/// fixpoint, so mutually recursive functions qualify together).
-pub(crate) fn direct_entries(program: &BytecodeProgram) -> asili_parser::FxHashSet<usize> {
+/// fixpoint, so mutually recursive functions qualify together). `lists`: device code, whose
+/// direct entries may take lists ([`lower::Ctx::direct_lists`]).
+pub(crate) fn direct_entries(
+    program: &BytecodeProgram,
+    lists: bool,
+) -> asili_parser::FxHashSet<usize> {
     let mut direct: asili_parser::FxHashSet<usize> = program
         .functions
         .iter()
         .enumerate()
-        .filter(|(_, f)| lower::direct_signature(f))
+        .filter(|(_, f)| lower::direct_shape(f, lists))
         .map(|(i, _)| i)
         .collect();
     loop {
@@ -77,6 +81,7 @@ pub(crate) fn direct_entries(program: &BytecodeProgram) -> asili_parser::FxHashS
                 program,
                 direct: &direct,
                 entry_direct: true,
+                direct_lists: lists,
             };
             lower::lower(i, &program.functions[i], &ctx).is_some()
         });
@@ -175,7 +180,7 @@ pub fn generate_with(program: &BytecodeProgram, options: Options) -> Result<Imag
     if !supported() {
         return Err("nguvu: mfumo huu bado hauungwi mkono".into());
     }
-    let direct = direct_entries(program);
+    let direct = direct_entries(program, false);
     // Ordinary entries first (function `i` at `offsets[i]`), then the direct entries. Each is
     // lowered and compiled on its own, in parallel; the image is laid out in this order.
     let mut jobs: Vec<(bool, usize)> = (0..program.functions.len()).map(|i| (false, i)).collect();
@@ -189,6 +194,7 @@ pub fn generate_with(program: &BytecodeProgram, options: Options) -> Result<Imag
             program,
             direct: &direct,
             entry_direct,
+            direct_lists: false,
         };
         compile_function(&mut lower_checked(index, &ctx, options)?)
     });
@@ -329,7 +335,7 @@ impl Image {
 const MAGIC: &[u8; 8] = b"NGUVU\0\0\0";
 /// Bumped whenever generated code changes, so images from an older toolchain are rebuilt
 /// rather than run.
-const IMAGE_VERSION: u32 = 9;
+const IMAGE_VERSION: u32 = 10;
 /// Instruction set and calling convention of the image (1 = x86-64 System V, 2 = AArch64
 /// AAPCS64, 3 = x86-64 Microsoft x64).
 const ARCH: u32 = if cfg!(target_arch = "aarch64") {
@@ -445,6 +451,7 @@ pub fn wasm_functions(program: &BytecodeProgram) -> Result<Vec<ir::Func>, String
         program,
         direct: &direct,
         entry_direct: false,
+        direct_lists: false,
     };
     (0..program.functions.len())
         .map(|i| lower_checked(i, &ctx, Options::default()))

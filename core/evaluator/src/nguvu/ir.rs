@@ -325,6 +325,10 @@ pub const ENTRY_ARGS: &[VReg] = &[RT, HOST, FRAME, NUMS];
 /// A direct entry's: `(host, numeric registers)`; it reads the runtime table and the stack
 /// limit from the host when it needs them.
 pub const DIRECT_ARGS: &[VReg] = &[HOST, NUMS];
+/// A device export compiled from a direct entry (`device::export_interface`): the C
+/// interface's `(hoja, matokeo)` — the arguments' struct where the entry read its registers,
+/// and where its number goes.
+pub const EXPORT_ARGS: &[VReg] = &[NUMS, HOST];
 /// A device helper's (see `device`): the low and high word of its one 64-bit argument.
 pub const HELPER_ARGS: &[VReg] = &[VReg(0), VReg(1)];
 
@@ -343,6 +347,12 @@ pub enum Home {
 impl Func {
     pub fn class(&self, v: VReg) -> Class {
         self.classes[v.0 as usize]
+    }
+
+    /// A fresh register of `class`.
+    pub fn new_vreg(&mut self, class: Class) -> VReg {
+        self.classes.push(class);
+        VReg(self.classes.len() as u32 - 1)
     }
 
     /// `Home` for every register.

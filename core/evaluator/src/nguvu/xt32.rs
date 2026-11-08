@@ -27,6 +27,10 @@ fn rri8(op0: u32, r: u32, s: u8, t: u8, imm8: u8) -> u32 {
 pub fn add(ar: u8, as_: u8, at: u8) -> u32 {
     rrr(0x8, 0, ar, as_, at)
 }
+/// `addx8 ar, as, at`: `ar = 8 * as + at`
+pub fn addx8(ar: u8, as_: u8, at: u8) -> u32 {
+    rrr(0xB, 0, ar, as_, at)
+}
 /// `sub ar, as, at`
 pub fn sub(ar: u8, as_: u8, at: u8) -> u32 {
     rrr(0xC, 0, ar, as_, at)
@@ -106,14 +110,14 @@ pub fn addi(at: u8, as_: u8, imm: i32) -> Option<u32> {
 }
 /// `l32i at, as, off` (off a multiple of 4 in 0..=1020)
 pub fn l32i(at: u8, as_: u8, off: u32) -> Option<u32> {
-    if off % 4 != 0 || off > 1020 {
+    if !off.is_multiple_of(4) || off > 1020 {
         return None;
     }
     Some(rri8(0x2, 0x2, as_, at, (off / 4) as u8))
 }
 /// `s32i at, as, off` (off a multiple of 4 in 0..=1020)
 pub fn s32i(at: u8, as_: u8, off: u32) -> Option<u32> {
-    if off % 4 != 0 || off > 1020 {
+    if !off.is_multiple_of(4) || off > 1020 {
         return None;
     }
     Some(rri8(0x2, 0x6, as_, at, (off / 4) as u8))
@@ -128,7 +132,7 @@ pub fn movi(at: u8, imm: i32) -> Option<u32> {
 }
 /// `entry a1, frame` (frame: a multiple of 8 in 0..=32760)
 pub fn entry(frame: u32) -> Option<u32> {
-    if frame % 8 != 0 || frame > 32760 {
+    if !frame.is_multiple_of(8) || frame > 32760 {
         return None;
     }
     Some(((frame / 8) << 12) | (1 << 8) | (3 << 4) | 0x6)
@@ -139,7 +143,7 @@ pub const RETW: u32 = 0x000090;
 pub const RET: u32 = 0x000080;
 /// `callx{0,4,8,12} as`: `n` is 0, 4, 8 or 12
 pub fn callx(n: u8, as_: u8) -> Option<u32> {
-    if n % 4 != 0 || n > 12 {
+    if !n.is_multiple_of(4) || n > 12 {
         return None;
     }
     Some(((0xC + (n as u32) / 4) << 4) | ((as_ as u32) << 8))
@@ -213,6 +217,18 @@ pub enum BranchCond {
 }
 
 impl BranchCond {
+    /// The condition holding exactly when `self` does not.
+    pub fn negate(self) -> BranchCond {
+        match self {
+            BranchCond::Eq => BranchCond::Ne,
+            BranchCond::Ne => BranchCond::Eq,
+            BranchCond::Lt => BranchCond::Ge,
+            BranchCond::Ge => BranchCond::Lt,
+            BranchCond::Ltu => BranchCond::Geu,
+            BranchCond::Geu => BranchCond::Ltu,
+        }
+    }
+
     fn r(self) -> u32 {
         match self {
             BranchCond::Eq => 0x1,
@@ -304,7 +320,7 @@ impl Asm {
 
     /// Pads with zero bytes to the next 4-byte boundary.
     pub fn align4(&mut self) {
-        while self.code.len() % 4 != 0 {
+        while !self.code.len().is_multiple_of(4) {
             self.code.push(0);
         }
     }
@@ -334,7 +350,7 @@ impl Asm {
 
     /// `call{n}` to a label in the same buffer (n = 0, 4, 8 or 12).
     pub fn call(&mut self, n: u8, to: Label) -> Result<(), String> {
-        if n % 4 != 0 || n > 12 {
+        if !n.is_multiple_of(4) || n > 12 {
             return Err("n ya call lazima iwe 0, 4, 8 au 12".into());
         }
         let at = self.pc();
@@ -409,6 +425,7 @@ mod tests {
     #[test]
     fn register_forms_match_the_assembler() {
         assert_eq!(add(2, 3, 4), 0x802340);
+        assert_eq!(addx8(2, 3, 4), 0xb02340);
         assert_eq!(sub(2, 3, 4), 0xc02340);
         assert_eq!(and(2, 3, 4), 0x102340);
         assert_eq!(or(2, 3, 4), 0x202340);

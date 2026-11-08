@@ -806,6 +806,38 @@ fn narrow_list_elements() {
 /// infinities, NaN — and a divisor that is not a power of two is left alone.
 // Verifies: REQ-NUM-1
 #[test]
+fn negated_constants_fold_exactly() {
+    // `-10` is a negated integer constant: folded, then converted at build time where it is
+    // used as a double (a comparison, a sum, a returned value).
+    check(
+        "fneg",
+        r#"
+        kazi kata(x: Namba) -> Namba {
+            ikiwa x > 10 {
+                rejesha 10
+            } au_ikiwa x < -10 {
+                rejesha -10
+            }
+            rejesha x
+        }
+        kazi t() -> Orodha<Namba> {
+            weka r: Orodha<Namba> = []
+            r.ongeza(kata(25.5))
+            r.ongeza(kata(-25.5))
+            r.ongeza(kata(-3.25))
+            r.ongeza(kata(-10))
+            weka z: Namba = 0
+            r.ongeza(z + -7)
+            r.ongeza(-0 * z)
+            r.ongeza(-9007199254740992 + 1)
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
 fn division_by_powers_of_two_and_folded_conversions() {
     check(
         "fdiv",

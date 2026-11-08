@@ -15,8 +15,8 @@ salama: kazi 'dhibiti' — hatua ≤ 69, kumbukumbu ≤ baiti 200
 salama: kazi 'wastani' — hatua ≤ 49, kumbukumbu ≤ baiti 104
 msimbo asilia: ./kilele/kidhibiti.nguvu
 kifaa (ESP32): ./kilele/kidhibiti-esp32.o na ./kilele/kidhibiti.h — kazi: wastani, dhibiti
-kifaa (ESP32): kazi 'wastani' — mrundikano ≤ baiti 224
-kifaa (ESP32): kazi 'dhibiti' — mrundikano ≤ baiti 304
+kifaa (ESP32): kazi 'wastani' — mrundikano ≤ baiti 48
+kifaa (ESP32): kazi 'dhibiti' — mrundikano ≤ baiti 64
 imejengwa: ./kilele/kidhibiti.asb
 ```
 
@@ -29,8 +29,11 @@ than it otherwise needs.
 `#[sharti(lengo = "esp32")]` selects items for this target as for any other.
 
 - `kilele/<jina>-esp32.o` — an ELF32 relocatable object (Xtensa) with one global function per
-  strict function, `asili_<kazi>`, using the windowed ABI that ESP-IDF code uses. The code uses
-  the ESP32's 16-bit code-density instructions wherever one fits (about a quarter smaller).
+  strict function, `asili_<kazi>`, using the windowed ABI that ESP-IDF code uses. An export is
+  the function itself, reading its arguments from `hoja` and writing its number to `matokeo`
+  (a function that cannot be compiled that way is called through a small wrapper instead). The
+  code uses the ESP32's 16-bit code-density instructions wherever one fits (about a quarter
+  smaller).
 - `kilele/<jina>.h` — their C declarations.
 
 ## Link into an ESP-IDF firmware
@@ -95,11 +98,12 @@ bit.
 
 ## Not yet
 
-- **Speed.** Values live in the registers a call preserves (`a2`–`a7`: two 64-bit pairs for
-  integers, one for doubles) or in stack slots shared by values never live together; constant
-  shifts are inline, comparisons branch directly, and an export taking and returning only
-  numbers calls its function's direct entry. Double arithmetic is the GCC runtime's software
-  routines (about 0.4 µs per addition on a 240 MHz ESP32), so float-heavy code is bounded by
-  them: the controller example takes about 1.45 times as long as the same functions in C
-  (`gcc -O2`) — `wastani` 5.9 µs against 4.2 µs.
+- **Faster doubles than C.** Double arithmetic is the GCC runtime's software routines (about
+  0.37 µs per addition on a 240 MHz ESP32), the same ones C calls, so float-heavy code runs at
+  C's speed and no faster: the controller example matches the same functions in C (`gcc -O2`)
+  — `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20. Values live in the three
+  register pairs a call preserves (`a2`–`a7`) or in stack slots shared by values never live
+  together; constants are rebuilt where read; a list element feeding a double operation is
+  loaded straight into its argument registers; an unrolled loop's index checks are one check
+  of the largest index (the call fails the same way whichever index is out of range).
 - Start-up code, RTOS integration and peripherals are the firmware's: the object is a library.

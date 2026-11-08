@@ -23,15 +23,28 @@ pub struct Ctx<'a> {
     /// Lower the direct entry — arguments `(host, registers)`, the result returned in a float
     /// register with status 0 — instead of the ordinary one.
     pub entry_direct: bool,
+    /// Direct entries may take list parameters, read from the register buffer right after the
+    /// numeric registers (eight bytes each, as list references). Only for device code, where
+    /// every call to a function taking a list is inlined first, so such an entry is only ever
+    /// called by its export. An index out of range then fails the call with the status a
+    /// device's runtime gives, without the host's message.
+    pub direct_lists: bool,
 }
 
 /// Whether a function's shape allows a direct entry: numbers in, a number out, and no list or
 /// generic registers (so the only frame it needs is its numeric register file).
 pub fn direct_signature(f: &BytecodeFunc) -> bool {
-    f.list_regs == 0
+    f.list_regs == 0 && direct_shape(f, false)
+}
+
+/// [`direct_signature`], with list registers and parameters allowed when `lists` (see
+/// [`Ctx::direct_lists`]).
+pub fn direct_shape(f: &BytecodeFunc, lists: bool) -> bool {
+    let param = |ty: Ty| matches!(ty, Ty::Num | Ty::Bool) || (lists && ty == Ty::List);
+    (lists || f.list_regs == 0)
         && f.val_regs == 0
         && matches!(f.ret, Ty::Num | Ty::Bool)
-        && f.params.iter().all(|p| matches!(p.ty, Ty::Num | Ty::Bool))
+        && f.params.iter().all(|p| param(p.ty))
 }
 
 /// Which instructions a path from the entry reaches (following jumps and fall-through).
@@ -155,7 +168,7 @@ fn liveness(code: &[Opcode]) -> Vec<std::collections::BTreeSet<Reg>> {
 /// Lower one function, or `None` if its jump targets are malformed (or, for a direct entry,
 /// if some instruction needs the host).
 pub fn lower(index: usize, function: &BytecodeFunc, ctx: &Ctx) -> Option<super::ir::Func> {
-    if ctx.entry_direct && !direct_signature(function) {
+    if ctx.entry_direct && !direct_shape(function, ctx.direct_lists) {
         return None;
     }
     let code = &function.code;
@@ -764,7 +777,20 @@ impl<'a> Lower<'a> {
         let reg = self.b.iconst(r as i64);
         let kind = self.list_kinds[r as usize];
         let want = self.b.iconst(kind.code() as i64);
-        self.call_into(RtFn::ListPtr, vec![FRAME, reg, want], Some(p), false);
+        // A direct entry's list references follow its numeric registers (`Ctx::direct_lists`).
+        let frame = if self.ctx.entry_direct {
+            let f = self.vreg(Class::Int);
+            self.push(Inst::IntImm {
+                op: IntOp::Add,
+                dst: f,
+                a: NUMS,
+                imm: 8 * self.function.num_regs as i32,
+            });
+            f
+        } else {
+            FRAME
+        };
+        self.call_into(RtFn::ListPtr, vec![frame, reg, want], Some(p), false);
         if kind != Kind::F64 {
             // The analysis saw every value stored into this list, so each fits `kind` and the
             // runtime always hands back a pointer. Null would mean that proof was wrong: stop
@@ -785,8 +811,11 @@ impl<'a> Lower<'a> {
             self.b.terminate(Term::Return(status));
             self.b.switch_to(fine);
         }
-        self.call_into(RtFn::ListLen, vec![FRAME, reg], Some(l), false);
+        self.call_into(RtFn::ListLen, vec![frame, reg], Some(l), false);
         if let Some((head, room)) = self.list_room[r as usize] {
+            if self.ctx.entry_direct {
+                self.failed = true; // growing a list needs the host's frame
+            }
             self.call_into(RtFn::ListHead, vec![FRAME, reg], Some(head), false);
             self.call_into(RtFn::ListRoom, vec![FRAME, reg], Some(room), false);
         }
@@ -920,7 +949,11 @@ impl<'a> Lower<'a> {
             else_: oob,
         });
         self.b.switch_to(oob);
-        self.slow(pc, op);
+        // The host raises the out-of-range error. Device code has no host: the call fails with
+        // the status its runtime would give (`Ctx::direct_lists` is device code only).
+        if !(self.ctx.entry_direct && self.ctx.direct_lists) {
+            self.slow(pc, op);
+        }
         self.ret_status(STATUS_FAIL, pc);
         self.b.switch_to(fast);
         i
@@ -1325,6 +1358,9 @@ impl<'a> Lower<'a> {
                 });
             }
             Opcode::ListPush { list, src } => {
+                if self.ctx.entry_direct {
+                    self.failed = true; // the runtime grows the list through the host's frame
+                }
                 let (p, l) = self.lists[*list as usize];
                 let (head, room) = self.list_room[*list as usize].expect("pushed list");
                 let kind = self.list_kinds[*list as usize];
@@ -1370,6 +1406,9 @@ impl<'a> Lower<'a> {
                 self.b.switch_to(done);
             }
             Opcode::ListRemove { list, idx } => {
+                if self.ctx.entry_direct {
+                    self.failed = true; // the runtime removes through the host's frame
+                }
                 // Out-of-range removal is a no-op, as in the language.
                 let i0 = self.get_i(*idx);
                 let z = self.b.iconst(0);

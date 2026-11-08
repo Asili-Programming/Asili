@@ -45,6 +45,8 @@ pub const SYSV: Abi = Abi {
         float_callee_saved: &[],
         float_caller_saved: &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         share_slots: false,
+        one_file: false,
+        remat_constants: false,
     },
     pushed: &[Gpr::Rbx, Gpr::R12, Gpr::R13, Gpr::R14, Gpr::R15],
     args: &[Gpr::Rdi, Gpr::Rsi, Gpr::Rdx, Gpr::Rcx, Gpr::R8, Gpr::R9],
@@ -61,6 +63,8 @@ pub const WIN64: Abi = Abi {
         float_callee_saved: &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         float_caller_saved: &[2, 3, 4, 5],
         share_slots: false,
+        one_file: false,
+        remat_constants: false,
     },
     pushed: &[
         Gpr::Rbx,

@@ -19,24 +19,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tests/kifaa.rs` now also runs every case on the ESP32 under Espressif's QEMU when
   `ASILI_ESP_IDF` is set, bit for bit against native code (the controller example, the
   hand-written cases and 400 random programs agree), and the same images agree on a real ESP32.
-  ESP32 code uses the 16-bit code-density instructions wherever one fits (about 23% smaller),
-  keeps values in the registers a call preserves (`a2`–`a7`: two pairs for integers, one for
-  doubles; about 24% smaller again and 7–8% faster on the controller example), and `pata jenga`
-  prints each export's stack need (`mrundikano ≤ baiti N`). Constant shifts are inline,
-  comparisons branch directly and numbers-only exports call their direct entry. See
-  `docs/howto/08-build-for-esp32.md`.
+  ESP32 code uses the 16-bit code-density instructions wherever one fits, keeps values in the
+  three register pairs a call preserves (`a2`–`a7`, shared by integers and doubles; constants
+  are rebuilt where read instead of taking one, and a list element feeding a double operation is
+  loaded straight into its argument registers), and `pata jenga` prints each export's stack need
+  (`mrundikano ≤ baiti N`). An export whose function returns a number is that function itself,
+  with the C interface built into its IR — no wrapper call, no register file in memory — and a
+  function taking lists gets a direct entry on a device (`lower::Ctx::direct_lists`). Constant
+  shifts are inline, comparisons branch directly, and an unrolled loop's index checks are one
+  check. On a real ESP32 (240 MHz, `gcc -O2` C as reference) the controller example runs at the
+  speed of the same functions in C: `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20,
+  in 48 and 64 bytes of stack. See `docs/howto/08-build-for-esp32.md`.
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
 
 ### Changed
 
-- **Native code: exact float constant folds** (`nguvu::opt`): a division by a power-of-two
-  constant runs as a multiplication by its exact reciprocal, and a constant integer converted to
-  a double is folded. Results are unchanged on every input (signed zeros, infinities, NaN and
-  subnormal results included; `native_tiers` covers the edges). The ESP32, where doubles are
-  software, gains most: the controller example's `wastani` drops from 8.5 to 5.9 µs. Native
-  images are rebuilt (`IMAGE_VERSION` 9).
+- **Native code: exact constant folds** (`nguvu::opt`): a division by a power-of-two constant
+  runs as a multiplication by its exact reciprocal; a constant integer converted to a double, and
+  a negated constant (`-10`), are folded; an eight-byte list element at a constant index (an
+  unrolled loop's) is a load or store at a constant offset, as is one through `address + k`, and
+  a repeated such load reuses the value; along a straight run of index checks that all fail the
+  same way (device code), one check of the largest index replaces them. Results are unchanged
+  on every input (signed zeros, infinities, NaN and subnormal results included; `native_tiers`
+  and the device tests cover the edges). The ESP32, where doubles are software, gains most.
+  Native images are rebuilt (`IMAGE_VERSION` 10).
 - **License**: Asili is now licensed under the Apache License, Version 2.0 (previously GPL-2.0).
   The `LICENSE` file and the README are updated to match.
 

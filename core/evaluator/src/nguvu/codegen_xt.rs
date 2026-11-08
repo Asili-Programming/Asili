@@ -23,21 +23,25 @@
 //! Frame: `entry a1, F` with the home slots at `sp + 8 * slot`, the direct-call buffer above
 //! them, and `F` the locals rounded to 16 bytes plus 32, as GCC lays out a frame that calls.
 
-use super::ir::{Class, FCond, FloatOp, Func, ICond, Inst, IntOp, RtFn, Term, VReg};
-use super::regalloc::{allocate, Allocation, Loc, Target};
+use super::ir::{Class, FCond, FloatOp, Func, Home, ICond, Inst, IntOp, RtFn, Term, VReg};
+use super::regalloc::{allocate_with, Allocation, Loc, Target};
 use super::xt32::{self, Asm, BranchCond, Label};
 
 /// The allocator's registers: pairs of `a2`–`a7`, the registers a `call8` preserves (the ESP32
-/// calls a helper for every double operation, so values live across calls constantly). Integers
-/// get two pairs and doubles one; both are register pairs here, so the classes' lists are
-/// disjoint. Home slots are shared by values whose live ranges never overlap (this generator
-/// keeps nothing in a slot beyond the value's own life).
+/// calls a helper for every double operation, so values live across calls constantly). Both
+/// classes are register pairs here, drawn from the same three (`one_file`), integers trying
+/// them from the first and doubles from the last. Home slots are shared by values whose live
+/// ranges never overlap (this generator keeps nothing in a slot beyond the value's own life).
+/// Constants take no register: each is rebuilt where it is read (`movi`, or `l32r` from the
+/// literal pool), which costs no more than a copy and leaves the three pairs to other values.
 pub const TARGET: Target = Target {
-    int_callee_saved: &[0, 1],
+    int_callee_saved: &[0, 1, 2],
     int_caller_saved: &[],
-    float_callee_saved: &[2],
+    float_callee_saved: &[2, 1, 0],
     float_caller_saved: &[],
     share_slots: true,
+    one_file: true,
+    remat_constants: true,
 };
 
 type Pair = (u8, u8);
@@ -193,6 +197,16 @@ impl Pool {
     }
 }
 
+/// The GCC runtime routine computing `op` on doubles.
+fn float_symbol(op: FloatOp) -> &'static str {
+    match op {
+        FloatOp::Add => "__adddf3",
+        FloatOp::Sub => "__subdf3",
+        FloatOp::Mul => "__muldf3",
+        FloatOp::Div => "__divdf3",
+    }
+}
+
 /// The libgcc comparison for `cond` and the branch on its result (in `a10`, against `T2` = 0)
 /// that means "true": the routines return <0, 0, >0, with unordered operands making each ordered
 /// test false (and `__nedf2` non-zero) — exactly the IR's semantics.
@@ -213,11 +227,23 @@ struct Gen<'f> {
     alloc: Allocation,
     frame: u32,
     pool: Pool,
+    /// The value of each register defined once, by a constant, and not an argument: one left
+    /// without a register is rebuilt where it is read instead of kept in a slot.
+    consts: Vec<Option<i64>>,
 }
 
 /// Xtensa code for `func`; an instruction the device cannot run is an error naming it.
 pub fn generate(func: &Func) -> Result<Code, String> {
-    let alloc = allocate(func, &TARGET);
+    let loads = fused_loads(func);
+    let mut kept_out = vec![false; func.classes.len()];
+    for (b, block) in func.blocks.iter().enumerate() {
+        for (i, inst) in block.insts.iter().enumerate() {
+            if loads[b][i] {
+                kept_out[inst.defs()[0].0 as usize] = true;
+            }
+        }
+    }
+    let alloc = allocate_with(func, &TARGET, &kept_out);
     let locals = 8 * alloc.slots + func.call_buffer;
     let frame = locals.div_ceil(16) * 16 + 32;
     if frame > 32760 {
@@ -229,6 +255,15 @@ pub fn generate(func: &Func) -> Result<Code, String> {
         alloc,
         frame,
         pool: Pool::default(),
+        consts: func
+            .homes()
+            .iter()
+            .enumerate()
+            .map(|(v, h)| match h {
+                Home::Const(bits) if !func.args.contains(&VReg(v as u32)) => Some(*bits),
+                _ => None,
+            })
+            .collect(),
     };
     g.prologue()?;
     let labels: Vec<Label> = (0..func.blocks.len()).map(|_| g.asm.new_label()).collect();
@@ -259,8 +294,16 @@ pub fn generate(func: &Func) -> Result<Code, String> {
         } else {
             &block.insts[..]
         };
-        for inst in body {
-            g.inst(inst)?;
+        for (i, inst) in body.iter().enumerate() {
+            if loads[bi][i] {
+                continue; // loaded by the double operation that follows (`fused_loads`)
+            }
+            match (i.checked_sub(1).map(|p| loads[bi][p]), inst) {
+                (Some(true), Inst::Float { op, dst, a, b }) => {
+                    g.float_loaded(*op, *dst, *a, *b, &body[i - 1])?
+                }
+                _ => g.inst(inst)?,
+            }
         }
         if let (Some(cmp), Term::Branch { then_, else_, .. }) = (fused, &block.term) {
             let (t, e) = (labels[then_.0 as usize], labels[else_.0 as usize]);
@@ -321,6 +364,14 @@ impl<'f> Gen<'f> {
         Ok(8 * s)
     }
 
+    /// The constant `v` holds, when it has no register and is rebuilt where read.
+    fn remat(&self, v: VReg) -> Option<i64> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Slot => self.consts[v.0 as usize],
+            _ => None,
+        }
+    }
+
     /// The register pair holding `v`, if it was given one.
     fn reg(&self, v: VReg) -> Option<Pair> {
         match self.alloc.loc[v.0 as usize] {
@@ -333,22 +384,50 @@ impl<'f> Gen<'f> {
         let frame = self.frame;
         self.emit(xt32::entry(frame))?;
         self.emit(xt32::movi(T2, 0))?;
-        // Incoming arguments are pointer-sized, in a2..: park every one in its home first
-        // (zero-extended), then load those given a register, so none is overwritten unsaved.
+        // Incoming arguments are pointer-sized, in a2..: those without a register go to their
+        // homes (zero-extended); those with one move into it, in an order that overwrites no
+        // argument still to be moved (parked in its home and loaded after, in a cycle).
         let args = self.func.args;
+        if args.len() > 6 {
+            return Err("nguvu: hoja nyingi mno kwa ESP32".into());
+        }
+        let mut pending: Vec<(u8, Pair)> = Vec::new(); // (incoming register, its pair)
         for (i, &v) in args.iter().enumerate() {
-            if i >= 6 {
-                return Err("nguvu: hoja nyingi mno kwa ESP32".into());
+            let incoming = 2 + i as u8;
+            match self.reg(v) {
+                Some(p) => pending.push((incoming, p)),
+                None => {
+                    let off = self.slot(v)?;
+                    self.st32(incoming, SP, off)?;
+                    self.st32(T2, SP, off + 4)?;
+                }
             }
+        }
+        while !pending.is_empty() {
+            let free = pending.iter().position(|&(src, p)| {
+                pending
+                    .iter()
+                    .all(|&(other, _)| other == src || (other != p.0 && other != p.1))
+            });
+            let Some(k) = free else { break };
+            let (src, p) = pending.remove(k);
+            if p.0 != src {
+                self.asm.word(xt32::mov(p.0, src));
+            }
+            self.emit(xt32::movi(p.1, 0))?;
+        }
+        // A cycle: park the rest, then load them.
+        let parked: Vec<(u8, Pair)> = pending;
+        for &(src, _) in &parked {
+            let v = args[(src - 2) as usize];
             let off = self.slot(v)?;
-            self.st32(2 + i as u8, SP, off)?;
+            self.st32(src, SP, off)?;
             self.st32(T2, SP, off + 4)?;
         }
-        for &v in args {
-            if let Some(r) = self.reg(v) {
-                let off = self.slot(v)?;
-                self.ld64(r, SP, off)?;
-            }
+        for &(src, p) in &parked {
+            let v = args[(src - 2) as usize];
+            let off = self.slot(v)?;
+            self.ld64(p, SP, off)?;
         }
         Ok(())
     }
@@ -412,6 +491,10 @@ impl<'f> Gen<'f> {
 
     /// The pair holding `v`: its register, or `scratch` loaded from its home.
     fn operand(&mut self, v: VReg, scratch: Pair) -> Result<Pair, String> {
+        if let Some(c) = self.remat(v) {
+            self.const64(scratch, c)?;
+            return Ok(scratch);
+        }
         match self.reg(v) {
             Some(r) => Ok(r),
             None => {
@@ -424,6 +507,9 @@ impl<'f> Gen<'f> {
 
     /// `dst = v` for a specific pair (call arguments, return registers).
     fn move_into(&mut self, v: VReg, dst: Pair) -> Result<(), String> {
+        if let Some(c) = self.remat(v) {
+            return self.const64(dst, c);
+        }
         match self.reg(v) {
             Some(r) => {
                 self.mov_pair(dst, r);
@@ -438,6 +524,9 @@ impl<'f> Gen<'f> {
 
     /// `r = ` the low word of `v` (a pointer-sized argument).
     fn low_into(&mut self, v: VReg, r: u8) -> Result<(), String> {
+        if let Some(c) = self.remat(v) {
+            return self.const32(r, c as u32);
+        }
         match self.reg(v) {
             Some(p) => {
                 if p.0 != r {
@@ -449,6 +538,18 @@ impl<'f> Gen<'f> {
                 let off = self.slot(v)?;
                 let (b, o) = self.at(SP, off)?;
                 self.emit(xt32::l32i(r, b, o))
+            }
+        }
+    }
+
+    /// The register holding the low word of `v` (an address): its register's, or `scratch`
+    /// loaded with it.
+    fn address(&mut self, v: VReg, scratch: u8) -> Result<u8, String> {
+        match self.reg(v) {
+            Some(p) => Ok(p.0),
+            None => {
+                self.low_into(v, scratch)?;
+                Ok(scratch)
             }
         }
     }
@@ -478,6 +579,39 @@ impl<'f> Gen<'f> {
     fn call_symbol(&mut self, symbol: &str) {
         self.l32r(T, Lit::Sym(symbol.to_string()));
         self.asm.word(xt32::callx(8, T).expect("callx8"));
+    }
+
+    /// `dst = a op b` for a double operation one of whose operands `load` (a fused `Load`,
+    /// see [`fused_loads`]) defines: loaded straight into its argument registers.
+    fn float_loaded(
+        &mut self,
+        op: FloatOp,
+        dst: VReg,
+        a: VReg,
+        b: VReg,
+        load: &Inst,
+    ) -> Result<(), String> {
+        let Inst::Load {
+            dst: loaded,
+            base,
+            offset,
+        } = *load
+        else {
+            return Err("nguvu: si upakiaji".into());
+        };
+        let off = u32::try_from(offset).map_err(|_| "nguvu: anwani hasi")?;
+        let (into, other, other_into) = if a == loaded {
+            ((ARG0, ARG0 + 1), b, (ARG0 + 2, ARG0 + 3))
+        } else {
+            ((ARG0 + 2, ARG0 + 3), a, (ARG0, ARG0 + 1))
+        };
+        // The base in a scratch word the load overwrites last (`ld64`), then the other operand
+        // into its own pair, clear of the loaded one.
+        let base = self.address(base, T2)?;
+        self.ld64(into, base, off)?;
+        self.move_into(other, other_into)?;
+        self.call_symbol(float_symbol(op));
+        self.put(dst, (ARG0, ARG0 + 1))
     }
 
     /// `dst = symbol(a, b)` on two 64-bit values (doubles or integers), result 64-bit.
@@ -573,16 +707,23 @@ impl<'f> Gen<'f> {
     ) -> Result<(), String> {
         let yes = self.asm.new_label();
         let no = self.asm.new_label();
+        // The test falls through to `yes` when only `t` needs a jump (`e` is the next block),
+        // to `no` otherwise.
+        let fall = if Some(e) == next && Some(t) != next {
+            yes
+        } else {
+            no
+        };
         match cmp {
             Inst::ICmp { cond, a, b, .. } => {
                 let pa = self.operand(*a, S0)?;
                 let pb = self.operand(*b, S1)?;
-                self.icmp_branch(*cond, pa, pb, yes, no);
+                self.icmp_branch(*cond, pa, pb, yes, no, fall);
             }
             Inst::ICmpImm { cond, a, imm, .. } => {
                 let pa = self.operand(*a, S0)?;
                 self.const64(S1, *imm as i64)?;
-                self.icmp_branch(*cond, pa, S1, yes, no);
+                self.icmp_branch(*cond, pa, S1, yes, no, fall);
             }
             Inst::TestImm { zero, a, imm, .. } => {
                 let pa = self.operand(*a, S0)?;
@@ -596,7 +737,7 @@ impl<'f> Gen<'f> {
                 } else {
                     BranchCond::Ne
                 };
-                self.asm.branch(bc, T, T2, yes);
+                self.last_branch(bc, T, T2, yes, no, fall);
             }
             Inst::FCmp { cond, a, b, .. } => {
                 let (symbol, bc, x, y) = fcmp_test(*cond);
@@ -604,35 +745,44 @@ impl<'f> Gen<'f> {
                 self.move_into(*b, (ARG0 + 2, ARG0 + 3))?;
                 self.call_symbol(symbol);
                 self.emit(xt32::movi(T2, 0))?;
-                self.asm.branch(bc, x, y, yes);
+                self.last_branch(bc, x, y, yes, no, fall);
             }
             _ => return Err("nguvu: si ulinganisho".into()),
         }
-        // Falling through here means false.
-        if Some(t) == next {
-            self.asm.bind(no);
-            self.asm.jump(e);
+        if fall == yes {
+            // Holds: jump to `t`; fails: on into the next block, `e`.
             self.asm.bind(yes);
+            self.asm.jump(t);
+            self.asm.bind(no);
         } else {
             self.asm.bind(no);
             if Some(e) != next {
                 self.asm.jump(e);
-            } else {
-                let past = self.asm.new_label();
-                self.asm.jump(past);
-                self.asm.bind(yes);
-                self.asm.jump(t);
-                self.asm.bind(past);
-                return Ok(());
             }
             self.asm.bind(yes);
-            self.asm.jump(t);
+            if Some(t) != next {
+                self.asm.jump(t);
+            }
         }
         Ok(())
     }
 
-    /// Branch to `yes` when `a cond b`, to `no` (or fall through, meaning false) otherwise.
-    fn icmp_branch(&mut self, cond: ICond, a: Pair, b: Pair, yes: Label, no: Label) {
+    /// The last test of a comparison: to `t` when `x c y`, else to `f`, where one of them may
+    /// be `fall`, bound right after (reached by falling through).
+    fn last_branch(&mut self, c: BranchCond, x: u8, y: u8, t: Label, f: Label, fall: Label) {
+        if f == fall {
+            self.asm.branch(c, x, y, t);
+        } else if t == fall {
+            self.asm.branch(c.negate(), x, y, f);
+        } else {
+            self.asm.branch(c, x, y, t);
+            self.asm.jump(f);
+        }
+    }
+
+    /// Branch to `yes` when `a cond b`, else to `no`; `fall` (one of them) is bound right
+    /// after, so reaching it means falling through.
+    fn icmp_branch(&mut self, cond: ICond, a: Pair, b: Pair, yes: Label, no: Label, fall: Label) {
         // `x < y` on 64-bit pairs: decided by the high words unless they are equal.
         let lt = |g: &mut Self, x: Pair, y: Pair, signed: bool, t: Label, f: Label| {
             let hi = if signed {
@@ -642,8 +792,12 @@ impl<'f> Gen<'f> {
             };
             g.asm.branch(hi, x.1, y.1, t);
             g.asm.branch(BranchCond::Ne, x.1, y.1, f);
-            g.asm.branch(BranchCond::Ltu, x.0, y.0, t);
-            g.asm.jump(f);
+            g.last_branch(BranchCond::Ltu, x.0, y.0, t, f, fall);
+        };
+        // `x == y`: both words equal.
+        let eq = |g: &mut Self, x: Pair, y: Pair, t: Label, f: Label| {
+            g.asm.branch(BranchCond::Ne, x.1, y.1, f);
+            g.last_branch(BranchCond::Eq, x.0, y.0, t, f, fall);
         };
         match cond {
             ICond::Lt => lt(self, a, b, true, yes, no),
@@ -652,16 +806,8 @@ impl<'f> Gen<'f> {
             ICond::Le => lt(self, b, a, true, no, yes),
             ICond::Ult => lt(self, a, b, false, yes, no),
             ICond::Ule => lt(self, b, a, false, no, yes),
-            ICond::Eq | ICond::Ne => {
-                let (t, f) = if cond == ICond::Eq {
-                    (yes, no)
-                } else {
-                    (no, yes)
-                };
-                self.asm.branch(BranchCond::Ne, a.1, b.1, f);
-                self.asm.branch(BranchCond::Ne, a.0, b.0, f);
-                self.asm.jump(t);
-            }
+            ICond::Eq => eq(self, a, b, yes, no),
+            ICond::Ne => eq(self, a, b, no, yes),
         }
     }
 
@@ -669,34 +815,44 @@ impl<'f> Gen<'f> {
 
     /// `dst = a op b`; `a` is a register pair or `S0`, `b` one or `S1`.
     fn int_op(&mut self, op: IntOp, dst: VReg, a: Pair, b: Pair) -> Result<(), String> {
+        // Add and subtract read `a`'s low word after writing the result's: into the result's
+        // register only when it is neither operand's.
+        let fresh = match self.target(dst, S2) {
+            d if d != a && d != b => d,
+            _ => S2,
+        };
         match op {
             IntOp::Add => {
+                let d = fresh;
                 let nc = self.asm.new_label();
-                self.asm.word(xt32::add(S2.0, a.0, b.0));
-                self.asm.word(xt32::add(S2.1, a.1, b.1));
-                self.asm.branch(BranchCond::Geu, S2.0, a.0, nc); // no carry out of the low word
-                self.emit(xt32::addi(S2.1, S2.1, 1))?;
+                self.asm.word(xt32::add(d.0, a.0, b.0));
+                self.asm.word(xt32::add(d.1, a.1, b.1));
+                self.asm.branch(BranchCond::Geu, d.0, a.0, nc); // no carry out of the low word
+                self.emit(xt32::addi(d.1, d.1, 1))?;
                 self.asm.bind(nc);
-                self.put(dst, S2)
+                self.put(dst, d)
             }
             IntOp::Sub => {
+                let d = fresh;
                 let nb = self.asm.new_label();
-                self.asm.word(xt32::sub(S2.0, a.0, b.0));
-                self.asm.word(xt32::sub(S2.1, a.1, b.1));
+                self.asm.word(xt32::sub(d.0, a.0, b.0));
+                self.asm.word(xt32::sub(d.1, a.1, b.1));
                 self.asm.branch(BranchCond::Geu, a.0, b.0, nb); // no borrow from the low word
-                self.emit(xt32::addi(S2.1, S2.1, -1))?;
+                self.emit(xt32::addi(d.1, d.1, -1))?;
                 self.asm.bind(nb);
-                self.put(dst, S2)
+                self.put(dst, d)
             }
             IntOp::And | IntOp::Or | IntOp::Xor => {
+                // Word by word: a result sharing an operand's pair reads each word first.
+                let d = self.target(dst, S2);
                 let f = match op {
                     IntOp::And => xt32::and,
                     IntOp::Or => xt32::or,
                     _ => xt32::xor,
                 };
-                self.asm.word(f(S2.0, a.0, b.0));
-                self.asm.word(f(S2.1, a.1, b.1));
-                self.put(dst, S2)
+                self.asm.word(f(d.0, a.0, b.0));
+                self.asm.word(f(d.1, a.1, b.1));
+                self.put(dst, d)
             }
             IntOp::Mul | IntOp::SDiv | IntOp::SRem | IntOp::UDiv | IntOp::URem => {
                 let symbol = match op {
@@ -743,6 +899,8 @@ impl<'f> Gen<'f> {
 
     fn inst(&mut self, inst: &Inst) -> Result<(), String> {
         match inst {
+            // A constant without a register is rebuilt where it is read.
+            Inst::IConst { dst, .. } | Inst::FConst { dst, .. } if self.remat(*dst).is_some() => {}
             Inst::IConst { dst, value } => {
                 let d = self.target(*dst, S2);
                 self.const64(d, *value)?;
@@ -757,8 +915,37 @@ impl<'f> Gen<'f> {
             Inst::Mov { dst, src }
             | Inst::FloatBits { dst, src }
             | Inst::BitsFloat { dst, src } => {
+                // Values sharing a home (coalesced, or a slot reused) need no copy.
+                let same_home = self.reg(*src).is_none()
+                    && self.reg(*dst).is_none()
+                    && self.remat(*src).is_none()
+                    && self.remat(*dst).is_none()
+                    && self.slot(*src)? == self.slot(*dst)?;
+                if same_home {
+                    return Ok(());
+                }
+                if let Some(c) = self.remat(*src) {
+                    let d = self.target(*dst, S0);
+                    self.const64(d, c)?;
+                    return self.put(*dst, d);
+                }
                 let s = self.operand(*src, S0)?;
                 self.put(*dst, s)?;
+            }
+            // A logic operation on a rebuilt constant uses it as an immediate.
+            Inst::Int { op, dst, a, b }
+                if matches!(op, IntOp::And | IntOp::Or | IntOp::Xor)
+                    && (self.remat(*a).is_some() || self.remat(*b).is_some()) =>
+            {
+                let (x, c) = match self.remat(*b) {
+                    Some(c) => (*a, c),
+                    None => (*b, self.remat(*a).unwrap()),
+                };
+                let px = self.operand(x, S0)?;
+                let d = self.target(*dst, S2);
+                self.logic_imm(*op, d.0, px.0, c as u32)?;
+                self.logic_imm(*op, d.1, px.1, (c >> 32) as u32)?;
+                self.put(*dst, d)?;
             }
             Inst::Int { op, dst, a, b } => {
                 let pa = self.operand(*a, S0)?;
@@ -769,8 +956,19 @@ impl<'f> Gen<'f> {
                 if matches!(op, IntOp::Shl | IntOp::Sar) && (0..64).contains(imm) =>
             {
                 let pa = self.operand(*a, S0)?;
-                self.shift_imm(*op == IntOp::Shl, *imm as u32, pa)?;
-                self.put(*dst, S2)?;
+                let d = self.target(*dst, S2);
+                self.shift_imm(*op == IntOp::Shl, *imm as u32, pa, d)?;
+                self.put(*dst, d)?;
+            }
+            Inst::IntImm { op, dst, a, imm }
+                if matches!(op, IntOp::And | IntOp::Or | IntOp::Xor) =>
+            {
+                let pa = self.operand(*a, S0)?;
+                let d = self.target(*dst, S2);
+                let imm = *imm as i64; // sign-extended, as `const64` would
+                self.logic_imm(*op, d.0, pa.0, imm as u32)?;
+                self.logic_imm(*op, d.1, pa.1, (imm >> 32) as u32)?;
+                self.put(*dst, d)?;
             }
             Inst::IntImm { op, dst, a, imm } => {
                 let pa = self.operand(*a, S0)?;
@@ -795,15 +993,7 @@ impl<'f> Gen<'f> {
             Inst::MulOverflow { .. } => {
                 return Err("nguvu: MulOverflow haiungwi mkono kwa ESP32".into())
             }
-            Inst::Float { op, dst, a, b } => {
-                let symbol = match op {
-                    FloatOp::Add => "__adddf3",
-                    FloatOp::Sub => "__subdf3",
-                    FloatOp::Mul => "__muldf3",
-                    FloatOp::Div => "__divdf3",
-                };
-                self.call2(symbol, *dst, *a, *b)?;
-            }
+            Inst::Float { op, dst, a, b } => self.call2(float_symbol(*op), *dst, *a, *b)?,
             Inst::ICmp { cond, dst, a, b } => {
                 let pa = self.operand(*a, S0)?;
                 let pb = self.operand(*b, S1)?;
@@ -849,17 +1039,17 @@ impl<'f> Gen<'f> {
             Inst::FloatToInt { dst, src } => self.call1("__fixdfdi", *dst, *src)?,
             Inst::Load { dst, base, offset } => {
                 let off = u32::try_from(*offset).map_err(|_| "nguvu: anwani hasi")?;
-                let b = self.operand(*base, S1)?;
+                let b = self.address(*base, S1.0)?;
                 // `ld64` reads the base before overwriting it when they share a register.
                 let d = self.target(*dst, S0);
-                self.ld64(d, b.0, off)?;
+                self.ld64(d, b, off)?;
                 self.put(*dst, d)?;
             }
             Inst::Store { src, base, offset } => {
                 let off = u32::try_from(*offset).map_err(|_| "nguvu: anwani hasi")?;
-                let b = self.operand(*base, S1)?;
+                let b = self.address(*base, S1.0)?;
                 let s = self.operand(*src, S0)?;
-                self.st64(s, b.0, off)?;
+                self.st64(s, b, off)?;
             }
             Inst::LoadIndex {
                 dst,
@@ -871,9 +1061,9 @@ impl<'f> Gen<'f> {
                     // `device::check_lists` admits only lists of doubles on a device.
                     return Err("kosa la ndani: orodha isiyo ya Namba imefika ESP32".into());
                 }
-                let b = self.operand(*base, S1)?;
-                let i = self.operand(*index, S0)?;
-                self.element_address(b.0, i.0);
+                let b = self.address(*base, S1.0)?;
+                let i = self.address(*index, S0.0)?;
+                self.element_address(b, i);
                 let d = self.target(*dst, S2);
                 self.ld64(d, T, 0)?;
                 self.put(*dst, d)?;
@@ -888,9 +1078,9 @@ impl<'f> Gen<'f> {
                     return Err("kosa la ndani: orodha isiyo ya Namba imefika ESP32".into());
                 }
                 let s = self.operand(*src, S2)?;
-                let b = self.operand(*base, S1)?;
-                let i = self.operand(*index, S0)?;
-                self.element_address(b.0, i.0);
+                let b = self.address(*base, S1.0)?;
+                let i = self.address(*index, S0.0)?;
+                self.element_address(b, i);
                 self.st64(s, T, 0)?;
             }
             Inst::StackPointer { dst } => {
@@ -954,7 +1144,7 @@ impl<'f> Gen<'f> {
                             r += 1;
                         }
                         Class::Float => {
-                            if r % 2 != 0 {
+                            if !r.is_multiple_of(2) {
                                 r += 1;
                             }
                             self.move_into(*a, (r, r + 1))?;
@@ -977,36 +1167,61 @@ impl<'f> Gen<'f> {
         Ok(())
     }
 
-    /// `S2 = a << k` (`left`) or `a >> k` (arithmetic) for a constant `k` in 0..64, inline:
-    /// the funnel shift `src` moves bits across the two words.
-    fn shift_imm(&mut self, left: bool, k: u32, a: Pair) -> Result<(), String> {
+    /// `d = a op c` on one word; a constant of all zeros or all ones decides it outright.
+    fn logic_imm(&mut self, op: IntOp, d: u8, a: u8, c: u32) -> Result<(), String> {
+        let copy = |g: &mut Self| {
+            if d != a {
+                g.asm.word(xt32::mov(d, a));
+            }
+        };
+        match (op, c) {
+            (IntOp::And, u32::MAX) | (IntOp::Or | IntOp::Xor, 0) => copy(self),
+            (IntOp::And, 0) => self.emit(xt32::movi(d, 0))?,
+            (IntOp::Or, u32::MAX) => self.emit(xt32::movi(d, -1))?,
+            _ => {
+                self.const32(T, c)?;
+                let f = match op {
+                    IntOp::And => xt32::and,
+                    IntOp::Or => xt32::or,
+                    _ => xt32::xor,
+                };
+                self.asm.word(f(d, a, T));
+            }
+        }
+        Ok(())
+    }
+
+    /// `d = a << k` (`left`) or `a >> k` (arithmetic) for a constant `k` in 0..64, inline:
+    /// the funnel shift `src` moves bits across the two words. `d` may be `a` itself: each
+    /// form writes a word only after its last read.
+    fn shift_imm(&mut self, left: bool, k: u32, a: Pair, d: Pair) -> Result<(), String> {
         match (left, k) {
-            (_, 0) => self.mov_pair(S2, a),
+            (_, 0) => self.mov_pair(d, a),
             (true, 1..=31) => {
                 self.emit(xt32::ssai(32 - k))?;
-                self.asm.word(xt32::src(S2.1, a.1, a.0));
-                self.emit(xt32::slli(S2.0, a.0, k))?;
+                self.asm.word(xt32::src(d.1, a.1, a.0));
+                self.emit(xt32::slli(d.0, a.0, k))?;
             }
             (true, 32) => {
-                self.asm.word(xt32::mov(S2.1, a.0));
-                self.emit(xt32::movi(S2.0, 0))?;
+                self.asm.word(xt32::mov(d.1, a.0));
+                self.emit(xt32::movi(d.0, 0))?;
             }
             (true, _) => {
-                self.emit(xt32::slli(S2.1, a.0, k - 32))?;
-                self.emit(xt32::movi(S2.0, 0))?;
+                self.emit(xt32::slli(d.1, a.0, k - 32))?;
+                self.emit(xt32::movi(d.0, 0))?;
             }
             (false, 1..=31) => {
                 self.emit(xt32::ssai(k))?;
-                self.asm.word(xt32::src(S2.0, a.1, a.0));
-                self.emit(xt32::srai(S2.1, a.1, k))?;
+                self.asm.word(xt32::src(d.0, a.1, a.0));
+                self.emit(xt32::srai(d.1, a.1, k))?;
             }
             (false, 32) => {
-                self.asm.word(xt32::mov(S2.0, a.1));
-                self.emit(xt32::srai(S2.1, a.1, 31))?;
+                self.asm.word(xt32::mov(d.0, a.1));
+                self.emit(xt32::srai(d.1, a.1, 31))?;
             }
             (false, _) => {
-                self.emit(xt32::srai(S2.0, a.1, k - 32))?;
-                self.emit(xt32::srai(S2.1, a.1, 31))?;
+                self.emit(xt32::srai(d.0, a.1, k - 32))?;
+                self.emit(xt32::srai(d.1, a.1, 31))?;
             }
         }
         Ok(())
@@ -1014,11 +1229,70 @@ impl<'f> Gen<'f> {
 
     /// `T = base + 8 * index` (low words).
     fn element_address(&mut self, base: u8, index: u8) {
-        self.asm.word(xt32::add(T, index, index)); // 2i
-        self.asm.word(xt32::add(T, T, T)); // 4i
-        self.asm.word(xt32::add(T, T, T)); // 8i
-        self.asm.word(xt32::add(T, T, base));
+        self.asm.word(xt32::addx8(T, index, base));
     }
+}
+
+/// Per block and instruction: a `Load` whose value only the next instruction reads — a double
+/// operation taking it as exactly one operand, after which it is dead — for a register every
+/// one of whose definitions is such a load. It is loaded straight into that operand's
+/// argument registers, so the register needs no home (and a longer-lived value gets its pair).
+fn fused_loads(func: &Func) -> Vec<Vec<bool>> {
+    let live_out = func.liveness().live_out;
+    let candidate = |b: usize, i: usize| -> Option<VReg> {
+        let insts = &func.blocks[b].insts;
+        let (Inst::Load { dst, .. }, Some(Inst::Float { a, b: y, .. })) =
+            (&insts[i], insts.get(i + 1))
+        else {
+            return None;
+        };
+        if (a == dst) == (y == dst) {
+            return None;
+        }
+        // Dead after the operation: written again before any read, or never read again.
+        for inst in &insts[i + 2..] {
+            if inst.uses().contains(dst) {
+                return None;
+            }
+            if inst.defs().contains(dst) {
+                return Some(*dst);
+            }
+        }
+        let term_reads = func.blocks[b].term.uses().contains(dst);
+        (!term_reads && !live_out[b].contains(*dst)).then_some(*dst)
+    };
+    let mut fused: Vec<Vec<bool>> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(b, block)| {
+            (0..block.insts.len())
+                .map(|i| candidate(b, i).is_some())
+                .collect()
+        })
+        .collect();
+    // Only registers all of whose definitions are fused loads.
+    let mut defs = vec![0u32; func.classes.len()];
+    let mut fused_defs = vec![0u32; func.classes.len()];
+    for (b, block) in func.blocks.iter().enumerate() {
+        for (i, inst) in block.insts.iter().enumerate() {
+            for d in inst.defs() {
+                defs[d.0 as usize] += 1;
+                fused_defs[d.0 as usize] += fused[b][i] as u32;
+            }
+        }
+    }
+    for (b, block) in func.blocks.iter().enumerate() {
+        for (i, inst) in block.insts.iter().enumerate() {
+            if fused[b][i] {
+                let d = inst.defs()[0];
+                if fused_defs[d.0 as usize] != defs[d.0 as usize] || func.args.contains(&d) {
+                    fused[b][i] = false;
+                }
+            }
+        }
+    }
+    fused
 }
 
 /// What an export thunk needs to know about its function (see [`thunk`]).
@@ -1032,8 +1306,9 @@ pub struct ThunkSpec {
     pub params: Vec<(u32, bool)>,
     /// `Return`s of a number or truth value: (pc, register returned).
     pub returns: Vec<(u32, u32)>,
-    /// Call the function's direct entry (numbers in, a number out): `(host, nums)` in, the
-    /// number back in registers with status 0, so no `Return` needs finding.
+    /// Call the function's direct entry (a number out; list references after the numeric
+    /// registers, see `lower::Ctx::direct_lists`): `(host, nums)` in, the number back in
+    /// registers with status 0, so no `Return` needs finding.
     pub direct: bool,
 }
 
@@ -1061,13 +1336,17 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
     let mut a = Asm::new();
     let mut pool = Pool::default();
     a.emit(xt32::entry(frame))?;
-    // Zero the whole frame: registers, list references, host fields.
+    // Zero the frame: registers, list references, host fields. A direct entry reads only its
+    // parameters and the host fields (its constants and other registers start in code, and
+    // its number comes back in registers), so it needs only the host fields zeroed.
     a.emit(xt32::movi(TS1.0, 0))?;
-    for off in (0..size).step_by(4) {
+    let zero_from = if spec.direct { host } else { 0 };
+    for off in (zero_from..size).step_by(4) {
         store_word(&mut a, &mut pool, TS1.0, off)?;
     }
-    // Constants the registers start with.
-    for &(reg, bits) in &spec.num_consts {
+    // Constants the registers start with (read back by the ordinary entry's `Return`s).
+    let consts: &[(u32, u64)] = if spec.direct { &[] } else { &spec.num_consts };
+    for &(reg, bits) in consts {
         pool.const32(&mut a, TS0.0, bits as u32)?;
         pool.const32(&mut a, TS0.1, (bits >> 32) as u32)?;
         store_word(&mut a, &mut pool, TS0.0, 8 * reg)?;
@@ -1100,7 +1379,7 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
         a.emit(xt32::movi(2, 0))?;
         a.word(xt32::RETW);
         a.bind(failed);
-        a.word(xt32::mov(2, T)); // non-zero
+        a.word(xt32::mov(2, ARG0 + 1)); // the status kind: non-zero for every failure
         a.word(xt32::RETW);
         let mut code = pool.finish(a)?;
         code.frame = frame;

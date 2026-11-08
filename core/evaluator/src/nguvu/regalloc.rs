@@ -12,7 +12,7 @@
 //! Every virtual register also has a home stack slot: spilled registers live there, and
 //! register-resident ones are saved there around runtime calls when caller-saved.
 
-use super::ir::{Class, Func, Inst, VReg};
+use super::ir::{Class, Func, Home, Inst, VReg};
 use asili_parser::FxHashMap as HashMap;
 
 /// Where a virtual register lives: a machine register by its target number, or its stack slot.
@@ -34,6 +34,13 @@ pub struct Target {
     /// generators that never assume a slot still holds a value it stored earlier (x86-64 and
     /// AArch64 track that, as `Home`, so they keep one slot per value).
     pub share_slots: bool,
+    /// Whether integer register `k` and float register `k` are the same physical register (the
+    /// ESP32 keeps both classes in pairs of general registers), so they never hold two values
+    /// at once.
+    pub one_file: bool,
+    /// Whether registers defined once, by a constant, stay out of registers (the code
+    /// generator rebuilds each where it is read): for a target with few registers.
+    pub remat_constants: bool,
 }
 
 impl Target {
@@ -97,6 +104,12 @@ fn layout(func: &Func) -> Vec<usize> {
 }
 
 pub fn allocate(func: &Func, target: &Target) -> Allocation {
+    allocate_with(func, target, &[])
+}
+
+/// [`allocate`], with the registers marked in `kept_out` given neither a register nor a slot:
+/// the code generator keeps each in its own scratch registers for its whole (short) life.
+pub fn allocate_with(func: &Func, target: &Target, kept_out: &[bool]) -> Allocation {
     let n = func.classes.len();
     let nb = func.blocks.len();
     let order = layout(func);
@@ -221,6 +234,20 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
         false
     };
 
+    // Constants the code generator rebuilds where read (`Target::remat_constants`), and the
+    // registers it keeps out itself.
+    let rebuilt: Vec<bool> = func
+        .homes()
+        .iter()
+        .enumerate()
+        .map(|(v, h)| {
+            kept_out.get(v).copied().unwrap_or(false)
+                || (target.remat_constants
+                    && matches!(h, Home::Const(_))
+                    && !func.args.contains(&VReg(v as u32)))
+        })
+        .collect();
+
     // Coalescing: a copy between registers whose live ranges never overlap merges them into
     // one allocation unit, so both share a location and the copy disappears.
     let mut leader: Vec<usize> = (0..n).collect();
@@ -241,9 +268,16 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
                 find(&mut leader, dst.0 as usize),
                 find(&mut leader, src.0 as usize),
             );
-            // The incoming arguments keep their own units (the prologue stores them first).
+            // The incoming arguments keep their own units (the prologue stores them first), and
+            // rebuilt constants stay apart (they get no register).
             let arg = |v: usize| func.args.contains(&VReg(v as u32));
-            if x == y || arg(x) || arg(y) || overlaps(&ranges[x], &ranges[y]) {
+            if x == y
+                || arg(x)
+                || arg(y)
+                || rebuilt[x]
+                || rebuilt[y]
+                || overlaps(&ranges[x], &ranges[y])
+            {
                 continue;
             }
             let (keep, gone) = (x.min(y), x.max(y));
@@ -257,7 +291,7 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
 
     // Priority greedy assignment: densest-use units first.
     let mut todo: Vec<usize> = (0..n)
-        .filter(|&v| leader[v] == v && !ranges[v].is_empty())
+        .filter(|&v| leader[v] == v && !ranges[v].is_empty() && !rebuilt[v])
         .collect();
     todo.sort_by(|&a, &b| {
         let len = |v: usize| {
@@ -299,7 +333,7 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
         for c in candidates {
             let key = match c {
                 Loc::Int(r) => (false, r),
-                Loc::Float(r) => (true, r),
+                Loc::Float(r) => (!target.one_file, r),
                 Loc::Slot => unreachable!(),
             };
             let used = taken.entry(key).or_default();
@@ -333,6 +367,10 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
                 needs_slot[a.0 as usize] = true;
             }
         }
+    }
+    // A rebuilt constant (or a register kept out) is never read from or written to a slot.
+    for (needed, &r) in needs_slot.iter_mut().zip(&rebuilt) {
+        *needed &= !r;
     }
     let mut slots = 0;
     let slot = if target.share_slots {
