@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
+  program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
+  parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
+
 ### Fixed
 
 - **Dependencies**: `rustls` is updated from 0.23.44 to 0.23.46 in `Cargo.lock`, which clears the

@@ -208,3 +208,12 @@ pin levels. Each pin write, pin read and clock step is sent to the page as one c
 separates these from program output by the tag. `driver/wasm/tests/ubao_trace.mjs` runs a fixture
 under Node and checks it against the events the native test (`driver/wasm/tests/ubao_trace.rs`)
 expects.
+
+## Diagnostics for the editor (`check`)
+
+`check(source)` returns the diagnostics for one module as a JSON array (`check_source` in
+`driver/wasm/src/lib.rs`). It runs the same front end as the CLI: tokenize, parse, then
+`semantic_check_with_env` with the builtin contracts from `extern_env_from_imports`. Each item has
+`line`, `column`, `code` and the Swahili `message`; a diagnostic without a position reports line 0.
+The playground calls it after each edit (400 ms debounce) and marks the line. Multi-module checks
+will follow `runBundle`.
