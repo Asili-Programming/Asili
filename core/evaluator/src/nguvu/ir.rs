@@ -325,6 +325,8 @@ pub const ENTRY_ARGS: &[VReg] = &[RT, HOST, FRAME, NUMS];
 /// A direct entry's: `(host, numeric registers)`; it reads the runtime table and the stack
 /// limit from the host when it needs them.
 pub const DIRECT_ARGS: &[VReg] = &[HOST, NUMS];
+/// A device helper's (see `device`): the low and high word of its one 64-bit argument.
+pub const HELPER_ARGS: &[VReg] = &[VReg(0), VReg(1)];
 
 /// What a call site may assume about a register's home slot without storing it first.
 #[derive(Clone, Copy, PartialEq, Debug)]

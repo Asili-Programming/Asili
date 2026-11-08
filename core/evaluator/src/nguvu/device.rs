@@ -20,7 +20,7 @@
 
 use super::codegen_t32;
 use super::codegen_xt;
-use super::ir::{Func, Inst, RtFn};
+use super::ir::{BlockData, Class, FCond, FloatOp, Func, ICond, Inst, IntOp, RtFn, Term, VReg};
 use super::t32::{self, Asm, Cond, SP};
 use super::{lower, opt, verify};
 use crate::bytecode::{BytecodeFunc, BytecodeProgram, Opcode, Operand, Ty};
@@ -44,10 +44,13 @@ impl Lengo {
         }
     }
 
+    /// Whether a device can provide runtime function `target` (on ESP32 most are inlined by
+    /// [`inline_runtime`], the rest come from the C library).
     fn runtime_symbol(self, target: RtFn) -> Option<&'static str> {
         match self {
             Lengo::CortexM => codegen_t32::runtime_symbol(target),
-            Lengo::Esp32 => codegen_xt::runtime_symbol(target),
+            Lengo::Esp32 => codegen_t32::runtime_symbol(target)
+                .map(|_| codegen_xt::runtime_symbol(target).unwrap_or("")),
         }
     }
 }
@@ -236,12 +239,37 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
         ));
     }
     let mut placed: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
+    // (literal offset in `text`, helper index)
+    let mut helper_calls: Vec<(usize, u32)> = Vec::new();
     for (index, entry_direct, code) in &units {
         let base = place(code, &mut text, &mut relocs);
         placed.insert((*index, *entry_direct), base + code.entry);
         for &(at, callee) in &code.calls {
             calls.push((base + at, callee as usize, true));
         }
+        for &(at, h) in &code.helpers {
+            helper_calls.push((base + at, h));
+        }
+    }
+    // The helpers the code calls, compiled from IR once each.
+    let mut helpers: std::collections::BTreeMap<u32, usize> = Default::default();
+    let used: std::collections::BTreeSet<u32> = helper_calls.iter().map(|&(_, h)| h).collect();
+    for h in used {
+        let mut func = helper_func(codegen_xt::HELPERS[h as usize]);
+        verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
+        opt::optimize_with(&mut func, false).map_err(|e| format!("kosa la ndani: {e}"))?;
+        verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
+        let code = codegen_xt::generate(&func)?;
+        let base = place(&code, &mut text, &mut relocs);
+        helpers.insert(h, base + code.entry);
+    }
+    for (at, h) in helper_calls {
+        relocs.push(ElfReloc {
+            at,
+            symbol: None,
+            kind: R_XTENSA_32,
+            addend: helpers[&h] as u32,
+        });
     }
     for (at, callee, direct) in calls {
         relocs.push(ElfReloc {
@@ -640,10 +668,350 @@ fn compile(lengo: Lengo, index: usize, ctx: &lower::Ctx) -> Result<Func, String>
         lower::lower(index, function, ctx).ok_or("haikuweza kutafsiriwa kuwa msimbo wa mashine")?;
     check_lists(&func)?;
     check_host_calls(lengo, &func, function)?;
+    if lengo == Lengo::Esp32 {
+        inline_runtime(&mut func)?;
+    }
     verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
     opt::optimize_with(&mut func, false).map_err(|e| format!("kosa la ndani: {e}"))?;
     verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
     Ok(func)
+}
+
+/// Status of a call that cannot be made on a device (`native::STATUS_FAIL << 32`).
+const STATUS_FAIL: i64 = 2 << 32;
+/// What `exec` returns on a device: the call fails (`native::STATUS_FAIL`); it is only reached
+/// on an error path (see [`check_host_calls`]).
+const EXEC_FAIL: i64 = 2;
+
+/// Replace the device runtime's small calls with IR, so the ESP32 needs no runtime library of its
+/// own: list access becomes loads from the caller's list references (`{ double *data; uint32_t
+/// len }`, eight bytes on these 32-bit devices) and the host-only calls their failing status. The
+/// float conversions stay calls, to helpers compiled from IR once per object
+/// ([`helper_func`]); only `fmod` and `pow` come from the C library. Each computes what
+/// `driver/kifaa` computes, which is what the host's runtime computes.
+fn inline_runtime(func: &mut Func) -> Result<(), String> {
+    let consts = iconsts(func);
+    let mut classes = std::mem::take(&mut func.classes);
+    for block in &mut func.blocks {
+        let mut out = Vec::with_capacity(block.insts.len());
+        for inst in std::mem::take(&mut block.insts) {
+            let Inst::Call {
+                target, args, dst, ..
+            } = &inst
+            else {
+                out.push(inst);
+                continue;
+            };
+            let mut e = Emit {
+                classes: &mut classes,
+                out: &mut out,
+            };
+            match (target, dst) {
+                (RtFn::Exec, Some(d)) => e.push(Inst::IConst {
+                    dst: *d,
+                    value: EXEC_FAIL,
+                }),
+                (RtFn::CallHost | RtFn::DepthError, Some(d)) => e.push(Inst::IConst {
+                    dst: *d,
+                    value: STATUS_FAIL,
+                }),
+                (RtFn::Exec | RtFn::CallHost | RtFn::DepthError, None) => {}
+                (RtFn::ListPtr | RtFn::ListLen, Some(d)) => {
+                    let reg = args
+                        .get(1)
+                        .and_then(|r| consts.get(&r.0))
+                        .ok_or("kosa la ndani: rejista ya orodha si thabiti")?;
+                    let offset =
+                        i32::try_from(8 * reg).map_err(|_| "kosa la ndani: orodha nyingi mno")?;
+                    // Both words of the reference: data pointer low, length high.
+                    let both = e.int();
+                    e.push(Inst::Load {
+                        dst: both,
+                        base: args[0],
+                        offset,
+                    });
+                    let word = if *target == RtFn::ListLen {
+                        let w = e.int();
+                        e.push(Inst::IntImm {
+                            op: IntOp::Sar,
+                            dst: w,
+                            a: both,
+                            imm: 32,
+                        });
+                        w
+                    } else {
+                        both
+                    };
+                    let mask = e.iconst(0xFFFF_FFFF);
+                    e.push(Inst::Int {
+                        op: IntOp::And,
+                        dst: *d,
+                        a: word,
+                        b: mask,
+                    });
+                }
+                _ => out.push(inst),
+            }
+        }
+        block.insts = out;
+    }
+    func.classes = classes;
+    Ok(())
+}
+
+/// The IR function for helper `target` (one of [`codegen_xt::HELPERS`]): its 64-bit argument
+/// arrives as two words ([`super::ir::HELPER_ARGS`]), its 64-bit result (a double's bits or an
+/// integer) is returned.
+fn helper_func(target: RtFn) -> Func {
+    let mut classes = vec![Class::Int, Class::Int];
+    let mut out = Vec::new();
+    let mut e = Emit {
+        classes: &mut classes,
+        out: &mut out,
+    };
+    let (lo, hi) = (VReg(0), VReg(1));
+    let high = e.int();
+    e.push(Inst::IntImm {
+        op: IntOp::Shl,
+        dst: high,
+        a: hi,
+        imm: 32,
+    });
+    let bits = e.int();
+    e.push(Inst::Int {
+        op: IntOp::Or,
+        dst: bits,
+        a: high,
+        b: lo,
+    });
+    let x = e.float();
+    e.push(Inst::BitsFloat { dst: x, src: bits });
+    let result = match target {
+        RtFn::Floor | RtFn::Ceil => {
+            let r = e.floor_ceil(x, target == RtFn::Floor);
+            let b = e.int();
+            e.push(Inst::FloatBits { dst: b, src: r });
+            b
+        }
+        RtFn::FloatToIntSat => e.float_to_int_sat(x),
+        _ => e.shift_amount(x),
+    };
+    Func {
+        classes,
+        blocks: vec![BlockData {
+            insts: out,
+            term: Term::Return(result),
+        }],
+        cold: vec![false],
+        call_buffer: 0,
+        args: super::ir::HELPER_ARGS,
+    }
+}
+
+/// Appends instructions (and new registers) for [`inline_runtime`] and [`helper_func`].
+struct Emit<'a> {
+    classes: &'a mut Vec<Class>,
+    out: &'a mut Vec<Inst>,
+}
+
+impl Emit<'_> {
+    fn push(&mut self, inst: Inst) {
+        self.out.push(inst);
+    }
+
+    fn new(&mut self, class: Class) -> VReg {
+        self.classes.push(class);
+        VReg(self.classes.len() as u32 - 1)
+    }
+
+    fn int(&mut self) -> VReg {
+        self.new(Class::Int)
+    }
+
+    fn float(&mut self) -> VReg {
+        self.new(Class::Float)
+    }
+
+    fn iconst(&mut self, value: i64) -> VReg {
+        let dst = self.int();
+        self.push(Inst::IConst { dst, value });
+        dst
+    }
+
+    fn fconst(&mut self, value: f64) -> VReg {
+        let dst = self.float();
+        self.push(Inst::FConst { dst, value });
+        dst
+    }
+
+    fn fcmp(&mut self, cond: FCond, a: VReg, b: VReg) -> VReg {
+        let dst = self.int();
+        self.push(Inst::FCmp { cond, dst, a, b });
+        dst
+    }
+
+    fn select_int(&mut self, cond: VReg, a: VReg, b: VReg) -> VReg {
+        let dst = self.int();
+        self.push(Inst::Select { dst, cond, a, b });
+        dst
+    }
+
+    /// `floor(x)` or `ceil(x)`: `t - 1` for a negative non-integer, `t + 1` for a positive one,
+    /// with `t = trunc(x)` — exact, since |t| < 2^52 whenever x is not an integer.
+    fn floor_ceil(&mut self, x: VReg, floor: bool) -> VReg {
+        let t = self.trunc(x);
+        let zero = self.fconst(0.0);
+        let one = self.fconst(1.0);
+        let (cond, op) = if floor {
+            (FCond::Olt, FloatOp::Sub)
+        } else {
+            (FCond::Ogt, FloatOp::Add)
+        };
+        let side = self.fcmp(cond, x, zero);
+        let inexact = self.fcmp(FCond::Une, t, x);
+        let step = self.int();
+        self.push(Inst::Int {
+            op: IntOp::And,
+            dst: step,
+            a: side,
+            b: inexact,
+        });
+        let moved = self.float();
+        self.push(Inst::Float {
+            op,
+            dst: moved,
+            a: t,
+            b: one,
+        });
+        let r = self.float();
+        self.push(Inst::Select {
+            dst: r,
+            cond: step,
+            a: moved,
+            b: t,
+        });
+        r
+    }
+
+    /// Rust's saturating `x as i64`: NaN -> 0, beyond the range -> MIN / MAX.
+    fn float_to_int_sat(&mut self, x: VReg) -> VReg {
+        let t = self.trunc(x);
+        let i = self.int();
+        self.push(Inst::FloatToInt { dst: i, src: t });
+        let limit = self.fconst(9223372036854775808.0);
+        let low = self.fconst(-9223372036854775808.0);
+        let above = self.fcmp(FCond::Oge, x, limit);
+        let below = self.fcmp(FCond::Ole, x, low);
+        let nan = self.fcmp(FCond::Une, x, x);
+        let max = self.iconst(i64::MAX);
+        let min = self.iconst(i64::MIN);
+        let zero = self.iconst(0);
+        let r1 = self.select_int(above, max, i);
+        let r2 = self.select_int(below, min, r1);
+        self.select_int(nan, zero, r2)
+    }
+
+    /// The language's shift amount: `x as i32` (saturating, NaN -> 0) kept only within 0..=63,
+    /// which is exactly the x with 0 <= x < 64, truncated.
+    fn shift_amount(&mut self, x: VReg) -> VReg {
+        let t = self.trunc(x);
+        let i = self.int();
+        self.push(Inst::FloatToInt { dst: i, src: t });
+        let zero_f = self.fconst(0.0);
+        let sixty_four = self.fconst(64.0);
+        let ge = self.fcmp(FCond::Oge, x, zero_f);
+        let lt = self.fcmp(FCond::Olt, x, sixty_four);
+        let inside = self.int();
+        self.push(Inst::Int {
+            op: IntOp::And,
+            dst: inside,
+            a: ge,
+            b: lt,
+        });
+        let zero = self.iconst(0);
+        self.select_int(inside, i, zero)
+    }
+
+    /// `trunc(x)`, exactly, from the bits: an exponent below 0 leaves a signed zero, one of 52
+    /// or more (integers, infinities, NaN) leaves `x`, anything between clears the fraction bits
+    /// below the binary point.
+    fn trunc(&mut self, x: VReg) -> VReg {
+        let bits = self.int();
+        self.push(Inst::FloatBits { dst: bits, src: x });
+        let shifted = self.int();
+        self.push(Inst::IntImm {
+            op: IntOp::Sar,
+            dst: shifted,
+            a: bits,
+            imm: 52,
+        });
+        let field = self.int();
+        self.push(Inst::IntImm {
+            op: IntOp::And,
+            dst: field,
+            a: shifted,
+            imm: 0x7ff,
+        });
+        let e = self.int();
+        self.push(Inst::IntImm {
+            op: IntOp::Sub,
+            dst: e,
+            a: field,
+            imm: 1023,
+        });
+        let small = self.int();
+        self.push(Inst::ICmpImm {
+            cond: ICond::Lt,
+            dst: small,
+            a: e,
+            imm: 0,
+        });
+        let whole = self.int();
+        self.push(Inst::ICmpImm {
+            cond: ICond::Gt,
+            dst: whole,
+            a: e,
+            imm: 51,
+        });
+        // The shift amount, kept within 0..=51 on every path (only one is selected).
+        let zero = self.iconst(0);
+        let fifty_one = self.iconst(51);
+        let capped = self.select_int(whole, fifty_one, e);
+        let amount = self.select_int(small, zero, capped);
+        let fraction = self.iconst(0x000F_FFFF_FFFF_FFFF);
+        let below = self.int();
+        self.push(Inst::Int {
+            op: IntOp::Sar,
+            dst: below,
+            a: fraction,
+            b: amount,
+        });
+        let keep = self.int();
+        self.push(Inst::Not {
+            dst: keep,
+            src: below,
+        });
+        let cleared = self.int();
+        self.push(Inst::Int {
+            op: IntOp::And,
+            dst: cleared,
+            a: bits,
+            b: keep,
+        });
+        let sign_mask = self.iconst(i64::MIN);
+        let sign = self.int();
+        self.push(Inst::Int {
+            op: IntOp::And,
+            dst: sign,
+            a: bits,
+            b: sign_mask,
+        });
+        let r1 = self.select_int(whole, bits, cleared);
+        let r2 = self.select_int(small, sign, r1);
+        let t = self.float();
+        self.push(Inst::BitsFloat { dst: t, src: r2 });
+        t
+    }
 }
 
 /// Constants defined by `IConst` in `func` (by register).
@@ -824,15 +1192,16 @@ fn header(lengo: Lengo, program: &BytecodeProgram, functions: &[usize], jina: &s
             "cortex-m",
             "libasili_kifaa.a",
         ),
-        Lengo::Esp32 => (
-            "ESP32 (Xtensa LX6,\n * ABI ya madirisha)",
-            "esp32",
-            "asili_kifaa_esp32.c",
-        ),
+        Lengo::Esp32 => ("ESP32 (Xtensa LX6,\n * ABI ya madirisha)", "esp32", ""),
+    };
+    let na_kifaa = if kifaa.is_empty() {
+        String::new()
+    } else {
+        format!(" na {kifaa}")
     };
     let mut h = format!(
         "/* {jina}.h: kazi salama za Asili zilizojengwa kwa {maelezo} na `pata jenga --lengo \
-         {lengo_jina}`.\n * Unganisha na {jina}-{lengo_jina}.o na {kifaa}. Usihariri: faili hili \
+         {lengo_jina}`.\n * Unganisha na {jina}-{lengo_jina}.o{na_kifaa}. Usihariri: faili hili \
          hutengenezwa upya\n * kila ujenzi.\n \
          *\n \
          * Kila kazi hurudisha 0 ikifaulu (matokeo yamewekwa), au namba isiyo sifuri ikishindwa\n \

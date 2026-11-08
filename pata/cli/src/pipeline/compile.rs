@@ -473,6 +473,15 @@ fn build_native_library(
     Ok(())
 }
 
+/// The device target a `--lengo` / `[jenga] lengo` name selects, if it is one.
+pub fn device_lengo(target: &str) -> Option<asili_evaluator::nguvu::device::Lengo> {
+    match target {
+        "cortex-m" => Some(asili_evaluator::nguvu::device::Lengo::CortexM),
+        "esp32" => Some(asili_evaluator::nguvu::device::Lengo::Esp32),
+        _ => None,
+    }
+}
+
 pub fn emit_build_artifacts(
     root: &Path,
     compiled: &CompileOutput,
@@ -513,12 +522,7 @@ pub fn emit_build_artifacts(
     if profile == BuildProfile::Release {
         write_standalone(&asb, &target, &compiled.config.name)?;
     }
-    let device = match compiled.target.0.as_str() {
-        "cortex-m" => Some(asili_evaluator::nguvu::device::Lengo::CortexM),
-        "esp32" => Some(asili_evaluator::nguvu::device::Lengo::Esp32),
-        _ => None,
-    };
-    if let Some(lengo) = device {
+    if let Some(lengo) = device_lengo(&compiled.target.0) {
         let slug = compiled.target.0.clone();
         let _phase = asili_trace::phase(&slug);
         write_device(

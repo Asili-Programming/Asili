@@ -15,8 +15,8 @@ Flags:
   Thumb-2 for ARMv7E-M with `fpv5-d16`, writing `<pato>/<name>-cortex-m.o` (an ELF object a
   firmware links with the device runtime `driver/kifaa`) and `<pato>/<name>.h` (its C
   declarations), and prints `kifaa (Cortex-M): <object> na <header> — kazi: <names>`. `esp32`
-  does the same for the ESP32 (Xtensa LX6, windowed ABI), writing `<pato>/<name>-esp32.o` (linked
-  with `driver/esp32/asili_kifaa_esp32.c`) and printing `kifaa (ESP32): ...`. A program without
+  does the same for the ESP32 (Xtensa LX6, windowed ABI), writing `<pato>/<name>-esp32.o` (it
+  needs no runtime library of Asili's own) and printing `kifaa (ESP32): ...`. A program without
   strict functions, or a strict function a device cannot run, fails the build. See
   `docs/howto/07-build-for-cortex-m.md` and `docs/howto/08-build-for-esp32.md`
 - `--namna <dev|release>`: Build profile. Every program is compiled to bytecode in both (a

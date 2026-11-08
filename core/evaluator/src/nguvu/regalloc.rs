@@ -30,6 +30,10 @@ pub struct Target {
     pub int_caller_saved: &'static [u8],
     pub float_callee_saved: &'static [u8],
     pub float_caller_saved: &'static [u8],
+    /// Whether values whose live ranges never overlap may share a home slot. Only for code
+    /// generators that never assume a slot still holds a value it stored earlier (x86-64 and
+    /// AArch64 track that, as `Home`, so they keep one slot per value).
+    pub share_slots: bool,
 }
 
 impl Target {
@@ -331,17 +335,21 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
         }
     }
     let mut slots = 0;
-    let slot = needs_slot
-        .iter()
-        .map(|&needed| {
-            slots += needed as u32;
-            if needed {
-                slots - 1
-            } else {
-                u32::MAX
-            }
-        })
-        .collect();
+    let slot = if target.share_slots {
+        share_slots(func, &needs_slot, &ranges, &mut leader, &mut slots)
+    } else {
+        needs_slot
+            .iter()
+            .map(|&needed| {
+                slots += needed as u32;
+                if needed {
+                    slots - 1
+                } else {
+                    u32::MAX
+                }
+            })
+            .collect()
+    };
     Allocation {
         loc,
         order,
@@ -402,6 +410,73 @@ fn brief(i: &Inst) -> String {
 }
 
 /// Two sorted range lists as one sorted list.
+/// Home slots shared by values that are never live at the same time: each allocation unit
+/// (coalesced values share one, and never overlap) that needs a slot takes the first slot none
+/// of whose occupants' live ranges overlap its own. The incoming arguments count as live at the
+/// function's start, where the prologue parks them.
+fn share_slots(
+    func: &Func,
+    needs_slot: &[bool],
+    ranges: &[Vec<(u32, u32)>],
+    leader: &mut [usize],
+    slots: &mut u32,
+) -> Vec<u32> {
+    fn find(leader: &mut [usize], v: usize) -> usize {
+        let mut r = v;
+        while leader[r] != r {
+            r = leader[r];
+        }
+        leader[v] = r;
+        r
+    }
+    let n = needs_slot.len();
+    let unit: Vec<usize> = (0..n).map(|v| find(leader, v)).collect();
+    let mut wanted = vec![false; n];
+    for v in 0..n {
+        if needs_slot[v] {
+            wanted[unit[v]] = true;
+        }
+    }
+    let mut spans: Vec<(usize, Vec<(u32, u32)>)> = (0..n)
+        .filter(|&u| wanted[u])
+        .map(|u| {
+            let mut r = ranges[u].clone();
+            if func.args.iter().any(|a| unit[a.0 as usize] == u) {
+                r = merge_sorted(r, vec![(0, 0)]);
+            }
+            (u, r)
+        })
+        .collect();
+    spans.sort_by_key(|(u, r)| (r.first().map_or(0, |x| x.0), *u));
+    let overlaps = |a: &[(u32, u32)], b: &[(u32, u32)]| {
+        a.iter()
+            .any(|&(s, e)| b.iter().any(|&(t, f)| s <= f && t <= e))
+    };
+    let mut occupied: Vec<Vec<(u32, u32)>> = Vec::new();
+    let mut unit_slot = vec![u32::MAX; n];
+    for (u, r) in spans {
+        let k = match occupied.iter().position(|o| !overlaps(o, &r)) {
+            Some(k) => k,
+            None => {
+                occupied.push(Vec::new());
+                occupied.len() - 1
+            }
+        };
+        occupied[k] = merge_sorted(std::mem::take(&mut occupied[k]), r);
+        unit_slot[u] = k as u32;
+    }
+    *slots = occupied.len() as u32;
+    (0..n)
+        .map(|v| {
+            if needs_slot[v] {
+                unit_slot[unit[v]]
+            } else {
+                u32::MAX
+            }
+        })
+        .collect()
+}
+
 fn merge_sorted(a: Vec<(u32, u32)>, b: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     let mut out = Vec::with_capacity(a.len() + b.len());
     let (mut a, mut b) = (a.into_iter().peekable(), b.into_iter().peekable());

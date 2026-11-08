@@ -6,8 +6,8 @@
 //! * Cortex-M: linked with `driver/kifaa`, run under `qemu-arm -cpu cortex-m7`. Needs `clang`,
 //!   `ld.lld`, `qemu-arm-static` and the `thumbv7em-none-eabihf` Rust target; CI installs them
 //!   (`.github/workflows/ci.yml`).
-//! * ESP32: an ESP-IDF firmware linked with `driver/esp32/asili_kifaa_esp32.c`, run under
-//!   Espressif's `qemu-system-xtensa`. Needs `ASILI_ESP_IDF` set to an ESP-IDF checkout whose
+//! * ESP32: an ESP-IDF firmware holding nothing but the harness and the generated object (the
+//!   ESP32 needs no runtime library of Asili's own), run under Espressif's `qemu-system-xtensa`. Needs `ASILI_ESP_IDF` set to an ESP-IDF checkout whose
 //!   tools (including `qemu-xtensa`) are installed; set `ASILI_ESP32_REQUIRE` to fail instead
 //!   of skipping when it is missing.
 //!
@@ -132,17 +132,18 @@ fn call_statements(calls: &[(&str, Vec<Arg>)], lit: impl Fn(f64) -> String) -> S
                 }
             }
         }
-        let hoja = if args.is_empty() {
-            "0".to_string()
+        // Each call's arguments in a block of their own, so the harness's frame stays one call's
+        // worth however many calls there are (a device's main stack is small).
+        let (decl, hoja) = if args.is_empty() {
+            (String::new(), "0".to_string())
         } else {
-            c.push_str(&format!(
-                "    asili_{f}_hoja h{k} = {{ {} }};\n",
-                fields.join(", ")
-            ));
-            format!("&h{k}")
+            (
+                format!("asili_{f}_hoja h{k} = {{ {} }}; ", fields.join(", ")),
+                format!("&h{k}"),
+            )
         };
         c.push_str(&format!(
-            "    {{ double out = 0; int s = asili_{f}({hoja}, &out); result(s, out); }}\n"
+            "    {{ {decl}double out = 0; int s = asili_{f}({hoja}, &out); result(s, out); }}\n"
         ));
     }
     c
@@ -345,7 +346,6 @@ fn agree_esp32(
     let dir = std::env::temp_dir().join(format!("asili-kifaa-esp32-{name}"));
     let main = dir.join("main");
     std::fs::create_dir_all(&main).unwrap();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let write = |path: PathBuf, bytes: &[u8]| {
         if std::fs::read(&path).ok().as_deref() != Some(bytes) {
             std::fs::write(path, bytes).unwrap();
@@ -357,25 +357,21 @@ fn agree_esp32(
           include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n\
           project(asili_kifaa)\n",
     );
-    // The task watchdog would print into the results of a long run. Every IR value has its
-    // own stack slot in ESP32 code (no register allocation yet), so frames are large: give the
-    // main task room for them.
+    // The task watchdog would print into the results of a long run. The main task keeps
+    // ESP-IDF's default stack: the frames must fit it.
     write(
         dir.join("sdkconfig.defaults"),
-        b"CONFIG_ESP_TASK_WDT_INIT=n\nCONFIG_ESP_INT_WDT=n\nCONFIG_ESP_MAIN_TASK_STACK_SIZE=32768\n",
+        b"CONFIG_ESP_TASK_WDT_INIT=n\nCONFIG_ESP_INT_WDT=n\n",
     );
     write(
         main.join("CMakeLists.txt"),
         format!(
-            "idf_component_register(SRCS \"main.c\" \"asili_kifaa_esp32.c\" INCLUDE_DIRS \".\")\n\
+            "idf_component_register(SRCS \"main.c\" INCLUDE_DIRS \".\")\n\
              target_sources(${{COMPONENT_LIB}} PRIVATE \"${{CMAKE_CURRENT_SOURCE_DIR}}/{name}-esp32.o\")\n"
         )
         .as_bytes(),
     );
-    write(
-        main.join("asili_kifaa_esp32.c"),
-        &std::fs::read(root.join("driver/esp32/asili_kifaa_esp32.c")).unwrap(),
-    );
+    let _ = std::fs::remove_file(main.join("asili_kifaa_esp32.c"));
     write(main.join(format!("{name}-esp32.o")), &built.object);
     write(main.join(format!("{name}.h")), built.header.as_bytes());
     let mut c = format!(
@@ -673,4 +669,52 @@ fn what_a_device_cannot_run_is_a_build_error() {
          #[salama]\nkazi f(l: Orodha<Namba>, x: Namba) -> Namba {\n    rejesha soma(l) + x\n}\n",
     )
     .unwrap();
+}
+
+/// Builds for the ESP32 only (no tools needed): the object needs no runtime library of Asili's
+/// own, and values that are never live together share stack slots, so a function with unrolled
+/// loops keeps a small frame (it once needed 4.6 KB, more than ESP-IDF's default main stack).
+#[test]
+fn esp32_objects_need_no_runtime_and_keep_small_frames() {
+    let source = r#"
+        #[salama]
+        kazi panga(l: Orodha<Namba>) -> Namba {
+            weka jumla = 0
+            kwa i kutoka 0 hadi 6 {
+                kwa j kutoka 0 hadi 5 {
+                    ikiwa l[j] > l[j + 1] {
+                        weka t = l[j]
+                        l[j] = l[j + 1]
+                        l[j + 1] = t
+                    }
+                }
+            }
+            kwa i kutoka 0 hadi 6 { jumla = jumla * 10 + l[i] }
+            rejesha jumla + sakafu(l[0] / 3) + (l[1] << 2)
+        }
+    "#;
+    let tokens = asili_lexer::tokenize(source).expect("tokenize");
+    let module = asili_parser::parse_tokens(&tokens).expect("parse");
+    let program = compile_module_explained(&module).expect("bytecode");
+    let strict: Vec<usize> = (0..program.functions.len())
+        .filter(|&i| program.functions[i].name == "panga")
+        .collect();
+    let built = device::build_for(device::Lengo::Esp32, &program, &strict, "t")
+        .unwrap_or_else(|e| panic!("{e}"));
+    let object = &built.object;
+    assert!(
+        !object.windows(11).any(|w| w == b"asili_kifaa"),
+        "the ESP32 object must not call the device runtime"
+    );
+    // `.text` is section 1; every function starts with `entry a1, frame`.
+    let shoff = u32::from_le_bytes(object[32..36].try_into().unwrap()) as usize;
+    let at = |o: usize| u32::from_le_bytes(object[o..o + 4].try_into().unwrap()) as usize;
+    let (off, size) = (at(shoff + 40 + 16), at(shoff + 40 + 20));
+    let text = &object[off..off + size];
+    let frames: Vec<usize> = (0..text.len().saturating_sub(2))
+        .filter(|&i| text[i] == 0x36 && text[i + 1] & 0x0f == 1)
+        .map(|i| (u32::from_le_bytes([text[i], text[i + 1], text[i + 2], 0]) >> 12) as usize * 8)
+        .collect();
+    assert!(!frames.is_empty());
+    assert!(frames.iter().all(|&f| f <= 1024), "frames: {frames:?}");
 }

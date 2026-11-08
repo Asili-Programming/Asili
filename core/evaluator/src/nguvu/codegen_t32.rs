@@ -24,6 +24,7 @@ pub const TARGET: Target = Target {
     int_caller_saved: &[],
     float_callee_saved: &[8, 9, 10, 11, 12, 13, 14, 15],
     float_caller_saved: &[],
+    share_slots: false,
 };
 
 /// The registers of integer pair `k`: `(low word, high word)`.

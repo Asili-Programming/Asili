@@ -27,20 +27,21 @@ imejengwa: ./kilele/kidhibiti.asb
 
 ## Link into an ESP-IDF firmware
 
-Copy the object, the header and the device runtime `driver/esp32/asili_kifaa_esp32.c` into a
-component, and archive the object with it so the runtime functions it calls resolve:
+Copy the object and the header into a component and archive the object with it — nothing else:
+the ESP32 needs no runtime library of Asili's own.
 
 ```cmake
-idf_component_register(SRCS "main.c" "asili_kifaa_esp32.c" INCLUDE_DIRS ".")
+idf_component_register(SRCS "main.c" INCLUDE_DIRS ".")
 target_sources(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/kidhibiti-esp32.o")
 ```
 
-`asili_kifaa_esp32.c` is the C mirror of the Rust device runtime `driver/kifaa` (stock Rust cannot
-build for Xtensa): the `asili_kifaa_*` functions the code calls by name for list access, `%`,
-`**` and the conversions behind the bitwise operators. The code also calls the GCC runtime's
-64-bit and double-precision routines (`__adddf3`, `__muldi3`, ...), which every ESP-IDF build
-links. Every call goes through a literal holding the callee's address (`l32r` + `callx8`), so
-code placed in flash reaches functions in ROM or IRAM.
+What the Cortex-M target calls in its device runtime (`driver/kifaa`) — reading the caller's
+lists, the conversions behind the bitwise operators, floor and ceiling, the failing status of
+host-only calls — is compiled into the ESP32 code itself (exact bit arithmetic for the
+conversions). The code calls only what every ESP-IDF build links: the GCC runtime's 64-bit and
+double-precision routines (`__adddf3`, `__muldi3`, ...) and the C library's `fmod` (`%`, exact in
+any correct library) and `pow` (`**`). Every call goes through a literal holding the callee's
+address (`l32r` + `callx8`), so code placed in flash reaches functions in ROM or IRAM.
 
 ## Call from C
 
@@ -65,8 +66,7 @@ the call failed (`matokeo` then not written), lists passed by reference.
 
 The same subset as Cortex-M: exported functions take only `Namba`, `Ukweli` and `Orodha<Namba>`
 parameters, there is no allocation, and anything else fails the build naming the function and the
-reason (`kazi salama 'f' haiwezi kujengwa kwa ESP32: ...`). Lists of narrow integers are not
-supported on ESP32 yet.
+reason (`kazi salama 'f' haiwezi kujengwa kwa ESP32: ...`).
 
 ## Results are the same as on the build machine
 
@@ -87,9 +87,8 @@ bit.
 
 ## Not yet
 
-- **Speed and size.** Every IR value lives in its own stack slot (no register allocation yet), so
-  frames and code are large: a strict function with long unrolled loops can need several
-  kilobytes of stack, more than ESP-IDF's default main task stack (3.5 KB). Give the calling task
-  enough stack (`CONFIG_ESP_MAIN_TASK_STACK_SIZE`).
-- Lists of narrow integers (`U8`..`I32` element kinds).
+- **Speed and size.** Every IR value lives in a stack slot (no register allocation yet); values
+  that are never live at the same time share a slot, which keeps frames small (the
+  `kidhibiti`-style sorting function `panga` needs 208 bytes), but each instruction still loads
+  and stores its operands.
 - Start-up code, RTOS integration and peripherals are the firmware's: the object is a library.

@@ -133,7 +133,10 @@ pub fn run(args: &[String]) -> CliResult {
     };
 
     let emit_timer = ScopedTimer::new("kutoa");
-    let artifact = if compiled.from_cache && profile == BuildProfile::Dev {
+    // A cached build reuses only the bytecode: a device target also writes its object and
+    // header, which the cache does not hold, so it always emits.
+    let device = crate::pipeline::compile::device_lengo(&compiled.target.0).is_some();
+    let artifact = if compiled.from_cache && profile == BuildProfile::Dev && !device {
         let target = out.as_ref().cloned().unwrap_or_else(|| root.join("kilele"));
         let a = target.join(format!("{}.asb", compiled.config.name));
         println!("imejengwa (cache): {}", a.display());

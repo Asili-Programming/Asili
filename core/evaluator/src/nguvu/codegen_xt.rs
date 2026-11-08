@@ -26,12 +26,15 @@ use super::ir::{Class, FCond, FloatOp, Func, ICond, Inst, IntOp, RtFn, Term, VRe
 use super::regalloc::{allocate, Allocation, Target};
 use super::xt32::{self, Asm, BranchCond, Label};
 
-/// No register is handed to the allocator: every value has a home slot.
+/// No register is handed to the allocator: every value has a home slot, shared with values
+/// whose live ranges never overlap (this generator keeps nothing in a slot between
+/// instructions beyond the value's own life).
 pub const TARGET: Target = Target {
     int_callee_saved: &[],
     int_caller_saved: &[],
     float_callee_saved: &[],
     float_caller_saved: &[],
+    share_slots: true,
 };
 
 type Pair = (u8, u8);
@@ -48,21 +51,27 @@ const T2: u8 = 9;
 /// First outgoing argument register (`a2` of the callee).
 const ARG0: u8 = 10;
 
-/// Symbol of the runtime function implementing `target` on the ESP32, or `None` where the
-/// device has no host to provide it. The same set as Cortex-M, with `floor`/`ceil` from libm.
+/// The runtime functions compiled from IR into the object itself (`device::helper_func`), once
+/// each, and called like external functions: their index here names them.
+pub const HELPERS: [RtFn; 4] = [
+    RtFn::Floor,
+    RtFn::Ceil,
+    RtFn::FloatToIntSat,
+    RtFn::ShiftAmount,
+];
+
+/// Index of `target` in [`HELPERS`].
+pub fn helper_index(target: RtFn) -> Option<u32> {
+    HELPERS.iter().position(|&h| h == target).map(|i| i as u32)
+}
+
+/// Symbol of the C library function implementing `target` on the ESP32. Everything else the
+/// device runtime provides on Cortex-M is IR (inlined by `device::inline_runtime`, or a helper
+/// in [`HELPERS`]), so the ESP32 links no runtime library of Asili's own.
 pub fn runtime_symbol(target: RtFn) -> Option<&'static str> {
     Some(match target {
-        RtFn::Exec => "asili_kifaa_exec",
-        RtFn::ListPtr => "asili_kifaa_list_ptr",
-        RtFn::ListLen => "asili_kifaa_list_len",
-        RtFn::Fmod => "asili_kifaa_fmod",
-        RtFn::Pow => "asili_kifaa_pow",
-        RtFn::FloatToIntSat => "asili_kifaa_float_to_int_sat",
-        RtFn::ShiftAmount => "asili_kifaa_shift_amount",
-        RtFn::CallHost => "asili_kifaa_call_host",
-        RtFn::DepthError => "asili_kifaa_depth_error",
-        RtFn::Floor => "floor",
-        RtFn::Ceil => "ceil",
+        RtFn::Fmod => "fmod",
+        RtFn::Pow => "pow",
         _ => return None,
     })
 }
@@ -75,6 +84,8 @@ pub struct Code {
     /// Direct calls to link: (byte offset in `bytes` of the literal that must hold the callee's
     /// address, callee).
     pub calls: Vec<(usize, u32)>,
+    /// Helper calls to link: (literal byte offset, index in [`HELPERS`]).
+    pub helpers: Vec<(usize, u32)>,
     /// `R_XTENSA_32` relocations: (literal byte offset in `bytes`, symbol).
     pub relocs: Vec<(usize, String)>,
 }
@@ -86,6 +97,8 @@ enum Lit {
     Sym(String),
     /// The address of program function `callee`'s direct (or, for a thunk, ordinary) entry.
     Func(u32),
+    /// The address of helper [`HELPERS`]`[i]`.
+    Helper(u32),
 }
 
 /// A function's literal pool and pending direct calls, shared by functions and export thunks.
@@ -135,6 +148,7 @@ impl Pool {
         let mut bytes = Vec::with_capacity(pool + code.len());
         let mut relocs = Vec::new();
         let mut calls = Vec::new();
+        let mut helpers = Vec::new();
         for (i, lit) in self.lits.iter().enumerate() {
             match lit {
                 Lit::Word(w) => bytes.extend_from_slice(&w.to_le_bytes()),
@@ -144,6 +158,10 @@ impl Pool {
                 }
                 Lit::Func(f) => {
                     calls.push((4 * i, *f));
+                    bytes.extend_from_slice(&0u32.to_le_bytes());
+                }
+                Lit::Helper(h) => {
+                    helpers.push((4 * i, *h));
                     bytes.extend_from_slice(&0u32.to_le_bytes());
                 }
             }
@@ -159,6 +177,7 @@ impl Pool {
             bytes,
             entry: pool,
             calls,
+            helpers,
             relocs,
         })
     }
@@ -683,6 +702,17 @@ impl<'f> Gen<'f> {
                 ret32,
                 ..
             } => {
+                if let Some(h) = helper_index(*target) {
+                    // A helper takes its 64-bit argument as two words (a10, a11) and returns
+                    // its 64-bit result in a10:a11.
+                    self.load_pair(args[0], (ARG0, ARG0 + 1))?;
+                    self.l32r(T, Lit::Helper(h));
+                    self.asm.word(xt32::callx(8, T).expect("callx8"));
+                    if let Some(d) = dst {
+                        self.store_pair(*d, (ARG0, ARG0 + 1))?;
+                    }
+                    return Ok(());
+                }
                 let symbol = runtime_symbol(*target).ok_or_else(|| {
                     format!("inahitaji huduma ya mwenyeji ({target:?}) ambayo kifaa hakina")
                 })?;
