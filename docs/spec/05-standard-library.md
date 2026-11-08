@@ -253,6 +253,20 @@ Typed hardware handles may be provided to model hardware state safely:
 
 ---
 
+### Ubao (virtual board)
+
+A host-side board for teaching and tests: pins and a clock that exist only in the process, so a
+run is reproducible. `leta ubao` brings in:
+
+- `ubao_andika(pini: Namba, hali: Ukweli) -> Tupu` — drive a pin. Requires a `#[wazi]` grant.
+- `ubao_soma(pini: Namba) -> Ukweli` — read a pin from the scenario's scripted levels (`false`
+  where the scenario says nothing). Requires a `#[wazi]` grant.
+- `ubao_subiri(ms: Namba) -> Tupu` — advance the board clock by `ms` milliseconds. No wall time.
+- `ubao_saa() -> Namba` — the board clock in milliseconds, starting at 0 for each run.
+
+Every pin write, pin read and clock step is recorded as an event (number, kind, pin, level, time).
+The clock is per thread. A negative pin number, or a non-`Ukweli` level, is an error.
+
 ## Error model
 
 - **Success:** `SAWA(thamani)`.

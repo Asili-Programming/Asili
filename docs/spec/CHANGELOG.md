@@ -4,6 +4,8 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Standard library ([05-standard-library.md](05-standard-library.md)): the virtual board `ubao`
+  (`ubao_andika`, `ubao_soma`, `ubao_subiri`, `ubao_saa`); pin calls need a `#[wazi]` grant.
 - Project structure ([02-architecture-and-files.md](02-architecture-and-files.md)): the VS Code
   extension (`/extensions/vscode`) and the browser playground moved to their own repositories,
   `Asili-Programming/asili-vscode` and `Asili-Programming/asili-playground`.
