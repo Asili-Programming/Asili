@@ -30,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check. On a real ESP32 (240 MHz, `gcc -O2` C as reference) the controller example runs at the
   speed of the same functions in C: `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20,
   in 48 and 64 bytes of stack. See `docs/howto/08-build-for-esp32.md`.
+- **`examples/habari-esp32`**: hello world on an ESP32 — a strict `fibonacci` built with
+  `pata jenga --lengo esp32`, and an ESP-IDF project (`firmware/`) that links it straight from
+  `kilele/` and prints the greeting and the numbers over serial. Runs on a real board.
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.

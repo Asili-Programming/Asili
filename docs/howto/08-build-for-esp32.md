@@ -6,6 +6,9 @@ using Asili's own backend (`nguvu`) — no external compiler is involved in prod
 result is an object file and a C header that an ESP-IDF firmware links like any other library.
 The exports have the same C interface as the Cortex-M target (`docs/howto/07-build-for-cortex-m.md`).
 
+For the smallest complete example — an ESP-IDF project that prints what an Asili function
+computes — see `examples/habari-esp32` (its `firmware/` links the build output directly).
+
 ## Build
 
 ```
