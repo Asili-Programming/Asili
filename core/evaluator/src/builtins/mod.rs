@@ -47,6 +47,7 @@ mod ruwaza;
 pub(crate) mod sambamba;
 mod seti;
 mod syscall;
+mod ubao;
 mod usimbaji;
 
 use std::collections::HashMap;
@@ -79,6 +80,7 @@ fn register_all(m: &mut HashMap<String, BuiltinFn>) {
     runtime::register(m);
     sambamba::register(m);
     syscall::register(m);
+    ubao::register(m);
     kasha_gc::register(m);
     mkondo::register(m);
     kumbukumbu::register(m);

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Virtual board (`ubao`)**: `ubao_andika(pini, hali)` and `ubao_soma(pini)` drive and read
+  pins, `ubao_subiri(ms)` moves the board's clock, `ubao_saa()` reads it. Pin calls need a
+  `#[wazi]` grant (`SEM121`). Pin reads come from a scripted scenario, so a run is reproducible;
+  every write, read and clock step is recorded as an event. Design:
+  `docs/design/peripheral-io-design.md`. The browser build (`asili-wasm`'s `runBoard`) sends each
+  event to the page on the console channel, tagged, so the playground can draw the board.
 - **WebSocket**: `ws_unganisha(anwani, chaguo?: ChaguoMkondo)` connects to `ws://` or `wss://` and
   gives a `MkondoWs` with `.tuma(Neno)`, `.tuma_baiti(Baiti)`, `.pokea()` / `.pokea_neno()` (the
   next message, `Hamna` once the peer closes) and `.funga()`. A server answers an upgrade request

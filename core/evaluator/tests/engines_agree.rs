@@ -1240,3 +1240,30 @@ fn baiti_bytes() {
         &["msingi", "njia", "zaidi", "nje"],
     );
 }
+
+// Verifies: ubao (virtual board builtins). The board's clock belongs to the thread, so the three
+// functions share it in the order listed: `saa` and `nje` see the 7 ms that `pini` stepped.
+#[test]
+fn ubao_pins_and_clock() {
+    agree(
+        "ubao",
+        r#"
+        leta ubao
+        #[wazi]
+        kazi pini() -> Ukweli {
+            ubao_andika(2, kweli)
+            ubao_subiri(7)
+            rejesha ubao_soma(2) == si_kweli
+        }
+        #[wazi]
+        kazi saa() -> Namba {
+            ubao_subiri(5)
+            rejesha ubao_saa()
+        }
+        kazi nje() -> Namba {
+            rejesha ubao_saa()
+        }
+        "#,
+        &["pini", "saa", "nje"],
+    );
+}

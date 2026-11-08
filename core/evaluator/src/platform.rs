@@ -201,3 +201,18 @@ pub fn read_stdin() -> Result<String, EvalError> {
         "omba: stdin haipatikani kwenye WASM".to_string(),
     ))
 }
+
+/// Tag that opens a virtual-board event on the console channel (see `ubao`). Program output
+/// never starts with the control character, so the page can tell the two apart.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+pub const EVENT_TAG: &str = "\u{1}ASILI-EVT ";
+
+/// Send one virtual-board event (a JSON object) to the page. Native builds keep their events in
+/// memory only (`ubao::tukio`), so this does nothing there.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+pub fn write_event(json: &str) {
+    browser::log(&format!("{EVENT_TAG}{json}"));
+}
+
+#[cfg(not(all(target_arch = "wasm32", feature = "wasm-browser")))]
+pub fn write_event(_json: &str) {}

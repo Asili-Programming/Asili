@@ -17,6 +17,22 @@ pub fn run_source(source: &str) -> Result<(), String> {
     run_module(&module)
 }
 
+/// Run Asili source on the virtual board (`ubao`), with the scenario's scripted pin levels.
+/// `triples` is the scenario flattened: `saa, pini, hali` repeated, `hali` 0 or non-zero.
+/// Pin and clock events go to the page as they happen (`platform::write_event`).
+pub fn run_board_source(source: &str, triples: &[f64]) -> Result<(), String> {
+    let ingizo = triples
+        .chunks_exact(3)
+        .map(|c| asili_evaluator::ubao::Ingizo {
+            saa: c[0] as i64,
+            pini: c[1] as i64,
+            hali: c[2] != 0.0,
+        })
+        .collect();
+    asili_evaluator::ubao::anza(ingizo);
+    run_source(source)
+}
+
 /// Lower `module` to bytecode and run its `kuu` as native code (a wasm module the page
 /// instantiates beside this one; see `asili_evaluator::nguvu::wasm`).
 fn run_module(module: &Module) -> Result<(), String> {
@@ -81,6 +97,12 @@ mod browser_entry {
     #[wasm_bindgen]
     pub fn run(source: &str) -> Result<(), JsValue> {
         run_source(source).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
+    #[wasm_bindgen(js_name = runBoard)]
+    pub fn run_board(source: &str, triples: &[f64]) -> Result<(), JsValue> {
+        super::run_board_source(source, triples).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Multi-module entry point. `modules` is a JS object/Map-like value convertible to
