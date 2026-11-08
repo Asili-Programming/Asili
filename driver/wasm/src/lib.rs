@@ -74,6 +74,33 @@ pub fn check_source_with(source: &str, modules: &[String]) -> String {
     format!("[{}]", items.join(","))
 }
 
+/// The source as `pata nadhifu` writes it (the formatter's canonical form, the same library the CLI
+/// calls).
+pub fn format_source(source: &str) -> String {
+    pata_fmt::canonical_format(source)
+}
+
+/// The lint findings for `source` as JSON, in the form `check_source` uses: `[{"line","column",
+/// "code","message"}]`, `[]` when clean. A source that cannot be linted reports its error at line 0.
+pub fn lint_source_json(source: &str) -> String {
+    let items: Vec<String> = match pata_lint::lint_source(source) {
+        Ok(findings) => findings
+            .iter()
+            .map(|d| {
+                let (line, column) = d.span.as_ref().map_or((0, 0), |s| (s.line, s.column));
+                let code = serde_json::to_string(d.code).unwrap_or_else(|_| "\"\"".into());
+                let message = serde_json::to_string(&d.message).unwrap_or_else(|_| "\"\"".into());
+                format!("{{\"line\":{line},\"column\":{column},\"code\":{code},\"message\":{message}}}")
+            })
+            .collect(),
+        Err(e) => vec![format!(
+            "{{\"line\":0,\"column\":0,\"code\":\"LINT\",\"message\":{}}}",
+            serde_json::to_string(&e).unwrap_or_else(|_| "\"\"".into())
+        )],
+    };
+    format!("[{}]", items.join(","))
+}
+
 /// Lower `module` to bytecode and run its `kuu` as native code (a wasm module the page
 /// instantiates beside this one; see `asili_evaluator::nguvu::wasm`).
 fn run_module(module: &Module) -> Result<(), String> {
@@ -155,6 +182,18 @@ mod browser_entry {
             .filter(|m| !m.is_empty())
             .collect();
         super::check_source_with(source, &names)
+    }
+
+    /// The formatted source (`pata nadhifu`'s canonical form).
+    #[wasm_bindgen]
+    pub fn format(source: &str) -> String {
+        super::format_source(source)
+    }
+
+    /// The lint findings as JSON (see `lint_source_json`).
+    #[wasm_bindgen]
+    pub fn lint(source: &str) -> String {
+        super::lint_source_json(source)
     }
 
     /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
@@ -244,5 +283,26 @@ mod check_tests {
         let out = check_source("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka = 3\n}\n");
         assert!(out.contains("\"code\":\"PAR"), "{out}");
         assert!(!out.contains("\"line\":0,"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod fmt_lint_tests {
+    use super::{format_source, lint_source_json};
+
+    #[test]
+    fn format_is_the_canonical_form_and_idempotent() {
+        let messy = "kazi   kuu(hoja:Orodha<Neno>)->Tupu{\nchapisha(\"a\")\n}\n";
+        let once = format_source(messy);
+        assert!(once.contains("kazi kuu(hoja: Orodha<Neno>) -> Tupu {"), "{once}");
+        assert_eq!(format_source(&once), once, "formatting twice changes nothing");
+    }
+
+    #[test]
+    fn lint_reports_findings_as_json() {
+        let clean = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n}\n";
+        assert_eq!(lint_source_json(clean).starts_with('['), true);
+        let out = lint_source_json("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka x = 1\n}\n");
+        assert!(out.starts_with('[') && out.contains("\"code\":\"LINT"), "{out}");
     }
 }

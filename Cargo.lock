@@ -246,6 +246,8 @@ dependencies = [
  "asili-evaluator",
  "asili-lexer",
  "asili-parser",
+ "pata-fmt",
+ "pata-lint",
  "serde-wasm-bindgen",
  "serde_json",
  "wasm-bindgen",
