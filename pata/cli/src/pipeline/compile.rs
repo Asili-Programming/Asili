@@ -356,9 +356,16 @@ impl BuildProfile {
 /// Ahead-of-time compile a bytecode artifact to native machine code next to it
 /// (`<name>.nguvu`, built in-house with no external tools). In `Dev` an image that cannot be
 /// built is left to the runner to build at start-up; `Release` fails instead.
-/// The device build (`--lengo cortex-m`): the strict functions as `<name>-cortex-m.o`, an ELF
-/// object for Cortex-M a firmware links, and their C declarations in `<name>.h`.
-fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliError> {
+/// The device build (`--lengo cortex-m` or `--lengo esp32`): the strict functions as
+/// `<name>-<lengo>.o`, an ELF object for the device a firmware links, and their C declarations
+/// in `<name>.h`.
+fn write_device(
+    module: &Module,
+    target: &Path,
+    name: &str,
+    lengo: asili_evaluator::nguvu::device::Lengo,
+    slug: &str,
+) -> Result<(), CliError> {
     let program =
         asili_evaluator::compile_module_explained(module).map_err(|e| CliError::new(e, 1))?;
     let strict: Vec<usize> = module
@@ -369,11 +376,14 @@ fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliErr
         .collect();
     if strict.is_empty() {
         return Err(CliError::new(
-            "hakuna kazi salama ya kujenga kwa Cortex-M (weka #[salama] juu ya kazi)",
+            format!(
+                "hakuna kazi salama ya kujenga kwa {} (weka #[salama] juu ya kazi)",
+                lengo.jina()
+            ),
             1,
         ));
     }
-    let built = asili_evaluator::nguvu::device::build(&program, &strict, name)
+    let built = asili_evaluator::nguvu::device::build_for(lengo, &program, &strict, name)
         .map_err(|e| CliError::new(e, 1))?;
     let write = |file: String, bytes: &[u8]| -> Result<PathBuf, CliError> {
         let path = target.join(file);
@@ -382,10 +392,11 @@ fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliErr
         })?;
         Ok(path)
     };
-    let object = write(format!("{name}-cortex-m.o"), &built.object)?;
+    let object = write(format!("{name}-{slug}.o"), &built.object)?;
     let header = write(format!("{name}.h"), built.header.as_bytes())?;
     println!(
-        "kifaa (Cortex-M): {} na {} — kazi: {}",
+        "kifaa ({}): {} na {} — kazi: {}",
+        lengo.jina(),
         object.display(),
         header.display(),
         built.exports.join(", ")
@@ -502,9 +513,21 @@ pub fn emit_build_artifacts(
     if profile == BuildProfile::Release {
         write_standalone(&asb, &target, &compiled.config.name)?;
     }
-    if compiled.target.0 == "cortex-m" {
-        let _phase = asili_trace::phase("cortex-m");
-        write_device(&compiled.module, &target, &compiled.config.name)?;
+    let device = match compiled.target.0.as_str() {
+        "cortex-m" => Some(asili_evaluator::nguvu::device::Lengo::CortexM),
+        "esp32" => Some(asili_evaluator::nguvu::device::Lengo::Esp32),
+        _ => None,
+    };
+    if let Some(lengo) = device {
+        let slug = compiled.target.0.clone();
+        let _phase = asili_trace::phase(&slug);
+        write_device(
+            &compiled.module,
+            &target,
+            &compiled.config.name,
+            lengo,
+            &slug,
+        )?;
     }
 
     let meta = target.join(format!("{}.build.manifest", compiled.config.name));

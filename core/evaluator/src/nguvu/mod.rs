@@ -11,6 +11,7 @@ pub mod a64;
 pub mod codegen;
 pub mod codegen_a64;
 pub mod codegen_t32;
+pub mod codegen_xt;
 pub mod device;
 pub mod features;
 pub mod ir;
@@ -24,6 +25,7 @@ pub mod t32;
 pub mod verify;
 pub mod wasm;
 pub mod x64;
+pub mod xt32;
 
 use crate::bytecode::BytecodeProgram;
 

@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **ESP32 device target** (`pata jenga --lengo esp32`): strict (`#[salama]`) functions compile to
+  Xtensa LX6 machine code with Asili's own backend (`nguvu::xt32` encoder, `nguvu::codegen_xt`),
+  written as `<name>-esp32.o` (ELF, windowed ABI) beside the same C header and interface as the
+  Cortex-M target. Doubles and 64-bit operations use the GCC runtime's IEEE-exact routines; calls
+  go through relocated literals, so flash code reaches ROM/IRAM. `driver/esp32/asili_kifaa_esp32.c`
+  is the device runtime (a C mirror of `driver/kifaa`). `tests/kifaa.rs` now also runs every case
+  on the ESP32 under Espressif's QEMU when `ASILI_ESP_IDF` is set, bit for bit against native code
+  (the controller example, the hand-written cases and 400 random programs agree). No register
+  allocation yet: frames and code are large (see `docs/howto/08-build-for-esp32.md`).
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.

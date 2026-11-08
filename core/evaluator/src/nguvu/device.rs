@@ -1,6 +1,7 @@
-//! The Cortex-M device target: a program's strict (`#[salama]`) functions compiled to Thumb-2
-//! ([`super::codegen_t32`]) as an ELF relocatable object a firmware links, plus a C header
-//! declaring them (`pata jenga --lengo cortex-m`).
+//! The device targets: a program's strict (`#[salama]`) functions compiled to machine code as
+//! an ELF relocatable object a firmware links, plus a C header declaring them
+//! (`pata jenga --lengo cortex-m` / `--lengo esp32`). Cortex-M code comes from
+//! [`super::codegen_t32`] (Thumb-2), ESP32 code from [`super::codegen_xt`] (Xtensa LX6).
 //!
 //! Each strict function `f` is exported as
 //! `int32_t asili_f(const asili_f_hoja *hoja, double *matokeo)`: `hoja` holds its arguments in
@@ -9,23 +10,54 @@
 //! `matokeo`, and the return value is 0, or non-zero when the call failed (an index out of range,
 //! say) — the firmware's cue to enter its safe state. The export is a small thunk that builds
 //! the function's register frame on the stack and calls its native code; strict functions call
-//! each other directly. The code calls into `asili-kifaa` (`driver/kifaa`), the device runtime
-//! (list access, `fmod`, `pow`, conversions), and the EABI 64-bit division helpers, both
+//! each other directly. The code calls into the device runtime (`asili_kifaa_*`: list access,
+//! `fmod`, `pow`, conversions) and the compiler runtime's 64-bit and soft-float helpers, all
 //! resolved when the firmware is linked.
 //!
 //! Only what a device can run without a host is accepted: numbers, truth values and the caller's
 //! numeric lists, with no allocation — anything else in a strict function is a build error.
+//! Everything up to the IR (checks, inlining, lowering, optimization) is shared by the targets.
 
-use super::codegen_t32::{self, Code};
+use super::codegen_t32;
+use super::codegen_xt;
 use super::ir::{Func, Inst, RtFn};
-use super::t32::{self, Asm, Cond, Reloc, SP};
+use super::t32::{self, Asm, Cond, SP};
 use super::{lower, opt, verify};
 use crate::bytecode::{BytecodeFunc, BytecodeProgram, Opcode, Operand, Ty};
 use crate::numlist::Kind;
 
+/// A device target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lengo {
+    /// ARMv7E-M with the `fpv5-d16` double-precision unit (hard-float ABI).
+    CortexM,
+    /// ESP32: Xtensa LX6, windowed ABI, doubles in software.
+    Esp32,
+}
+
+impl Lengo {
+    /// The name in messages and file names.
+    pub fn jina(self) -> &'static str {
+        match self {
+            Lengo::CortexM => "Cortex-M",
+            Lengo::Esp32 => "ESP32",
+        }
+    }
+
+    fn runtime_symbol(self, target: RtFn) -> Option<&'static str> {
+        match self {
+            Lengo::CortexM => codegen_t32::runtime_symbol(target),
+            Lengo::Esp32 => codegen_xt::runtime_symbol(target),
+        }
+    }
+}
+
+/// `R_XTENSA_32`: a 32-bit absolute address (the literals naming external functions).
+const R_XTENSA_32: u32 = 1;
+
 /// A built device object and its header.
 pub struct Kifaa {
-    /// ELF32 relocatable object (ARM, EABI5, hard float).
+    /// ELF32 relocatable object (ARM EABI5 hard float, or Xtensa).
     pub object: Vec<u8>,
     /// C declarations of the exports.
     pub header: String,
@@ -39,21 +71,53 @@ const STATUS_RETURN: u32 = 3;
 /// Build `functions` (strict functions of `program`, by index) for Cortex-M; `jina` names the
 /// header guard. Errors name the function and why it cannot run on a device.
 pub fn build(program: &BytecodeProgram, functions: &[usize], jina: &str) -> Result<Kifaa, String> {
+    build_for(Lengo::CortexM, program, functions, jina)
+}
+
+/// Build `functions` for `lengo`.
+pub fn build_for(
+    lengo: Lengo,
+    program: &BytecodeProgram,
+    functions: &[usize],
+    jina: &str,
+) -> Result<Kifaa, String> {
     for &i in functions {
         let f = &program.functions[i];
-        signature(f).map_err(|e| kosa(f, &e))?;
+        signature(f).map_err(|e| kosa(lengo, f, &e))?;
     }
     // A strict function calling one that takes a list would go through the host: on a device
     // the callee's body is inlined instead (strict code has no recursion, so this ends).
     let mut inlined = program.clone();
     for &i in functions {
-        inline_list_calls(&mut inlined, i).map_err(|e| kosa(&program.functions[i], &e))?;
+        inline_list_calls(&mut inlined, i).map_err(|e| kosa(lengo, &program.functions[i], &e))?;
     }
     crate::bytecode_verify::verify(&inlined).map_err(|e| format!("kosa la ndani: {e}"))?;
     let program = &inlined;
+    let object = match lengo {
+        Lengo::CortexM => object_t32(program, functions)?,
+        Lengo::Esp32 => object_xt(program, functions)?,
+    };
+    Ok(Kifaa {
+        object,
+        header: header(lengo, program, functions, jina),
+        exports: functions
+            .iter()
+            .map(|&i| program.functions[i].name.clone())
+            .collect(),
+    })
+}
+
+/// The ordinary entries of the exports, then the direct entries they reach, each lowered and
+/// generated by `generate`; `calls` lists the program functions a generated unit calls directly.
+fn units<C>(
+    lengo: Lengo,
+    program: &BytecodeProgram,
+    functions: &[usize],
+    generate: impl Fn(&Func) -> Result<C, String>,
+    calls: impl Fn(&C) -> Vec<u32>,
+) -> Result<Vec<(usize, bool, C)>, String> {
     let direct = super::direct_entries(program);
-    // Ordinary entries of the exports, then the direct entries they reach.
-    let mut units: Vec<(usize, bool, Code)> = Vec::new();
+    let mut units: Vec<(usize, bool, C)> = Vec::new();
     let mut queue: Vec<(usize, bool)> = functions.iter().map(|&i| (i, false)).collect();
     let mut seen: std::collections::BTreeSet<(usize, bool)> = queue.iter().copied().collect();
     while let Some((index, entry_direct)) = queue.pop() {
@@ -63,8 +127,9 @@ pub fn build(program: &BytecodeProgram, functions: &[usize], jina: &str) -> Resu
             direct: &direct,
             entry_direct,
         };
-        let code = compile(index, &ctx).map_err(|e| kosa(f, &e))?;
-        for &(_, callee) in &code.calls {
+        let func = compile(lengo, index, &ctx).map_err(|e| kosa(lengo, f, &e))?;
+        let code = generate(&func).map_err(|e| kosa(lengo, f, &e))?;
+        for callee in calls(&code) {
             if seen.insert((callee as usize, true)) {
                 queue.push((callee as usize, true));
             }
@@ -72,10 +137,20 @@ pub fn build(program: &BytecodeProgram, functions: &[usize], jina: &str) -> Resu
         units.push((index, entry_direct, code));
     }
     units.sort_by_key(|(i, d, _)| (*d, *i));
+    Ok(units)
+}
 
-    // Layout: each export's thunk, then every function's code.
+/// Cortex-M: each export's thunk, then every function's code, `bl`s linked in place.
+fn object_t32(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, String> {
+    let units = units(
+        Lengo::CortexM,
+        program,
+        functions,
+        codegen_t32::generate,
+        |c: &codegen_t32::Code| c.calls.iter().map(|&(_, f)| f).collect(),
+    )?;
     let mut text: Vec<u8> = Vec::new();
-    let mut relocs: Vec<(usize, String, Reloc)> = Vec::new();
+    let mut relocs: Vec<ElfReloc> = Vec::new();
     let mut symbols: Vec<(String, usize, usize)> = Vec::new();
     let mut thunk_calls: Vec<(usize, usize)> = Vec::new(); // (bl offset, export index)
     for &i in functions {
@@ -94,7 +169,12 @@ pub fn build(program: &BytecodeProgram, functions: &[usize], jina: &str) -> Resu
         placed.insert((*index, *entry_direct), base);
         text.extend_from_slice(&code.bytes);
         for (at, symbol, kind) in &code.relocs {
-            relocs.push((base + at, symbol.clone(), *kind));
+            relocs.push(ElfReloc {
+                at: base + at,
+                symbol: Some(symbol.clone()),
+                kind: *kind as u32,
+                addend: 0,
+            });
         }
     }
     for (index, entry_direct, code) in &units {
@@ -107,14 +187,100 @@ pub fn build(program: &BytecodeProgram, functions: &[usize], jina: &str) -> Resu
     for &(at, i) in &thunk_calls {
         t32::link_bl(&mut text, at, placed[&(i, false)])?;
     }
-    Ok(Kifaa {
-        object: elf_object(&text, &symbols, &relocs),
-        header: header(program, functions, jina),
-        exports: functions
+    Ok(elf_object(Lengo::CortexM, &text, &symbols, &relocs))
+}
+
+/// ESP32: each export's thunk, then every function (its literal pool, then its code). The
+/// literals holding addresses are relocated: external functions by symbol, the program's own
+/// functions against `.text` at their offset (calls reach any distance this way).
+fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, String> {
+    let units = units(
+        Lengo::Esp32,
+        program,
+        functions,
+        codegen_xt::generate,
+        |c: &codegen_xt::Code| c.calls.iter().map(|&(_, f)| f).collect(),
+    )?;
+    let mut text: Vec<u8> = Vec::new();
+    let mut relocs: Vec<ElfReloc> = Vec::new();
+    let mut symbols: Vec<(String, usize, usize)> = Vec::new();
+    // (literal offset in `text`, program function, whether its direct entry)
+    let mut calls: Vec<(usize, usize, bool)> = Vec::new();
+    let place = |code: &codegen_xt::Code, text: &mut Vec<u8>, relocs: &mut Vec<ElfReloc>| {
+        while !text.len().is_multiple_of(4) {
+            text.push(0); // between functions: never executed
+        }
+        let base = text.len();
+        text.extend_from_slice(&code.bytes);
+        for (at, symbol) in &code.relocs {
+            relocs.push(ElfReloc {
+                at: base + at,
+                symbol: Some(symbol.clone()),
+                kind: R_XTENSA_32,
+                addend: 0,
+            });
+        }
+        base
+    };
+    for &i in functions {
+        let f = &program.functions[i];
+        let code = codegen_xt::thunk(&thunk_spec(f)).map_err(|e| kosa(Lengo::Esp32, f, &e))?;
+        let base = place(&code, &mut text, &mut relocs);
+        for &(at, _) in &code.calls {
+            calls.push((base + at, i, false));
+        }
+        symbols.push((
+            format!("asili_{}", f.name),
+            base + code.entry,
+            code.bytes.len() - code.entry,
+        ));
+    }
+    let mut placed: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
+    for (index, entry_direct, code) in &units {
+        let base = place(code, &mut text, &mut relocs);
+        placed.insert((*index, *entry_direct), base + code.entry);
+        for &(at, callee) in &code.calls {
+            calls.push((base + at, callee as usize, true));
+        }
+    }
+    for (at, callee, direct) in calls {
+        relocs.push(ElfReloc {
+            at,
+            symbol: None,
+            kind: R_XTENSA_32,
+            addend: placed[&(callee, direct)] as u32,
+        });
+    }
+    Ok(elf_object(Lengo::Esp32, &text, &symbols, &relocs))
+}
+
+/// What the ESP32 export thunk of `f` needs (see [`codegen_xt::thunk`]).
+fn thunk_spec(f: &BytecodeFunc) -> codegen_xt::ThunkSpec {
+    codegen_xt::ThunkSpec {
+        num_regs: f.num_regs as u32,
+        list_regs: f.list_regs as u32,
+        num_consts: f
+            .num_consts
             .iter()
-            .map(|&i| program.functions[i].name.clone())
+            .map(|&(reg, value)| (reg as u32, value.to_bits()))
             .collect(),
-    })
+        params: f
+            .params
+            .iter()
+            .map(|p| (p.reg as u32, p.ty == Ty::List))
+            .collect(),
+        returns: f
+            .code
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, op)| match op {
+                Opcode::Return { src } if matches!(src.ty, Ty::Num | Ty::Bool) => {
+                    Some((pc as u32, src.reg as u32))
+                }
+                _ => None,
+            })
+            .collect(),
+    }
 }
 
 /// Inline, into function `caller`, every call to a function taking a list, until none is left.
@@ -435,10 +601,11 @@ fn inline_at(
     Ok(())
 }
 
-fn kosa(f: &BytecodeFunc, e: &str) -> String {
+fn kosa(lengo: Lengo, f: &BytecodeFunc, e: &str) -> String {
     format!(
-        "kazi salama '{}' haiwezi kujengwa kwa Cortex-M: {e}",
-        f.name
+        "kazi salama '{}' haiwezi kujengwa kwa {}: {e}",
+        f.name,
+        lengo.jina()
     )
 }
 
@@ -465,17 +632,18 @@ fn signature(f: &BytecodeFunc) -> Result<(), String> {
     Ok(())
 }
 
-/// Lower, optimize (without instructions a Cortex-M lacks) and generate one entry.
-fn compile(index: usize, ctx: &lower::Ctx) -> Result<Code, String> {
+/// Lower and optimize one entry (without instructions a device lacks), ready for a target's
+/// code generator.
+fn compile(lengo: Lengo, index: usize, ctx: &lower::Ctx) -> Result<Func, String> {
     let function = &ctx.program.functions[index];
     let mut func =
         lower::lower(index, function, ctx).ok_or("haikuweza kutafsiriwa kuwa msimbo wa mashine")?;
     check_lists(&func)?;
-    check_host_calls(&func, function)?;
+    check_host_calls(lengo, &func, function)?;
     verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
     opt::optimize_with(&mut func, false).map_err(|e| format!("kosa la ndani: {e}"))?;
     verify::verify(&func).map_err(|e| format!("kosa la ndani: {e}"))?;
-    codegen_t32::generate(&func)
+    Ok(func)
 }
 
 /// Constants defined by `IConst` in `func` (by register).
@@ -492,7 +660,7 @@ fn iconsts(func: &Func) -> std::collections::HashMap<u32, i64> {
 
 /// An instruction native code hands to the host (`exec`) has no host to run it on a device:
 /// name it.
-fn check_host_calls(func: &Func, function: &BytecodeFunc) -> Result<(), String> {
+fn check_host_calls(lengo: Lengo, func: &Func, function: &BytecodeFunc) -> Result<(), String> {
     let consts = iconsts(func);
     for inst in func.blocks.iter().flat_map(|b| &b.insts) {
         let Inst::Call { target, args, .. } = inst else {
@@ -505,9 +673,7 @@ fn check_host_calls(func: &Func, function: &BytecodeFunc) -> Result<(), String> 
         // Indexing runs natively; the host only raises its out-of-range error, which on a
         // device is the call failing.
         let error_path_only = matches!(op, Some(Opcode::ListGet { .. } | Opcode::ListSet { .. }));
-        if codegen_t32::runtime_symbol(*target).is_some()
-            && (*target != RtFn::Exec || error_path_only)
-        {
+        if lengo.runtime_symbol(*target).is_some() && (*target != RtFn::Exec || error_path_only) {
             continue;
         }
         let what = match op {
@@ -641,7 +807,7 @@ fn store_pair(a: &mut Asm, lo: u8, hi: u8, off: u32) {
 }
 
 /// C declarations of the exports.
-fn header(program: &BytecodeProgram, functions: &[usize], jina: &str) -> String {
+fn header(lengo: Lengo, program: &BytecodeProgram, functions: &[usize], jina: &str) -> String {
     let guard: String = jina
         .chars()
         .map(|c| {
@@ -652,10 +818,22 @@ fn header(program: &BytecodeProgram, functions: &[usize], jina: &str) -> String 
             }
         })
         .collect();
+    let (maelezo, lengo_jina, kifaa) = match lengo {
+        Lengo::CortexM => (
+            "Cortex-M (ARMv7E-M, fpv5-d16,\n * hard float)",
+            "cortex-m",
+            "libasili_kifaa.a",
+        ),
+        Lengo::Esp32 => (
+            "ESP32 (Xtensa LX6,\n * ABI ya madirisha)",
+            "esp32",
+            "asili_kifaa_esp32.c",
+        ),
+    };
     let mut h = format!(
-        "/* {jina}.h: kazi salama za Asili zilizojengwa kwa Cortex-M (ARMv7E-M, fpv5-d16,\n \
-         * hard float) na `pata jenga --lengo cortex-m`. Unganisha na {jina}-cortex-m.o na\n \
-         * libasili_kifaa.a. Usihariri: faili hili hutengenezwa upya kila ujenzi.\n \
+        "/* {jina}.h: kazi salama za Asili zilizojengwa kwa {maelezo} na `pata jenga --lengo \
+         {lengo_jina}`.\n * Unganisha na {jina}-{lengo_jina}.o na {kifaa}. Usihariri: faili hili \
+         hutengenezwa upya\n * kila ujenzi.\n \
          *\n \
          * Kila kazi hurudisha 0 ikifaulu (matokeo yamewekwa), au namba isiyo sifuri ikishindwa\n \
          * (matokeo hayajawekwa): hapo programu iingie katika hali yake salama. Namba na Ukweli\n \
@@ -701,13 +879,26 @@ fn header(program: &BytecodeProgram, functions: &[usize], jina: &str) -> String 
     h
 }
 
-/// An ELF32 relocatable object for ARM (EABI5, hard float) holding `text`, with a global
-/// Thumb function symbol for each export and REL relocations against undefined symbols.
+/// A relocation in `.text`: at byte `at`, of type `kind`, against undefined symbol `symbol` —
+/// or against `.text` itself with `addend` when `symbol` is `None` (Xtensa only: ARM's REL
+/// relocations carry no addend).
+struct ElfReloc {
+    at: usize,
+    symbol: Option<String>,
+    kind: u32,
+    addend: u32,
+}
+
+/// An ELF32 relocatable object holding `text`, with a global function symbol for each export
+/// and its relocations: for ARM (EABI5, hard float) Thumb symbols and REL relocations, for
+/// Xtensa RELA relocations.
 fn elf_object(
+    lengo: Lengo,
     text: &[u8],
     exports: &[(String, usize, usize)],
-    relocs: &[(usize, String, Reloc)],
+    relocs: &[ElfReloc],
 ) -> Vec<u8> {
+    let arm = lengo == Lengo::CortexM;
     fn u16le(v: &mut Vec<u8>, x: u16) {
         v.extend_from_slice(&x.to_le_bytes());
     }
@@ -733,15 +924,22 @@ fn elf_object(
         u16le(tab, shndx);
     };
     sym(&mut symtab, 0, 0, 0, 3, 1); // STT_SECTION, local
-    let t = name("$t", &mut strtab);
-    sym(&mut symtab, t, 0, 0, 0, 1);
+                                     // The `$t` mapping symbol (Thumb code from 0) on ARM; another local section symbol keeps
+                                     // the indices the same on Xtensa.
+    if arm {
+        let t = name("$t", &mut strtab);
+        sym(&mut symtab, t, 0, 0, 0, 1);
+    } else {
+        sym(&mut symtab, 0, 0, 0, 3, 1);
+    }
     let first_global = 3u32;
     for (export, at, size) in exports {
         let n = name(export, &mut strtab);
         // STB_GLOBAL | STT_FUNC; a Thumb function's address has bit 0 set.
-        sym(&mut symtab, n, *at as u32 | 1, *size as u32, 0x12, 1);
+        let value = if arm { *at as u32 | 1 } else { *at as u32 };
+        sym(&mut symtab, n, value, *size as u32, 0x12, 1);
     }
-    let mut undefined: Vec<String> = relocs.iter().map(|(_, s, _)| s.clone()).collect();
+    let mut undefined: Vec<String> = relocs.iter().filter_map(|r| r.symbol.clone()).collect();
     undefined.sort();
     undefined.dedup();
     let undefined_base = first_global + exports.len() as u32;
@@ -750,14 +948,21 @@ fn elf_object(
         sym(&mut symtab, n, 0, 0, 0x10, 0); // STB_GLOBAL, undefined
     }
     let mut rel = Vec::new();
-    for (at, s, kind) in relocs {
-        let index = undefined_base + undefined.iter().position(|u| u == s).unwrap_or(0) as u32;
-        u32le(&mut rel, *at as u32);
-        u32le(&mut rel, index << 8 | *kind as u32);
+    for r in relocs {
+        // Symbol 1 is `.text`'s section symbol.
+        let index = match &r.symbol {
+            Some(s) => undefined_base + undefined.iter().position(|u| u == s).unwrap_or(0) as u32,
+            None => 1,
+        };
+        u32le(&mut rel, r.at as u32);
+        u32le(&mut rel, index << 8 | r.kind);
+        if !arm {
+            u32le(&mut rel, r.addend); // RELA addend
+        }
     }
     let mut shstrtab = vec![0u8];
     let sh_text = name(".text", &mut shstrtab);
-    let sh_rel = name(".rel.text", &mut shstrtab);
+    let sh_rel = name(if arm { ".rel.text" } else { ".rela.text" }, &mut shstrtab);
     let sh_symtab = name(".symtab", &mut shstrtab);
     let sh_strtab = name(".strtab", &mut shstrtab);
     let sh_shstrtab = name(".shstrtab", &mut shstrtab);
@@ -786,12 +991,13 @@ fn elf_object(
     out.extend_from_slice(&[0x7F, b'E', b'L', b'F', 1, 1, 1, 0]);
     out.extend_from_slice(&[0; 8]);
     u16le(&mut out, 1); // ET_REL
-    u16le(&mut out, 40); // EM_ARM
+    u16le(&mut out, if arm { 40 } else { 94 }); // EM_ARM / EM_XTENSA
     u32le(&mut out, 1);
     u32le(&mut out, 0); // entry
     u32le(&mut out, 0); // phoff
     u32le(&mut out, shoff);
-    u32le(&mut out, 0x0500_0400); // EABI version 5, hard-float ABI
+    // ARM: EABI version 5, hard-float ABI. Xtensa: the flags GCC sets (0x300).
+    u32le(&mut out, if arm { 0x0500_0400 } else { 0x300 });
     u16le(&mut out, 52);
     u16le(&mut out, 0);
     u16le(&mut out, 0);
@@ -809,9 +1015,22 @@ fn elf_object(
         &mut out,
         [sh_text, 1, 6, 0, text_at, text.len() as u32, 0, 0, 4, 0],
     );
+    // SHT_REL (entries of 8 bytes) on ARM, SHT_RELA (12 bytes) on Xtensa.
+    let (rel_type, rel_size) = if arm { (9, 8) } else { (4, 12) };
     section(
         &mut out,
-        [sh_rel, 9, 0x40, 0, rel_at, rel.len() as u32, 3, 1, 4, 8],
+        [
+            sh_rel,
+            rel_type,
+            0x40,
+            0,
+            rel_at,
+            rel.len() as u32,
+            3,
+            1,
+            4,
+            rel_size,
+        ],
     );
     section(
         &mut out,

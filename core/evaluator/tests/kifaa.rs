@@ -1,10 +1,17 @@
-//! The Cortex-M target computes what native code on the build machine computes, bit for bit:
+//! The device targets compute what native code on the build machine computes, bit for bit:
 //! strict functions are built for the device (`nguvu::device`), linked with a generated C
-//! harness and the device runtime (`driver/kifaa`), run under `qemu-arm -cpu cortex-m7`, and
-//! every result — or failure — is compared with the same call made through native code here.
+//! harness and the device runtime, run under an emulator, and every result — or failure — is
+//! compared with the same call made through native code here.
 //!
-//! Needs `clang`, `ld.lld`, `qemu-arm-static` and the `thumbv7em-none-eabihf` Rust target;
-//! skipped (with a note) where any is missing. CI installs them (`.github/workflows/ci.yml`).
+//! * Cortex-M: linked with `driver/kifaa`, run under `qemu-arm -cpu cortex-m7`. Needs `clang`,
+//!   `ld.lld`, `qemu-arm-static` and the `thumbv7em-none-eabihf` Rust target; CI installs them
+//!   (`.github/workflows/ci.yml`).
+//! * ESP32: an ESP-IDF firmware linked with `driver/esp32/asili_kifaa_esp32.c`, run under
+//!   Espressif's `qemu-system-xtensa`. Needs `ASILI_ESP_IDF` set to an ESP-IDF checkout whose
+//!   tools (including `qemu-xtensa`) are installed; set `ASILI_ESP32_REQUIRE` to fail instead
+//!   of skipping when it is missing.
+//!
+//! A target whose tools are missing is skipped with a note.
 
 use asili_evaluator::nguvu::{self, device};
 use asili_evaluator::{compile_module_explained, run_bytecode_function_on, Value};
@@ -102,76 +109,17 @@ sys3:
     pop {r7, pc}
 ";
 
-/// Build `source`'s strict functions for the device, run `calls` there and here, and compare.
-fn agree(name: &str, source: &str, calls: &[(&str, Vec<Arg>)]) {
-    // CI sets ASILI_KIFAA_REQUIRE so a missing tool fails the job instead of skipping it.
-    let skip = |why: String| {
-        assert!(std::env::var_os("ASILI_KIFAA_REQUIRE").is_none(), "{why}");
-        eprintln!("kifaa: {why}; jaribio limerukwa");
-    };
-    let tools = ["clang", "ld.lld", "qemu-arm-static"];
-    if let Some(missing) = tools.iter().find(|t| !tool(t)) {
-        return skip(format!("{missing} haipo"));
-    }
-    let Some(runtime) = runtime() else {
-        return skip("lengo thumbv7em-none-eabihf halipo".into());
-    };
-    let tokens = asili_lexer::tokenize(source).expect("tokenize");
-    let module = asili_parser::parse_tokens(&tokens).expect("parse");
-    let program = compile_module_explained(&module).expect("bytecode");
-    let strict: Vec<usize> = module
-        .functions
-        .iter()
-        .filter(|f| asili_evaluator::salama::is_strict(f))
-        .map(|f| {
-            program
-                .functions
-                .iter()
-                .position(|g| g.name == f.name)
-                .expect("compiled")
-        })
-        .collect();
-    let built = device::build(&program, &strict, name).unwrap_or_else(|e| panic!("{e}"));
-    let library = nguvu::compile(&program).expect("native code");
-
-    let dir = std::env::temp_dir().join(format!("asili-kifaa-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(format!("{name}-cortex-m.o")), &built.object).unwrap();
-    std::fs::write(dir.join(format!("{name}.h")), &built.header).unwrap();
-    std::fs::write(dir.join("sys.s"), SYS).unwrap();
-
-    // The harness: each call with fresh copies of its lists, printing the result's bits.
-    let mut c = format!(
-        "#include \"{name}.h\"\n\
-         long sys3(long n, long a, long b, long c);\n\
-         static void put(const char *s, int n) {{ sys3(4, 1, (long)s, n); }}\n\
-         static void hex(const void *p) {{\n\
-             unsigned long long v = *(const unsigned long long *)p; char b[17];\n\
-             for (int i = 15; i >= 0; i--) {{ b[i] = \"0123456789abcdef\"[v & 15]; v >>= 4; }}\n\
-             b[16] = '\\n'; put(b, 17);\n\
-         }}\n\
-         static void result(int s, double out) {{\n\
-             if (s != 0) {{ put(\"kosa\\n\", 5); return; }}\n\
-             if (out != out) {{ out = __builtin_nan(\"\"); }}\n\
-             hex(&out);\n\
-         }}\n\
-         void _start(void) {{\n"
-    );
-    let mut expected = String::new();
+/// The C statements making `calls` (each with fresh copies of its lists and printing its
+/// result through the harness's `result`), with `lit` writing a double as a C constant.
+fn call_statements(calls: &[(&str, Vec<Arg>)], lit: impl Fn(f64) -> String) -> String {
+    let mut c = String::new();
     for (k, (f, args)) in calls.iter().enumerate() {
-        expected.push_str(&host_result(&library, &program, f, args));
-        expected.push('\n');
         let mut fields = Vec::new();
         for (j, a) in args.iter().enumerate() {
             match a {
-                Arg::Num(n) => {
-                    fields.push(format!("__builtin_bit_cast(double, {}ULL)", n.to_bits()))
-                }
+                Arg::Num(n) => fields.push(lit(*n)),
                 Arg::List(items) => {
-                    let elems: Vec<String> = items
-                        .iter()
-                        .map(|n| format!("__builtin_bit_cast(double, {}ULL)", n.to_bits()))
-                        .collect();
+                    let elems: Vec<String> = items.iter().map(|&n| lit(n)).collect();
                     c.push_str(&format!(
                         "    static double l{k}_{j}[] = {{ {} }};\n",
                         if elems.is_empty() {
@@ -197,6 +145,134 @@ fn agree(name: &str, source: &str, calls: &[(&str, Vec<Arg>)]) {
             "    {{ double out = 0; int s = asili_{f}({hoja}, &out); result(s, out); }}\n"
         ));
     }
+    c
+}
+
+/// A double as an exact C99 hexadecimal constant (GCC's C has no `__builtin_bit_cast`).
+fn hex_double(x: f64) -> String {
+    if x.is_nan() {
+        return "__builtin_nan(\"\")".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 {
+            "__builtin_inf()".into()
+        } else {
+            "(-__builtin_inf())".into()
+        };
+    }
+    let b = x.to_bits();
+    let sign = if b >> 63 == 1 { "-" } else { "" };
+    let e = ((b >> 52) & 0x7ff) as i64;
+    let m = b & ((1u64 << 52) - 1);
+    if e == 0 {
+        format!("{sign}0x0.{m:013x}p-1022")
+    } else {
+        format!("{sign}0x1.{m:013x}p{}", e - 1023)
+    }
+}
+
+/// Every line the device printed must equal the host's.
+fn compare(
+    target: &str,
+    name: &str,
+    expected: &str,
+    got: &str,
+    source: &str,
+    calls: &[(&str, Vec<Arg>)],
+) {
+    if std::env::var_os("ASILI_KIFAA_SHOW").is_some() {
+        eprintln!("{name} ({target}):\n{got}");
+    }
+    for (i, (want, have)) in expected.lines().zip(got.lines()).enumerate() {
+        assert_eq!(
+            want, have,
+            "{name}: call {i} ({}) differs on {target}\n{source}",
+            calls[i].0
+        );
+    }
+    assert_eq!(
+        expected.lines().count(),
+        got.lines().count(),
+        "{target}: {got}"
+    );
+}
+
+/// Build `source`'s strict functions for each device target, run `calls` there and here, and
+/// compare.
+fn agree(name: &str, source: &str, calls: &[(&str, Vec<Arg>)]) {
+    let tokens = asili_lexer::tokenize(source).expect("tokenize");
+    let module = asili_parser::parse_tokens(&tokens).expect("parse");
+    let program = compile_module_explained(&module).expect("bytecode");
+    let strict: Vec<usize> = module
+        .functions
+        .iter()
+        .filter(|f| asili_evaluator::salama::is_strict(f))
+        .map(|f| {
+            program
+                .functions
+                .iter()
+                .position(|g| g.name == f.name)
+                .expect("compiled")
+        })
+        .collect();
+    let library = nguvu::compile(&program).expect("native code");
+    let mut expected = String::new();
+    for (f, args) in calls {
+        expected.push_str(&host_result(&library, &program, f, args));
+        expected.push('\n');
+    }
+    agree_cortex_m(name, &program, &strict, &expected, source, calls);
+    agree_esp32(name, &program, &strict, &expected, source, calls);
+}
+
+fn agree_cortex_m(
+    name: &str,
+    program: &asili_evaluator::BytecodeProgram,
+    strict: &[usize],
+    expected: &str,
+    source: &str,
+    calls: &[(&str, Vec<Arg>)],
+) {
+    // CI sets ASILI_KIFAA_REQUIRE so a missing tool fails the job instead of skipping it.
+    let skip = |why: String| {
+        assert!(std::env::var_os("ASILI_KIFAA_REQUIRE").is_none(), "{why}");
+        eprintln!("kifaa: {why}; jaribio limerukwa");
+    };
+    let tools = ["clang", "ld.lld", "qemu-arm-static"];
+    if let Some(missing) = tools.iter().find(|t| !tool(t)) {
+        return skip(format!("{missing} haipo"));
+    }
+    let Some(runtime) = runtime() else {
+        return skip("lengo thumbv7em-none-eabihf halipo".into());
+    };
+    let built = device::build(program, strict, name).unwrap_or_else(|e| panic!("{e}"));
+
+    let dir = std::env::temp_dir().join(format!("asili-kifaa-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}-cortex-m.o")), &built.object).unwrap();
+    std::fs::write(dir.join(format!("{name}.h")), &built.header).unwrap();
+    std::fs::write(dir.join("sys.s"), SYS).unwrap();
+
+    // The harness: each call with fresh copies of its lists, printing the result's bits.
+    let mut c = format!(
+        "#include \"{name}.h\"\n\
+         long sys3(long n, long a, long b, long c);\n\
+         static void put(const char *s, int n) {{ sys3(4, 1, (long)s, n); }}\n\
+         static void hex(const void *p) {{\n\
+             unsigned long long v = *(const unsigned long long *)p; char b[17];\n\
+             for (int i = 15; i >= 0; i--) {{ b[i] = \"0123456789abcdef\"[v & 15]; v >>= 4; }}\n\
+             b[16] = '\\n'; put(b, 17);\n\
+         }}\n\
+         static void result(int s, double out) {{\n\
+             if (s != 0) {{ put(\"kosa\\n\", 5); return; }}\n\
+             if (out != out) {{ out = __builtin_nan(\"\"); }}\n\
+             hex(&out);\n\
+         }}\n\
+         void _start(void) {{\n"
+    );
+    c.push_str(&call_statements(calls, |n| {
+        format!("__builtin_bit_cast(double, {}ULL)", n.to_bits())
+    }));
     c.push_str("    sys3(1, 0, 0, 0);\n}\n");
     std::fs::write(dir.join("main.c"), c).unwrap();
 
@@ -230,18 +306,179 @@ fn agree(name: &str, source: &str, calls: &[(&str, Vec<Arg>)]) {
         .arg(&runtime)
         .args(["-o", "t.elf"]));
     let got = run(Command::new("qemu-arm-static").args(["-cpu", "cortex-m7", "t.elf"]));
-    if std::env::var_os("ASILI_KIFAA_SHOW").is_some() {
-        eprintln!("{name}:\n{got}");
-    }
-    for (i, (want, have)) in expected.lines().zip(got.lines()).enumerate() {
-        assert_eq!(
-            want, have,
-            "{name}: call {i} ({}) differs on the device\n{source}",
-            calls[i].0
-        );
-    }
-    assert_eq!(expected.lines().count(), got.lines().count(), "{got}");
+    compare("Cortex-M", name, expected, &got, source, calls);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ESP32 builds share one lock: each is a full ESP-IDF build, too heavy to run side by side.
+static ESP32: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The default ESP32 efuse image `idf.py qemu` writes (chip revision 3).
+fn esp32_efuse() -> Vec<u8> {
+    let mut e = vec![0u8; 124];
+    e[13] = 0x80;
+    e[22] = 0x10;
+    e
+}
+
+fn agree_esp32(
+    name: &str,
+    program: &asili_evaluator::BytecodeProgram,
+    strict: &[usize],
+    expected: &str,
+    source: &str,
+    calls: &[(&str, Vec<Arg>)],
+) {
+    let Some(idf) = std::env::var_os("ASILI_ESP_IDF").map(PathBuf::from) else {
+        assert!(
+            std::env::var_os("ASILI_ESP32_REQUIRE").is_none(),
+            "ASILI_ESP_IDF haijawekwa"
+        );
+        eprintln!("kifaa: ASILI_ESP_IDF haijawekwa; jaribio la ESP32 limerukwa");
+        return;
+    };
+    let built = device::build_for(device::Lengo::Esp32, program, strict, name)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let _one_at_a_time = ESP32.lock().unwrap_or_else(|e| e.into_inner());
+
+    // A project kept between runs, so later builds are incremental.
+    let dir = std::env::temp_dir().join(format!("asili-kifaa-esp32-{name}"));
+    let main = dir.join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let write = |path: PathBuf, bytes: &[u8]| {
+        if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+            std::fs::write(path, bytes).unwrap();
+        }
+    };
+    write(
+        dir.join("CMakeLists.txt"),
+        b"cmake_minimum_required(VERSION 3.16)\n\
+          include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n\
+          project(asili_kifaa)\n",
+    );
+    // The task watchdog would print into the results of a long run. Every IR value has its
+    // own stack slot in ESP32 code (no register allocation yet), so frames are large: give the
+    // main task room for them.
+    write(
+        dir.join("sdkconfig.defaults"),
+        b"CONFIG_ESP_TASK_WDT_INIT=n\nCONFIG_ESP_INT_WDT=n\nCONFIG_ESP_MAIN_TASK_STACK_SIZE=32768\n",
+    );
+    write(
+        main.join("CMakeLists.txt"),
+        format!(
+            "idf_component_register(SRCS \"main.c\" \"asili_kifaa_esp32.c\" INCLUDE_DIRS \".\")\n\
+             target_sources(${{COMPONENT_LIB}} PRIVATE \"${{CMAKE_CURRENT_SOURCE_DIR}}/{name}-esp32.o\")\n"
+        )
+        .as_bytes(),
+    );
+    write(
+        main.join("asili_kifaa_esp32.c"),
+        &std::fs::read(root.join("driver/esp32/asili_kifaa_esp32.c")).unwrap(),
+    );
+    write(main.join(format!("{name}-esp32.o")), &built.object);
+    write(main.join(format!("{name}.h")), built.header.as_bytes());
+    let mut c = format!(
+        "#include <stdio.h>\n#include <string.h>\n#include \"{name}.h\"\n\
+         static void result(int s, double out) {{\n\
+             if (s != 0) {{ printf(\"kosa\\n\"); return; }}\n\
+             if (out != out) {{ out = __builtin_nan(\"\"); }}\n\
+             unsigned long long v; memcpy(&v, &out, 8);\n\
+             printf(\"%016llx\\n\", v);\n\
+         }}\n\
+         void app_main(void) {{\n\
+             printf(\"ASILI-MWANZO\\n\");\n"
+    );
+    c.push_str(&call_statements(calls, hex_double));
+    c.push_str("    printf(\"ASILI-MWISHO\\n\");\n    fflush(stdout);\n}\n");
+    write(main.join("main.c"), c.as_bytes());
+
+    let sh = |script: &str| -> std::process::Output {
+        Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                ". '{}/export.sh' >/dev/null 2>&1 && {script}",
+                idf.display()
+            ))
+            .current_dir(&dir)
+            .output()
+            .expect("bash runs")
+    };
+    let check = |what: &str, out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{what}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let defaults = std::fs::read(dir.join("sdkconfig.defaults")).unwrap();
+    let stamp = dir.join("sdkconfig.defaults.applied");
+    if !dir.join("sdkconfig").exists() || std::fs::read(&stamp).ok() != Some(defaults.clone()) {
+        let _ = std::fs::remove_file(dir.join("sdkconfig"));
+        check("idf.py set-target", sh("idf.py set-target esp32"));
+        std::fs::write(&stamp, &defaults).unwrap();
+    }
+    check("idf.py build", sh("idf.py build"));
+    check(
+        "esptool merge-bin",
+        sh("python -m esptool --chip esp32 merge-bin -o build/flash.bin --pad-to-size 2MB \
+            --flash-mode dio --flash-freq 40m --flash-size 2MB \
+            0x1000 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin \
+            0x10000 build/asili_kifaa.bin"),
+    );
+    std::fs::write(dir.join("build/efuse.bin"), esp32_efuse()).unwrap();
+
+    // QEMU runs until killed: read its console until the harness's end marker.
+    let mut child = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            ". '{}/export.sh' >/dev/null 2>&1 && exec qemu-system-xtensa -M esp32 -m 4M \
+             -drive file=build/flash.bin,if=mtd,format=raw \
+             -drive file=build/efuse.bin,if=none,format=raw,id=efuse \
+             -global driver=nvram.esp32.efuse,property=drive,value=efuse \
+             -global driver=timer.esp32.timg,property=wdt_disable,value=true -nographic",
+            idf.display()
+        ))
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("qemu-system-xtensa starts");
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut got = String::new();
+    let mut started = false;
+    let mut finished = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        let Ok(line) = rx.recv_timeout(left) else {
+            break;
+        };
+        let line = line.trim_end_matches('\r');
+        if line == "ASILI-MWANZO" {
+            started = true;
+        } else if line == "ASILI-MWISHO" {
+            finished = true;
+            break;
+        } else if started {
+            got.push_str(line);
+            got.push('\n');
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(finished, "ESP32: harness haikufika mwisho\n{got}");
+    compare("ESP32", name, expected, &got, source, calls);
 }
 
 fn n(x: f64) -> Arg {
@@ -378,21 +615,27 @@ fn random_strict_programs_agree() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
-    let mut source = String::new();
-    let mut calls: Vec<(String, Vec<Arg>)> = Vec::new();
-    for seed in 1..=count {
-        let (text, name) = strict_gen::function(seed);
-        source.push_str(&text);
-        let mut rng = strict_gen::Rng::new(seed ^ 0xABCD);
-        for _ in 0..3 {
-            let list: Vec<f64> = (0..8).map(|_| strict_gen::value(&mut rng)).collect();
-            let a = strict_gen::value(&mut rng);
-            let b = strict_gen::value(&mut rng);
-            calls.push((name.clone(), vec![Arg::List(list), n(a), n(b)]));
+    // In batches: one image holding hundreds of programs outgrows an ESP32 app partition
+    // (code with every value in a stack slot is large).
+    let seeds: Vec<u64> = (1..=count).collect();
+    for batch in seeds.chunks(50) {
+        let mut source = String::new();
+        let mut calls: Vec<(String, Vec<Arg>)> = Vec::new();
+        for &seed in batch {
+            let (text, name) = strict_gen::function(seed);
+            source.push_str(&text);
+            let mut rng = strict_gen::Rng::new(seed ^ 0xABCD);
+            for _ in 0..3 {
+                let list: Vec<f64> = (0..8).map(|_| strict_gen::value(&mut rng)).collect();
+                let a = strict_gen::value(&mut rng);
+                let b = strict_gen::value(&mut rng);
+                calls.push((name.clone(), vec![Arg::List(list), n(a), n(b)]));
+            }
         }
+        let calls: Vec<(&str, Vec<Arg>)> =
+            calls.iter().map(|(f, a)| (f.as_str(), a.clone())).collect();
+        agree("nasibu", &source, &calls);
     }
-    let calls: Vec<(&str, Vec<Arg>)> = calls.iter().map(|(f, a)| (f.as_str(), a.clone())).collect();
-    agree("nasibu", &source, &calls);
 }
 
 /// Builds for the device only (no tools needed): what a device cannot run is a build error
