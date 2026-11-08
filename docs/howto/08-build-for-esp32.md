@@ -15,14 +15,22 @@ salama: kazi 'dhibiti' — hatua ≤ 69, kumbukumbu ≤ baiti 200
 salama: kazi 'wastani' — hatua ≤ 49, kumbukumbu ≤ baiti 104
 msimbo asilia: ./kilele/kidhibiti.nguvu
 kifaa (ESP32): ./kilele/kidhibiti-esp32.o na ./kilele/kidhibiti.h — kazi: wastani, dhibiti
+kifaa (ESP32): kazi 'wastani' — mrundikano ≤ baiti 224
+kifaa (ESP32): kazi 'dhibiti' — mrundikano ≤ baiti 304
 imejengwa: ./kilele/kidhibiti.asb
 ```
+
+Each `mrundikano` line is the most stack a call of that export takes in Asili's code: its frame
+plus the deepest chain of frames through the functions it calls (the compiler runtime's and the
+C library's own frames, small, not included). Give the calling task at least that much more
+than it otherwise needs.
 
 `[jenga] lengo = "esp32"` in `pata.toml` does the same without the flag, and
 `#[sharti(lengo = "esp32")]` selects items for this target as for any other.
 
 - `kilele/<jina>-esp32.o` — an ELF32 relocatable object (Xtensa) with one global function per
-  strict function, `asili_<kazi>`, using the windowed ABI that ESP-IDF code uses.
+  strict function, `asili_<kazi>`, using the windowed ABI that ESP-IDF code uses. The code uses
+  the ESP32's 16-bit code-density instructions wherever one fits (about a quarter smaller).
 - `kilele/<jina>.h` — their C declarations.
 
 ## Link into an ESP-IDF firmware
@@ -87,8 +95,11 @@ bit.
 
 ## Not yet
 
-- **Speed and size.** Every IR value lives in a stack slot (no register allocation yet); values
-  that are never live at the same time share a slot, which keeps frames small (the
-  `kidhibiti`-style sorting function `panga` needs 208 bytes), but each instruction still loads
-  and stores its operands.
+- **Speed.** Values live in the registers a call preserves (`a2`–`a7`: two 64-bit pairs for
+  integers, one for doubles) or in stack slots shared by values never live together. Double
+  arithmetic is the GCC runtime's software routines (about 0.4 µs per addition on a 240 MHz
+  ESP32), and each call still pays for building the function's frame (about 0.8 µs) and each
+  list for its bounds checks: on the controller example Asili takes about twice as long as the
+  same functions in C (`gcc -O2`). Removing that overhead and faster double arithmetic are
+  next.
 - Start-up code, RTOS integration and peripherals are the firmware's: the object is a library.

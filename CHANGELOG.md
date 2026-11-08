@@ -19,7 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tests/kifaa.rs` now also runs every case on the ESP32 under Espressif's QEMU when
   `ASILI_ESP_IDF` is set, bit for bit against native code (the controller example, the
   hand-written cases and 400 random programs agree), and the same images agree on a real ESP32.
-  No register allocation yet (see `docs/howto/08-build-for-esp32.md`).
+  ESP32 code uses the 16-bit code-density instructions wherever one fits (about 23% smaller),
+  keeps values in the registers a call preserves (`a2`–`a7`: two pairs for integers, one for
+  doubles; about 24% smaller again and 7–8% faster on the controller example), and `pata jenga`
+  prints each export's stack need (`mrundikano ≤ baiti N`). See
+  `docs/howto/08-build-for-esp32.md`.
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.

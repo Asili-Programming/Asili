@@ -2,7 +2,8 @@
 //! device target: the instruction words the code generator emits, and label fixups.
 //!
 //! Every encoding here is checked against `xtensa-esp32-elf-as` in the tests (golden
-//! words taken from its output). Narrow (code density) forms are not emitted.
+//! words taken from its output). [`Asm::word`] emits the 16-bit code-density form of an
+//! instruction that has one ([`narrow`]); label fixups and placeholders stay 24-bit.
 //! Words are little-endian in memory: an instruction is `word & 0xffffff`, stored as three
 //! bytes low byte first.
 //!
@@ -131,6 +132,49 @@ pub fn l32r_offset(pc: usize, literal: usize) -> i64 {
     (literal as i64 - ((pc as i64 + 3) & !3)) / 4
 }
 
+/// The 16-bit code-density form of 24-bit instruction `w`, where one exists: `add.n`,
+/// `addi.n` (immediates -1 and 1..=15), `mov.n`, `movi.n` (-32..=95), `l32i.n`/`s32i.n`
+/// (offsets 0..=60) and `ret.n`/`retw.n`.
+pub fn narrow(w: u32) -> Option<u16> {
+    let op0 = w & 0xf;
+    let t = (w >> 4) & 0xf;
+    let s = (w >> 8) & 0xf;
+    let r = (w >> 12) & 0xf;
+    let op1 = (w >> 16) & 0xf;
+    let op2 = (w >> 20) & 0xf;
+    let imm8 = (w >> 16) & 0xff;
+    let n = |a: u32, b: u32, c: u32, op: u32| Some(((a << 12) | (b << 8) | (c << 4) | op) as u16);
+    match op0 {
+        0 if w == RETW => Some(0xf01d),
+        0 if w == RET => Some(0xf00d),
+        0 if op1 == 0 && op2 == 0x8 => n(r, s, t, 0xA), // add ar, as, at
+        0 if op1 == 0 && op2 == 0x2 && s == t => n(0, s, r, 0xD), // mov ar, as
+        2 if r == 0x2 && imm8 <= 15 => n(imm8, s, t, 0x8), // l32i at, as, 4*imm8
+        2 if r == 0x6 && imm8 <= 15 => n(imm8, s, t, 0x9), // s32i at, as, 4*imm8
+        2 if r == 0xC => {
+            // addi at, as, imm8
+            let imm = imm8 as u8 as i8 as i32;
+            match imm {
+                -1 => n(t, s, 0, 0xB),
+                1..=15 => n(t, s, imm as u32, 0xB),
+                _ => None,
+            }
+        }
+        2 if r == 0xA => {
+            // movi at, imm12
+            let raw = (((w >> 8) & 0xf) << 8) | imm8;
+            let imm = ((raw << 20) as i32) >> 20;
+            if (-32..=95).contains(&imm) {
+                let v = (imm as u32) & 0x7f;
+                n(v & 0xf, t, (v >> 4) & 0x7, 0xC)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Branch conditions of the RRI8 branch group (`op0 = 7`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BranchCond {
@@ -204,10 +248,26 @@ impl Asm {
         self.labels.insert(l.0, self.code.len());
     }
 
-    /// Emits a 24-bit instruction word.
+    /// Emits an instruction: its 16-bit code-density form when it has one, else the 24-bit
+    /// word.
     pub fn word(&mut self, w: u32) {
         let w = w & 0xff_ffff;
-        self.code.extend_from_slice(&w.to_le_bytes()[..3]);
+        if let Some(h) = narrow(w) {
+            self.code.extend_from_slice(&h.to_le_bytes());
+        } else {
+            self.wide(w);
+        }
+    }
+
+    /// Emits the 24-bit word `w` as it is (placeholders patched later must keep their size).
+    fn wide(&mut self, w: u32) {
+        self.code
+            .extend_from_slice(&(w & 0xff_ffff).to_le_bytes()[..3]);
+    }
+
+    /// A 3-byte placeholder for an instruction patched later.
+    pub fn placeholder(&mut self) {
+        self.wide(0);
     }
 
     /// Emits a 32-bit literal (data, not an instruction), aligned to 4 bytes.
@@ -237,13 +297,13 @@ impl Asm {
     pub fn branch(&mut self, cond: BranchCond, s: u8, t: u8, to: Label) {
         let at = self.pc();
         self.fixups.push((Fix::Branch { at, s, t, cond }, to));
-        self.word(0);
+        self.placeholder();
     }
 
     pub fn jump(&mut self, to: Label) {
         let at = self.pc();
         self.fixups.push((Fix::Jump { at }, to));
-        self.word(0);
+        self.placeholder();
     }
 
     /// `call{n}` to a label in the same buffer (n = 0, 4, 8 or 12).
@@ -253,7 +313,7 @@ impl Asm {
         }
         let at = self.pc();
         self.fixups.push((Fix::Call { at, n: n / 4 }, to));
-        self.word(0);
+        self.placeholder();
         Ok(())
     }
 
@@ -261,7 +321,7 @@ impl Asm {
     pub fn l32r(&mut self, t: u8, to: Label) {
         let at = self.pc();
         self.fixups.push((Fix::Literal { at, t }, to));
-        self.word(0);
+        self.placeholder();
     }
 
     /// Patches every pending reference and returns the code bytes.
@@ -340,6 +400,33 @@ mod tests {
         assert_eq!(callx(12, 2), Some(0x0002f0));
     }
 
+    /// 16-bit forms, checked against `xtensa-esp32-elf-as` (its default, density) and GCC.
+    #[test]
+    fn narrow_forms_match_the_assembler() {
+        assert_eq!(narrow(add(2, 3, 4)), Some(0x234a));
+        assert_eq!(narrow(addi(2, 3, 5).unwrap()), Some(0x235b));
+        assert_eq!(narrow(addi(2, 3, -1).unwrap()), Some(0x230b));
+        assert_eq!(narrow(addi(2, 3, 16).unwrap()), None);
+        assert_eq!(narrow(l32i(2, 3, 8).unwrap()), Some(0x2328));
+        assert_eq!(narrow(s32i(2, 3, 8).unwrap()), Some(0x2329));
+        assert_eq!(narrow(l32i(2, 3, 64).unwrap()), None);
+        assert_eq!(narrow(mov(10, 2)), Some(0x02ad));
+        assert_eq!(narrow(movi(12, 3).unwrap()), Some(0x3c0c));
+        assert_eq!(narrow(movi(12, 100).unwrap()), None);
+        assert_eq!(narrow(RETW), Some(0xf01d));
+        assert_eq!(narrow(RET), Some(0xf00d));
+        assert_eq!(narrow(movi(2, -32).unwrap()), Some(0x026c));
+        assert_eq!(narrow(movi(2, -1).unwrap()), Some(0xf27c));
+        assert_eq!(narrow(movi(2, 95).unwrap()), Some(0xf25c));
+        assert_eq!(narrow(movi(7, 0).unwrap()), Some(0x070c));
+        assert_eq!(narrow(mov(3, 4)), Some(0x043d));
+        assert_eq!(narrow(addi(5, 6, 15).unwrap()), Some(0x56fb));
+        assert_eq!(narrow(l32i(4, 1, 60).unwrap()), Some(0xf148));
+        assert_eq!(narrow(s32i(4, 1, 0).unwrap()), Some(0x0149));
+        assert_eq!(narrow(sub(2, 3, 4)), None);
+        assert_eq!(narrow(or(2, 3, 4)), None);
+    }
+
     #[test]
     fn immediate_forms_match_the_assembler() {
         assert_eq!(addi(2, 3, 5), Some(0x05c322));
@@ -365,7 +452,7 @@ mod tests {
         let l = a.new_label();
         a.branch(BranchCond::Eq, 2, 3, l);
         for _ in 0..5 {
-            a.word(RET); // 15 bytes, so the label is at byte 18 = 4 + 14
+            a.word(sub(2, 3, 4)); // 15 bytes, so the label is at byte 18 = 4 + 14
         }
         a.bind(l);
         let code = a.finish().unwrap();
@@ -402,7 +489,7 @@ mod tests {
         let l = a.new_label();
         a.call(8, l).unwrap();
         for _ in 0..4 {
-            a.word(RET); // bytes 3..15
+            a.word(sub(2, 3, 4)); // bytes 3..15
         }
         a.align4(); // byte 16
         a.bind(l);
@@ -415,7 +502,7 @@ mod tests {
         let mut a = Asm::new();
         let l = a.new_label();
         a.call(0, l).unwrap();
-        a.word(RET); // label at byte 6: not word-aligned
+        a.word(sub(2, 3, 4)); // label at byte 6: not word-aligned
         a.bind(l);
         assert!(a.finish().is_err());
     }

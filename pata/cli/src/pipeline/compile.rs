@@ -401,6 +401,12 @@ fn write_device(
         header.display(),
         built.exports.join(", ")
     );
+    for (kazi, baiti) in &built.stack {
+        println!(
+            "kifaa ({}): kazi '{kazi}' — mrundikano ≤ baiti {baiti}",
+            lengo.jina()
+        );
+    }
     Ok(())
 }
 

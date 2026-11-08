@@ -66,6 +66,10 @@ pub struct Kifaa {
     pub header: String,
     /// Exported function names, in order.
     pub exports: Vec<String>,
+    /// For each export (ESP32), the most stack a call takes in Asili's code: the export's frame
+    /// plus the deepest chain of frames through the functions and helpers it calls (the C
+    /// library's and the compiler runtime's own frames not included). Empty for Cortex-M.
+    pub stack: Vec<(String, u32)>,
 }
 
 /// Status kinds in the high word of a function's return value (`native::STATUS_*`).
@@ -96,12 +100,13 @@ pub fn build_for(
     }
     crate::bytecode_verify::verify(&inlined).map_err(|e| format!("kosa la ndani: {e}"))?;
     let program = &inlined;
-    let object = match lengo {
-        Lengo::CortexM => object_t32(program, functions)?,
+    let (object, stack) = match lengo {
+        Lengo::CortexM => (object_t32(program, functions)?, Vec::new()),
         Lengo::Esp32 => object_xt(program, functions)?,
     };
     Ok(Kifaa {
         object,
+        stack,
         header: header(lengo, program, functions, jina),
         exports: functions
             .iter()
@@ -196,7 +201,11 @@ fn object_t32(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>,
 /// ESP32: each export's thunk, then every function (its literal pool, then its code). The
 /// literals holding addresses are relocated: external functions by symbol, the program's own
 /// functions against `.text` at their offset (calls reach any distance this way).
-fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, String> {
+#[allow(clippy::type_complexity)]
+fn object_xt(
+    program: &BytecodeProgram,
+    functions: &[usize],
+) -> Result<(Vec<u8>, Vec<(String, u32)>), String> {
     let units = units(
         Lengo::Esp32,
         program,
@@ -209,6 +218,7 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
     let mut symbols: Vec<(String, usize, usize)> = Vec::new();
     // (literal offset in `text`, program function, whether its direct entry)
     let mut calls: Vec<(usize, usize, bool)> = Vec::new();
+    let mut thunk_frames: Vec<(String, usize, u32)> = Vec::new(); // (name, export, frame)
     let place = |code: &codegen_xt::Code, text: &mut Vec<u8>, relocs: &mut Vec<ElfReloc>| {
         while !text.len().is_multiple_of(4) {
             text.push(0); // between functions: never executed
@@ -237,6 +247,7 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
             base + code.entry,
             code.bytes.len() - code.entry,
         ));
+        thunk_frames.push((f.name.clone(), i, code.frame));
     }
     let mut placed: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
     // (literal offset in `text`, helper index)
@@ -253,6 +264,7 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
     }
     // The helpers the code calls, compiled from IR once each.
     let mut helpers: std::collections::BTreeMap<u32, usize> = Default::default();
+    let mut helper_frames: std::collections::BTreeMap<u32, u32> = Default::default();
     let used: std::collections::BTreeSet<u32> = helper_calls.iter().map(|&(_, h)| h).collect();
     for h in used {
         let mut func = helper_func(codegen_xt::HELPERS[h as usize]);
@@ -262,6 +274,7 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
         let code = codegen_xt::generate(&func)?;
         let base = place(&code, &mut text, &mut relocs);
         helpers.insert(h, base + code.entry);
+        helper_frames.insert(h, code.frame);
     }
     for (at, h) in helper_calls {
         relocs.push(ElfReloc {
@@ -279,7 +292,47 @@ fn object_xt(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>, 
             addend: placed[&(callee, direct)] as u32,
         });
     }
-    Ok(elf_object(Lengo::Esp32, &text, &symbols, &relocs))
+    // Stack: frames along the deepest call chain (strict code has no recursion).
+    let unit_of: std::collections::BTreeMap<(usize, bool), &codegen_xt::Code> =
+        units.iter().map(|(i, d, c)| ((*i, *d), c)).collect();
+    fn depth(
+        at: (usize, bool),
+        units: &std::collections::BTreeMap<(usize, bool), &codegen_xt::Code>,
+        helper_frames: &std::collections::BTreeMap<u32, u32>,
+        memo: &mut std::collections::BTreeMap<(usize, bool), u32>,
+        level: usize,
+    ) -> Result<u32, String> {
+        if let Some(&d) = memo.get(&at) {
+            return Ok(d);
+        }
+        if level > 1000 {
+            return Err("kosa la ndani: mfululizo wa miito hauishi".into());
+        }
+        let code = units[&at];
+        let mut deepest = 0;
+        for &(_, callee) in &code.calls {
+            deepest = deepest.max(depth(
+                (callee as usize, true),
+                units,
+                helper_frames,
+                memo,
+                level + 1,
+            )?);
+        }
+        for &(_, h) in &code.helpers {
+            deepest = deepest.max(helper_frames[&h]);
+        }
+        let d = code.frame + deepest;
+        memo.insert(at, d);
+        Ok(d)
+    }
+    let mut memo = Default::default();
+    let mut stack = Vec::new();
+    for (name, index, frame) in thunk_frames {
+        let d = depth((index, false), &unit_of, &helper_frames, &mut memo, 0)?;
+        stack.push((name, frame + d));
+    }
+    Ok((elf_object(Lengo::Esp32, &text, &symbols, &relocs), stack))
 }
 
 /// What the ESP32 export thunk of `f` needs (see [`codegen_xt::thunk`]).

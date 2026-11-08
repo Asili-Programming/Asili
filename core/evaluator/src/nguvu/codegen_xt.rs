@@ -2,11 +2,12 @@
 //! device target for strict code (`pata jenga --lengo esp32`, see [`super::device`]).
 //!
 //! The ESP32 has no double-precision unit and 32-bit registers, so every IR value — a 64-bit
-//! integer or a double — lives in an 8-byte home slot as two words (low word first), and each
-//! instruction loads its operands into scratch registers, computes, and stores the result.
-//! Doubles and the 64-bit operations the core lacks (multiply, divide, shifts, conversions)
-//! call the GCC runtime (`__adddf3`, `__muldi3`, ...); these are IEEE-exact, so results equal
-//! native code's. No register allocation yet: correctness first.
+//! integer or a double — is a pair of words (low word first): in an allocated register pair
+//! ([`TARGET`]) or an 8-byte home slot. Each instruction computes into scratch registers and
+//! moves the result to its place, so a result sharing registers with an operand is never read
+//! half-written. Doubles and the 64-bit operations the core lacks (multiply, divide, shifts,
+//! conversions) call the GCC runtime (`__adddf3`, `__muldi3`, ...); these are IEEE-exact, so
+//! results equal native code's.
 //!
 //! ABI: the windowed one (`entry`/`retw`, calls with `call8`/`callx8`), so firmware C code calls
 //! the exports directly. A call's arguments go in `a10`..`a15` (64-bit values in an even-aligned
@@ -23,28 +24,34 @@
 //! them, and `F` the locals rounded to 16 bytes plus 32, as GCC lays out a frame that calls.
 
 use super::ir::{Class, FCond, FloatOp, Func, ICond, Inst, IntOp, RtFn, Term, VReg};
-use super::regalloc::{allocate, Allocation, Target};
+use super::regalloc::{allocate, Allocation, Loc, Target};
 use super::xt32::{self, Asm, BranchCond, Label};
 
-/// No register is handed to the allocator: every value has a home slot, shared with values
-/// whose live ranges never overlap (this generator keeps nothing in a slot between
-/// instructions beyond the value's own life).
+/// The allocator's registers: pairs of `a2`–`a7`, the registers a `call8` preserves (the ESP32
+/// calls a helper for every double operation, so values live across calls constantly). Integers
+/// get two pairs and doubles one; both are register pairs here, so the classes' lists are
+/// disjoint. Home slots are shared by values whose live ranges never overlap (this generator
+/// keeps nothing in a slot beyond the value's own life).
 pub const TARGET: Target = Target {
-    int_callee_saved: &[],
+    int_callee_saved: &[0, 1],
     int_caller_saved: &[],
-    float_callee_saved: &[],
+    float_callee_saved: &[2],
     float_caller_saved: &[],
     share_slots: true,
 };
 
 type Pair = (u8, u8);
 
+/// The registers of allocator register `k`.
+fn pair(k: u8) -> Pair {
+    (2 + 2 * k, 3 + 2 * k)
+}
+
 const SP: u8 = 1;
-/// Operand scratch pairs (preserved across `call8`, which rotates the window by eight).
-const S0: Pair = (4, 5);
-const S1: Pair = (6, 7);
-/// Result scratch pair; also the return registers.
-const S2: Pair = (2, 3);
+/// Operand and result scratch pairs, in the registers a call clobbers anyway (never allocated).
+const S0: Pair = (10, 11);
+const S1: Pair = (12, 13);
+const S2: Pair = (14, 15);
 /// Scratch words (clobbered by calls): addresses, constants, comparison zero.
 const T: u8 = 8;
 const T2: u8 = 9;
@@ -86,6 +93,8 @@ pub struct Code {
     pub calls: Vec<(usize, u32)>,
     /// Helper calls to link: (literal byte offset, index in [`HELPERS`]).
     pub helpers: Vec<(usize, u32)>,
+    /// Bytes of stack the function's own frame takes (`entry a1, frame`).
+    pub frame: u32,
     /// `R_XTENSA_32` relocations: (literal byte offset in `bytes`, symbol).
     pub relocs: Vec<(usize, String)>,
 }
@@ -179,6 +188,7 @@ impl Pool {
             calls,
             helpers,
             relocs,
+            frame: 0,
         })
     }
 }
@@ -241,18 +251,20 @@ pub fn generate(func: &Func) -> Result<Code, String> {
                 }
             }
             Term::Return(v) => {
-                g.load_pair(*v, S2)?;
+                g.move_into(*v, (2, 3))?;
                 g.asm.word(xt32::RETW);
             }
             Term::ReturnNum(v) => {
-                g.load_pair(*v, S0)?;
-                g.emit(xt32::movi(S2.0, 0))?;
-                g.emit(xt32::movi(S2.1, 0))?;
+                g.move_into(*v, (4, 5))?;
+                g.emit(xt32::movi(2, 0))?;
+                g.emit(xt32::movi(3, 0))?;
                 g.asm.word(xt32::RETW);
             }
         }
     }
-    g.pool.finish(g.asm)
+    let mut code = g.pool.finish(g.asm)?;
+    code.frame = frame;
+    Ok(code)
 }
 
 impl<'f> Gen<'f> {
@@ -268,18 +280,34 @@ impl<'f> Gen<'f> {
         Ok(8 * s)
     }
 
+    /// The register pair holding `v`, if it was given one.
+    fn reg(&self, v: VReg) -> Option<Pair> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Int(k) | Loc::Float(k) => Some(pair(k)),
+            Loc::Slot => None,
+        }
+    }
+
     fn prologue(&mut self) -> Result<(), String> {
         let frame = self.frame;
         self.emit(xt32::entry(frame))?;
         self.emit(xt32::movi(T2, 0))?;
-        // Incoming arguments are pointer-sized, in a2..: zero-extend into their homes.
-        for (i, &v) in self.func.args.iter().enumerate() {
+        // Incoming arguments are pointer-sized, in a2..: park every one in its home first
+        // (zero-extended), then load those given a register, so none is overwritten unsaved.
+        let args = self.func.args;
+        for (i, &v) in args.iter().enumerate() {
             if i >= 6 {
                 return Err("nguvu: hoja nyingi mno kwa ESP32".into());
             }
             let off = self.slot(v)?;
             self.st32(2 + i as u8, SP, off)?;
             self.st32(T2, SP, off + 4)?;
+        }
+        for &v in args {
+            if let Some(r) = self.reg(v) {
+                let off = self.slot(v)?;
+                self.ld64(r, SP, off)?;
+            }
         }
         Ok(())
     }
@@ -332,20 +360,74 @@ impl<'f> Gen<'f> {
         self.emit(xt32::s32i(p.1, b, o + 4))
     }
 
-    fn load_pair(&mut self, v: VReg, p: Pair) -> Result<(), String> {
-        let off = self.slot(v)?;
-        self.ld64(p, SP, off)
-    }
-
-    fn store_pair(&mut self, v: VReg, p: Pair) -> Result<(), String> {
-        let off = self.slot(v)?;
-        self.st64(p, SP, off)
-    }
-
     fn mov_pair(&mut self, dst: Pair, src: Pair) {
         if dst != src {
             self.asm.word(xt32::mov(dst.0, src.0));
             self.asm.word(xt32::mov(dst.1, src.1));
+        }
+    }
+
+    // ----- operands -----------------------------------------------------------------------
+
+    /// The pair holding `v`: its register, or `scratch` loaded from its home.
+    fn operand(&mut self, v: VReg, scratch: Pair) -> Result<Pair, String> {
+        match self.reg(v) {
+            Some(r) => Ok(r),
+            None => {
+                let off = self.slot(v)?;
+                self.ld64(scratch, SP, off)?;
+                Ok(scratch)
+            }
+        }
+    }
+
+    /// `dst = v` for a specific pair (call arguments, return registers).
+    fn move_into(&mut self, v: VReg, dst: Pair) -> Result<(), String> {
+        match self.reg(v) {
+            Some(r) => {
+                self.mov_pair(dst, r);
+                Ok(())
+            }
+            None => {
+                let off = self.slot(v)?;
+                self.ld64(dst, SP, off)
+            }
+        }
+    }
+
+    /// `r = ` the low word of `v` (a pointer-sized argument).
+    fn low_into(&mut self, v: VReg, r: u8) -> Result<(), String> {
+        match self.reg(v) {
+            Some(p) => {
+                if p.0 != r {
+                    self.asm.word(xt32::mov(r, p.0));
+                }
+                Ok(())
+            }
+            None => {
+                let off = self.slot(v)?;
+                let (b, o) = self.at(SP, off)?;
+                self.emit(xt32::l32i(r, b, o))
+            }
+        }
+    }
+
+    /// Where to compute `v` directly: its register, or `scratch`.
+    fn target(&self, v: VReg, scratch: Pair) -> Pair {
+        self.reg(v).unwrap_or(scratch)
+    }
+
+    /// `v = src`: into its register, or stored to its home.
+    fn put(&mut self, v: VReg, src: Pair) -> Result<(), String> {
+        match self.reg(v) {
+            Some(r) => {
+                self.mov_pair(r, src);
+                Ok(())
+            }
+            None => {
+                let off = self.slot(v)?;
+                self.st64(src, SP, off)
+            }
         }
     }
 
@@ -359,24 +441,24 @@ impl<'f> Gen<'f> {
 
     /// `dst = symbol(a, b)` on two 64-bit values (doubles or integers), result 64-bit.
     fn call2(&mut self, symbol: &str, dst: VReg, a: VReg, b: VReg) -> Result<(), String> {
-        self.load_pair(a, (ARG0, ARG0 + 1))?;
-        self.load_pair(b, (ARG0 + 2, ARG0 + 3))?;
+        self.move_into(a, (ARG0, ARG0 + 1))?;
+        self.move_into(b, (ARG0 + 2, ARG0 + 3))?;
         self.call_symbol(symbol);
-        self.store_pair(dst, (ARG0, ARG0 + 1))
+        self.put(dst, (ARG0, ARG0 + 1))
     }
 
     fn call1(&mut self, symbol: &str, dst: VReg, a: VReg) -> Result<(), String> {
-        self.load_pair(a, (ARG0, ARG0 + 1))?;
+        self.move_into(a, (ARG0, ARG0 + 1))?;
         self.call_symbol(symbol);
-        self.store_pair(dst, (ARG0, ARG0 + 1))
+        self.put(dst, (ARG0, ARG0 + 1))
     }
 
     // ----- comparisons --------------------------------------------------------------------
 
     /// `T = lo | hi` of `v`, `T2 = 0`: `v != 0` exactly when `T != T2`.
     fn nonzero_word(&mut self, v: VReg) -> Result<(), String> {
-        self.load_pair(v, S0)?;
-        self.asm.word(xt32::or(T, S0.0, S0.1));
+        let p = self.operand(v, S0)?;
+        self.asm.word(xt32::or(T, p.0, p.1));
         self.emit(xt32::movi(T2, 0))
     }
 
@@ -425,42 +507,42 @@ impl<'f> Gen<'f> {
         Ok(())
     }
 
-    /// `S2 = a cond b` for the pairs in `S0` and `S1`.
-    fn icmp(&mut self, cond: ICond) -> Result<(), String> {
+    /// `S2 = a cond b`.
+    fn icmp(&mut self, cond: ICond, a: Pair, b: Pair) -> Result<(), String> {
         match cond {
-            ICond::Lt => self.lt64(S0, S1, true, false),
-            ICond::Ge => self.lt64(S0, S1, true, true),
-            ICond::Gt => self.lt64(S1, S0, true, false),
-            ICond::Le => self.lt64(S1, S0, true, true),
-            ICond::Ult => self.lt64(S0, S1, false, false),
-            ICond::Ule => self.lt64(S1, S0, false, true),
-            ICond::Eq => self.eq64(S0, S1, false),
-            ICond::Ne => self.eq64(S0, S1, true),
+            ICond::Lt => self.lt64(a, b, true, false),
+            ICond::Ge => self.lt64(a, b, true, true),
+            ICond::Gt => self.lt64(b, a, true, false),
+            ICond::Le => self.lt64(b, a, true, true),
+            ICond::Ult => self.lt64(a, b, false, false),
+            ICond::Ule => self.lt64(b, a, false, true),
+            ICond::Eq => self.eq64(a, b, false),
+            ICond::Ne => self.eq64(a, b, true),
         }
     }
 
     // ----- integer arithmetic -------------------------------------------------------------
 
-    /// `dst = a op b` for the pairs in `S0` (a) and `S1` (b).
-    fn int_op(&mut self, op: IntOp, dst: VReg) -> Result<(), String> {
+    /// `dst = a op b`; `a` is a register pair or `S0`, `b` one or `S1`.
+    fn int_op(&mut self, op: IntOp, dst: VReg, a: Pair, b: Pair) -> Result<(), String> {
         match op {
             IntOp::Add => {
                 let nc = self.asm.new_label();
-                self.asm.word(xt32::add(S2.0, S0.0, S1.0));
-                self.asm.word(xt32::add(S2.1, S0.1, S1.1));
-                self.asm.branch(BranchCond::Geu, S2.0, S0.0, nc); // no carry out of the low word
+                self.asm.word(xt32::add(S2.0, a.0, b.0));
+                self.asm.word(xt32::add(S2.1, a.1, b.1));
+                self.asm.branch(BranchCond::Geu, S2.0, a.0, nc); // no carry out of the low word
                 self.emit(xt32::addi(S2.1, S2.1, 1))?;
                 self.asm.bind(nc);
-                self.store_pair(dst, S2)
+                self.put(dst, S2)
             }
             IntOp::Sub => {
                 let nb = self.asm.new_label();
-                self.asm.word(xt32::sub(S2.0, S0.0, S1.0));
-                self.asm.word(xt32::sub(S2.1, S0.1, S1.1));
-                self.asm.branch(BranchCond::Geu, S0.0, S1.0, nb); // no borrow from the low word
+                self.asm.word(xt32::sub(S2.0, a.0, b.0));
+                self.asm.word(xt32::sub(S2.1, a.1, b.1));
+                self.asm.branch(BranchCond::Geu, a.0, b.0, nb); // no borrow from the low word
                 self.emit(xt32::addi(S2.1, S2.1, -1))?;
                 self.asm.bind(nb);
-                self.store_pair(dst, S2)
+                self.put(dst, S2)
             }
             IntOp::And | IntOp::Or | IntOp::Xor => {
                 let f = match op {
@@ -468,9 +550,9 @@ impl<'f> Gen<'f> {
                     IntOp::Or => xt32::or,
                     _ => xt32::xor,
                 };
-                self.asm.word(f(S2.0, S0.0, S1.0));
-                self.asm.word(f(S2.1, S0.1, S1.1));
-                self.store_pair(dst, S2)
+                self.asm.word(f(S2.0, a.0, b.0));
+                self.asm.word(f(S2.1, a.1, b.1));
+                self.put(dst, S2)
             }
             IntOp::Mul | IntOp::SDiv | IntOp::SRem | IntOp::UDiv | IntOp::URem => {
                 let symbol = match op {
@@ -480,21 +562,25 @@ impl<'f> Gen<'f> {
                     IntOp::UDiv => "__udivdi3",
                     _ => "__umoddi3",
                 };
-                self.mov_pair((ARG0, ARG0 + 1), S0);
-                self.mov_pair((ARG0 + 2, ARG0 + 3), S1);
+                // `a` is S0 = a10:a11 or a register pair, `b` S1 = a12:a13 or one: moving `a`
+                // first cannot clobber `b`.
+                self.mov_pair((ARG0, ARG0 + 1), a);
+                self.mov_pair((ARG0 + 2, ARG0 + 3), b);
                 self.call_symbol(symbol);
-                self.store_pair(dst, (ARG0, ARG0 + 1))
+                self.put(dst, (ARG0, ARG0 + 1))
             }
             IntOp::Shl | IntOp::Sar => {
                 // (long long a, int n): `a` in a10:a11, `n` (the low word of b) in a12.
-                self.mov_pair((ARG0, ARG0 + 1), S0);
-                self.asm.word(xt32::mov(ARG0 + 2, S1.0));
+                self.mov_pair((ARG0, ARG0 + 1), a);
+                if b.0 != ARG0 + 2 {
+                    self.asm.word(xt32::mov(ARG0 + 2, b.0));
+                }
                 self.call_symbol(if op == IntOp::Shl {
                     "__ashldi3"
                 } else {
                     "__ashrdi3"
                 });
-                self.store_pair(dst, (ARG0, ARG0 + 1))
+                self.put(dst, (ARG0, ARG0 + 1))
             }
         }
     }
@@ -510,52 +596,54 @@ impl<'f> Gen<'f> {
             FCond::Oeq => ("__eqdf2", BranchCond::Eq, ARG0, T2),
             FCond::Une => ("__nedf2", BranchCond::Ne, ARG0, T2),
         };
-        self.load_pair(a, (ARG0, ARG0 + 1))?;
-        self.load_pair(b, (ARG0 + 2, ARG0 + 3))?;
+        self.move_into(a, (ARG0, ARG0 + 1))?;
+        self.move_into(b, (ARG0 + 2, ARG0 + 3))?;
         self.call_symbol(symbol);
         self.emit(xt32::movi(T2, 0))?;
         self.bool_branch(bc, x, y)?;
-        self.store_pair(dst, S2)
+        self.put(dst, S2)
     }
 
     fn inst(&mut self, inst: &Inst) -> Result<(), String> {
         match inst {
             Inst::IConst { dst, value } => {
-                self.const64(S2, *value)?;
-                self.store_pair(*dst, S2)?;
+                let d = self.target(*dst, S2);
+                self.const64(d, *value)?;
+                self.put(*dst, d)?;
             }
             Inst::FConst { dst, value } => {
-                self.const64(S2, value.to_bits() as i64)?;
-                self.store_pair(*dst, S2)?;
+                let d = self.target(*dst, S2);
+                self.const64(d, value.to_bits() as i64)?;
+                self.put(*dst, d)?;
             }
-            // Integers and doubles share the slot representation: these are copies.
+            // Integers and doubles share the representation: these are copies.
             Inst::Mov { dst, src }
             | Inst::FloatBits { dst, src }
             | Inst::BitsFloat { dst, src } => {
-                self.load_pair(*src, S0)?;
-                self.store_pair(*dst, S0)?;
+                let s = self.operand(*src, S0)?;
+                self.put(*dst, s)?;
             }
             Inst::Int { op, dst, a, b } => {
-                self.load_pair(*a, S0)?;
-                self.load_pair(*b, S1)?;
-                self.int_op(*op, *dst)?;
+                let pa = self.operand(*a, S0)?;
+                let pb = self.operand(*b, S1)?;
+                self.int_op(*op, *dst, pa, pb)?;
             }
             Inst::IntImm { op, dst, a, imm } => {
-                self.load_pair(*a, S0)?;
+                let pa = self.operand(*a, S0)?;
                 self.const64(S1, *imm as i64)?;
-                self.int_op(*op, *dst)?;
+                self.int_op(*op, *dst, pa, S1)?;
             }
             Inst::Neg { dst, src } => {
-                self.load_pair(*src, S1)?;
+                let s = self.operand(*src, S1)?;
                 self.const64(S0, 0)?;
-                self.int_op(IntOp::Sub, *dst)?;
+                self.int_op(IntOp::Sub, *dst, S0, s)?;
             }
             Inst::Not { dst, src } => {
-                self.load_pair(*src, S0)?;
+                let s = self.operand(*src, S0)?;
                 self.emit(xt32::movi(T, -1))?;
-                self.asm.word(xt32::xor(S2.0, S0.0, T));
-                self.asm.word(xt32::xor(S2.1, S0.1, T));
-                self.store_pair(*dst, S2)?;
+                self.asm.word(xt32::xor(S2.0, s.0, T));
+                self.asm.word(xt32::xor(S2.1, s.1, T));
+                self.put(*dst, S2)?;
             }
             Inst::Popcnt { .. } => {
                 return Err("nguvu: ESP32 haina popcnt (jenga bila kuitambua)".into())
@@ -573,22 +661,22 @@ impl<'f> Gen<'f> {
                 self.call2(symbol, *dst, *a, *b)?;
             }
             Inst::ICmp { cond, dst, a, b } => {
-                self.load_pair(*a, S0)?;
-                self.load_pair(*b, S1)?;
-                self.icmp(*cond)?;
-                self.store_pair(*dst, S2)?;
+                let pa = self.operand(*a, S0)?;
+                let pb = self.operand(*b, S1)?;
+                self.icmp(*cond, pa, pb)?;
+                self.put(*dst, S2)?;
             }
             Inst::ICmpImm { cond, dst, a, imm } => {
-                self.load_pair(*a, S0)?;
+                let pa = self.operand(*a, S0)?;
                 self.const64(S1, *imm as i64)?;
-                self.icmp(*cond)?;
-                self.store_pair(*dst, S2)?;
+                self.icmp(*cond, pa, S1)?;
+                self.put(*dst, S2)?;
             }
             Inst::TestImm { zero, dst, a, imm } => {
-                self.load_pair(*a, S0)?;
+                let pa = self.operand(*a, S0)?;
                 self.const64(S1, *imm as i64)?;
-                self.asm.word(xt32::and(T, S0.0, S1.0));
-                self.asm.word(xt32::and(T2, S0.1, S1.1));
+                self.asm.word(xt32::and(T, pa.0, S1.0));
+                self.asm.word(xt32::and(T2, pa.1, S1.1));
                 self.asm.word(xt32::or(T, T, T2));
                 self.emit(xt32::movi(T2, 0))?;
                 let bc = if *zero {
@@ -597,7 +685,7 @@ impl<'f> Gen<'f> {
                     BranchCond::Ne
                 };
                 self.bool_branch(bc, T, T2)?;
-                self.store_pair(*dst, S2)?;
+                self.put(*dst, S2)?;
             }
             Inst::FCmp { cond, dst, a, b } => self.fcmp(*cond, *dst, *a, *b)?,
             Inst::Select { dst, cond, a, b } => {
@@ -605,27 +693,29 @@ impl<'f> Gen<'f> {
                 let done = self.asm.new_label();
                 self.nonzero_word(*cond)?;
                 self.asm.branch(BranchCond::Eq, T, T2, use_b);
-                self.load_pair(*a, S2)?;
+                self.move_into(*a, S2)?;
                 self.asm.jump(done);
                 self.asm.bind(use_b);
-                self.load_pair(*b, S2)?;
+                self.move_into(*b, S2)?;
                 self.asm.bind(done);
-                self.store_pair(*dst, S2)?;
+                self.put(*dst, S2)?;
             }
             Inst::IntToFloat { dst, src } => self.call1("__floatdidf", *dst, *src)?,
             // Only for values proven to be exact integers: truncation is exact.
             Inst::FloatToInt { dst, src } => self.call1("__fixdfdi", *dst, *src)?,
             Inst::Load { dst, base, offset } => {
                 let off = u32::try_from(*offset).map_err(|_| "nguvu: anwani hasi")?;
-                self.load_pair(*base, S1)?;
-                self.ld64(S0, S1.0, off)?;
-                self.store_pair(*dst, S0)?;
+                let b = self.operand(*base, S1)?;
+                // `ld64` reads the base before overwriting it when they share a register.
+                let d = self.target(*dst, S0);
+                self.ld64(d, b.0, off)?;
+                self.put(*dst, d)?;
             }
             Inst::Store { src, base, offset } => {
                 let off = u32::try_from(*offset).map_err(|_| "nguvu: anwani hasi")?;
-                self.load_pair(*base, S1)?;
-                self.load_pair(*src, S0)?;
-                self.st64(S0, S1.0, off)?;
+                let b = self.operand(*base, S1)?;
+                let s = self.operand(*src, S0)?;
+                self.st64(s, b.0, off)?;
             }
             Inst::LoadIndex {
                 dst,
@@ -634,17 +724,15 @@ impl<'f> Gen<'f> {
                 kind,
             } => {
                 if kind.width() != 8 {
-                    return Err(
-                        "nguvu: orodha za namba kamili zenye baiti chache haziungwi mkono \
-                                kwa ESP32 bado"
-                            .into(),
-                    );
+                    // `device::check_lists` admits only lists of doubles on a device.
+                    return Err("kosa la ndani: orodha isiyo ya Namba imefika ESP32".into());
                 }
-                self.load_pair(*base, S1)?;
-                self.load_pair(*index, S0)?;
-                self.element_address()?;
-                self.ld64(S2, T, 0)?;
-                self.store_pair(*dst, S2)?;
+                let b = self.operand(*base, S1)?;
+                let i = self.operand(*index, S0)?;
+                self.element_address(b.0, i.0);
+                let d = self.target(*dst, S2);
+                self.ld64(d, T, 0)?;
+                self.put(*dst, d)?;
             }
             Inst::StoreIndex {
                 src,
@@ -653,29 +741,27 @@ impl<'f> Gen<'f> {
                 kind,
             } => {
                 if kind.width() != 8 {
-                    return Err(
-                        "nguvu: orodha za namba kamili zenye baiti chache haziungwi mkono \
-                                kwa ESP32 bado"
-                            .into(),
-                    );
+                    return Err("kosa la ndani: orodha isiyo ya Namba imefika ESP32".into());
                 }
-                self.load_pair(*src, S2)?;
-                self.load_pair(*base, S1)?;
-                self.load_pair(*index, S0)?;
-                self.element_address()?;
-                self.st64(S2, T, 0)?;
+                let s = self.operand(*src, S2)?;
+                let b = self.operand(*base, S1)?;
+                let i = self.operand(*index, S0)?;
+                self.element_address(b.0, i.0);
+                self.st64(s, T, 0)?;
             }
             Inst::StackPointer { dst } => {
-                self.asm.word(xt32::mov(S2.0, SP));
-                self.emit(xt32::movi(S2.1, 0))?;
-                self.store_pair(*dst, S2)?;
+                let d = self.target(*dst, S2);
+                self.asm.word(xt32::mov(d.0, SP));
+                self.emit(xt32::movi(d.1, 0))?;
+                self.put(*dst, d)?;
             }
             Inst::CallBuffer { dst } => {
                 let off = 8 * self.alloc.slots;
                 self.const32(T, off)?;
-                self.asm.word(xt32::add(S2.0, SP, T));
-                self.emit(xt32::movi(S2.1, 0))?;
-                self.store_pair(*dst, S2)?;
+                let d = self.target(*dst, S2);
+                self.asm.word(xt32::add(d.0, SP, T));
+                self.emit(xt32::movi(d.1, 0))?;
+                self.put(*dst, d)?;
             }
             Inst::CallDirect {
                 func,
@@ -687,13 +773,11 @@ impl<'f> Gen<'f> {
                     return Err("nguvu: hoja nyingi mno kwa ESP32".into());
                 }
                 for (i, a) in args.iter().enumerate() {
-                    let off = self.slot(*a)?;
-                    let (b, o) = self.at(SP, off)?;
-                    self.emit(xt32::l32i(ARG0 + i as u8, b, o))?;
+                    self.low_into(*a, ARG0 + i as u8)?;
                 }
                 self.pool.call_direct(&mut self.asm, *func);
-                self.store_pair(*dst, (ARG0, ARG0 + 1))?;
-                self.store_pair(*result, (ARG0 + 2, ARG0 + 3))?;
+                self.put(*dst, (ARG0, ARG0 + 1))?;
+                self.put(*result, (ARG0 + 2, ARG0 + 3))?;
             }
             Inst::Call {
                 target,
@@ -705,11 +789,11 @@ impl<'f> Gen<'f> {
                 if let Some(h) = helper_index(*target) {
                     // A helper takes its 64-bit argument as two words (a10, a11) and returns
                     // its 64-bit result in a10:a11.
-                    self.load_pair(args[0], (ARG0, ARG0 + 1))?;
+                    self.move_into(args[0], (ARG0, ARG0 + 1))?;
                     self.l32r(T, Lit::Helper(h));
                     self.asm.word(xt32::callx(8, T).expect("callx8"));
                     if let Some(d) = dst {
-                        self.store_pair(*d, (ARG0, ARG0 + 1))?;
+                        self.put(*d, (ARG0, ARG0 + 1))?;
                     }
                     return Ok(());
                 }
@@ -722,16 +806,14 @@ impl<'f> Gen<'f> {
                 for a in args {
                     match self.func.class(*a) {
                         Class::Int => {
-                            let off = self.slot(*a)?;
-                            let (b, o) = self.at(SP, off)?;
-                            self.emit(xt32::l32i(r, b, o))?;
+                            self.low_into(*a, r)?;
                             r += 1;
                         }
                         Class::Float => {
                             if r % 2 != 0 {
                                 r += 1;
                             }
-                            self.load_pair(*a, (r, r + 1))?;
+                            self.move_into(*a, (r, r + 1))?;
                             r += 2;
                         }
                     }
@@ -744,20 +826,19 @@ impl<'f> Gen<'f> {
                     if *ret32 && self.func.class(*d) == Class::Int {
                         self.emit(xt32::movi(ARG0 + 1, 0))?;
                     }
-                    self.store_pair(*d, (ARG0, ARG0 + 1))?;
+                    self.put(*d, (ARG0, ARG0 + 1))?;
                 }
             }
         }
         Ok(())
     }
 
-    /// `T = base + 8 * index` for `base` in `S1` and `index` in `S0` (low words).
-    fn element_address(&mut self) -> Result<(), String> {
-        self.asm.word(xt32::add(T, S0.0, S0.0)); // 2i
+    /// `T = base + 8 * index` (low words).
+    fn element_address(&mut self, base: u8, index: u8) {
+        self.asm.word(xt32::add(T, index, index)); // 2i
         self.asm.word(xt32::add(T, T, T)); // 4i
         self.asm.word(xt32::add(T, T, T)); // 8i
-        self.asm.word(xt32::add(T, T, S1.0));
-        Ok(())
+        self.asm.word(xt32::add(T, T, base));
     }
 }
 
@@ -783,6 +864,9 @@ const STATUS_RETURN: i32 = 3;
 /// linked), and stores the number returned at `matokeo` (a3). Returns 0, or the non-zero
 /// status kind when the call failed.
 pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
+    // Scratch of the thunk's own (it allocates nothing): a4..a7.
+    const TS0: Pair = (4, 5);
+    const TS1: Pair = (6, 7);
     let nums = 8 * spec.num_regs;
     let lists = 8 * spec.list_regs;
     let host = nums + lists; // depth, runtime table, stack limit: 24 bytes, all zero
@@ -796,16 +880,16 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
     let mut pool = Pool::default();
     a.emit(xt32::entry(frame))?;
     // Zero the whole frame: registers, list references, host fields.
-    a.emit(xt32::movi(S1.0, 0))?;
+    a.emit(xt32::movi(TS1.0, 0))?;
     for off in (0..size).step_by(4) {
-        store_word(&mut a, &mut pool, S1.0, off)?;
+        store_word(&mut a, &mut pool, TS1.0, off)?;
     }
     // Constants the registers start with.
     for &(reg, bits) in &spec.num_consts {
-        pool.const32(&mut a, S0.0, bits as u32)?;
-        pool.const32(&mut a, S0.1, (bits >> 32) as u32)?;
-        store_word(&mut a, &mut pool, S0.0, 8 * reg)?;
-        store_word(&mut a, &mut pool, S0.1, 8 * reg + 4)?;
+        pool.const32(&mut a, TS0.0, bits as u32)?;
+        pool.const32(&mut a, TS0.1, (bits >> 32) as u32)?;
+        store_word(&mut a, &mut pool, TS0.0, 8 * reg)?;
+        store_word(&mut a, &mut pool, TS0.1, 8 * reg + 4)?;
     }
     // Arguments, eight bytes each in `hoja`.
     for (i, &(reg, is_list)) in spec.params.iter().enumerate() {
@@ -813,11 +897,11 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
         if from + 4 > 1020 {
             return Err("ina hoja nyingi mno".into());
         }
-        a.emit(xt32::l32i(S0.0, hoja, from))?;
-        a.emit(xt32::l32i(S0.1, hoja, from + 4))?;
+        a.emit(xt32::l32i(TS0.0, hoja, from))?;
+        a.emit(xt32::l32i(TS0.1, hoja, from + 4))?;
         let to = if is_list { nums + 8 * reg } else { 8 * reg };
-        store_word(&mut a, &mut pool, S0.0, to)?;
-        store_word(&mut a, &mut pool, S0.1, to + 4)?;
+        store_word(&mut a, &mut pool, TS0.0, to)?;
+        store_word(&mut a, &mut pool, TS0.1, to + 4)?;
     }
     // entry(runtime: unused on a device, host, frame = list references, nums)
     a.emit(xt32::movi(ARG0, 0))?;
@@ -847,10 +931,10 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
             a.word(xt32::add(T, SP, T));
             (T, 0)
         };
-        a.emit(xt32::l32i(S0.0, b, o))?;
-        a.emit(xt32::l32i(S0.1, b, o + 4))?;
-        a.emit(xt32::s32i(S0.0, matokeo, 0))?;
-        a.emit(xt32::s32i(S0.1, matokeo, 4))?;
+        a.emit(xt32::l32i(TS0.0, b, o))?;
+        a.emit(xt32::l32i(TS0.1, b, o + 4))?;
+        a.emit(xt32::s32i(TS0.0, matokeo, 0))?;
+        a.emit(xt32::s32i(TS0.1, matokeo, 4))?;
         a.jump(done);
         a.bind(next);
     }
@@ -860,7 +944,9 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
     a.bind(fail);
     a.word(xt32::mov(2, ARG0 + 1));
     a.word(xt32::RETW);
-    pool.finish(a)
+    let mut code = pool.finish(a)?;
+    code.frame = frame;
+    Ok(code)
 }
 
 /// `[sp + off] = r` for any frame offset.

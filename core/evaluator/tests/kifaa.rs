@@ -706,15 +706,8 @@ fn esp32_objects_need_no_runtime_and_keep_small_frames() {
         !object.windows(11).any(|w| w == b"asili_kifaa"),
         "the ESP32 object must not call the device runtime"
     );
-    // `.text` is section 1; every function starts with `entry a1, frame`.
-    let shoff = u32::from_le_bytes(object[32..36].try_into().unwrap()) as usize;
-    let at = |o: usize| u32::from_le_bytes(object[o..o + 4].try_into().unwrap()) as usize;
-    let (off, size) = (at(shoff + 40 + 16), at(shoff + 40 + 20));
-    let text = &object[off..off + size];
-    let frames: Vec<usize> = (0..text.len().saturating_sub(2))
-        .filter(|&i| text[i] == 0x36 && text[i + 1] & 0x0f == 1)
-        .map(|i| (u32::from_le_bytes([text[i], text[i + 1], text[i + 2], 0]) >> 12) as usize * 8)
-        .collect();
-    assert!(!frames.is_empty());
-    assert!(frames.iter().all(|&f| f <= 1024), "frames: {frames:?}");
+    // The stack a call takes, as the build reports it: well within ESP-IDF's default main
+    // task stack (3.5 KB).
+    assert_eq!(built.stack.len(), 1);
+    assert!(built.stack[0].1 <= 1024, "stack: {:?}", built.stack);
 }
