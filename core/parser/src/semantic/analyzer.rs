@@ -56,6 +56,11 @@ struct Analyzer<'a> {
     /// a file referencing its own module-level constant failed with SEM045 "jina halijulikani",
     /// even though the same constant worked fine when imported into a different file.
     local_constants: HashMap<String, ValueType>,
+    /// Functions marked `#[wazi]`: the only places a `wazi` operation (`syscall`) may run, and
+    /// the only functions a caller outside a grant may not call (SEM121).
+    wazi_fns: HashSet<String>,
+    /// Whether the function being checked is itself a `wazi` grant.
+    in_wazi: bool,
 }
 
 use super::types::{parse_value_type, parse_value_type_with};
@@ -85,7 +90,15 @@ impl<'a> Analyzer<'a> {
         for c in &module.constants {
             local_constants.insert(c.name.clone(), parse_value_type(&c.ty.name));
         }
+        let wazi_fns = module
+            .functions
+            .iter()
+            .filter(|f| f.attrs.iter().any(|a| a.name == "wazi"))
+            .map(|f| f.name.to_string())
+            .collect();
         Self {
+            wazi_fns,
+            in_wazi: false,
             module,
             require_main,
             errors: Vec::new(),
@@ -312,8 +325,27 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        // `#[wazi]` is a function attribute: a grant for `wazi` operations (see SEM121).
+        let mut fn_attrs = allowed_attrs.to_vec();
+        fn_attrs.push("wazi");
         for f in &self.module.functions {
-            self.check_attrs(&f.attrs, &allowed_attrs);
+            self.check_attrs(&f.attrs, &fn_attrs);
+            let wazi = f.attrs.iter().any(|a| a.name == "wazi");
+            let salama = f.attrs.iter().any(|a| a.name == "salama");
+            if wazi && salama {
+                // A syscall has no time bound, so no strict function may hold one (SEM122).
+                self.errors.push(
+                    Diagnostic::new(
+                        "SEM122",
+                        format!(
+                            "kazi {} haiwezi kuwa `#[salama]` na `#[wazi]` kwa wakati mmoja",
+                            f.name
+                        ),
+                    )
+                    .with_stage("semantiki")
+                    .with_span(f.line, 1),
+                );
+            }
             if f.name == "kuu" {
                 has_main = true;
                 self.check_main_sig(f);
@@ -498,6 +530,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn check_function(&mut self, f: &Function) {
+        self.in_wazi = f.attrs.iter().any(|a| a.name == "wazi");
         if f.return_type.name.contains("&") || f.return_type.name.contains("Rejeo") {
             self.errors.push(
                 Diagnostic::new(
@@ -1433,6 +1466,21 @@ impl<'a> Analyzer<'a> {
                     self.check_expr(*callee, scopes, UseMode::Move)
                 };
                 if let Some(name) = callee_name {
+                    // `syscall` and every `#[wazi]` function run only inside a grant (SEM121).
+                    let needs_grant =
+                        name.as_str() == "syscall" || self.wazi_fns.contains(name.as_str());
+                    if needs_grant && !self.in_wazi {
+                        self.errors.push(
+                            Diagnostic::new(
+                                "SEM121",
+                                format!(
+                                    "`{name}` inahitaji kuitwa kutoka kazi yenye kiambatanisho `#[wazi]`"
+                                ),
+                            )
+                            .with_stage("semantiki")
+                            .with_span(*line, 1),
+                        );
+                    }
                     if let Some(f) = self.fn_map.get(name.as_str()).cloned() {
                         let use_mode = UseMode::BorrowImm;
                         for a in args {

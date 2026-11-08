@@ -863,6 +863,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ikiwa` expression, and the LSP now highlights names there too.
 - LSP folding ranges and signature help no longer treat `//` (floor division) as the start of
   a comment.
+- **`syscall` is gated**: the builtin is documented as usable only inside `wazi`, but nothing
+  enforced that. A call now needs its function marked `#[wazi]` (`SEM121`); a `#[wazi]`
+  function may call other `#[wazi]` functions, and may not also be `#[salama]` (`SEM122`). The
+  `wazi { ... }` block form is not in the language yet.
 
 ## [0.6.0] - 2026-09-21
 
