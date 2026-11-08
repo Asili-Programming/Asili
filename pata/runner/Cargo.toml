@@ -1,6 +1,7 @@
 [package]
 name = "asili-runner"
 version = "0.2.2"
+license = "Apache-2.0"
 edition = "2021"
 description = "Standalone runner for Asili .asb artifacts (no compiler)"
 
