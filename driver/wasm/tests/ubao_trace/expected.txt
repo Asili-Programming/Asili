@@ -1,0 +1,4 @@
+{"hatua":0,"aina":"andika","pini":3,"hali":true,"saa":0}
+{"hatua":1,"aina":"subiri","pini":-1,"hali":false,"saa":10}
+{"hatua":2,"aina":"soma","pini":3,"hali":true,"saa":10}
+{"hatua":3,"aina":"andika","pini":4,"hali":true,"saa":10}

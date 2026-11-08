@@ -63,15 +63,27 @@ pub fn saa() -> i64 {
     BODI.with(|b| b.borrow().saa)
 }
 
+impl Tukio {
+    /// The event as one JSON object, the form the page receives (see `platform::write_event`).
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"hatua\":{},\"aina\":\"{}\",\"pini\":{},\"hali\":{},\"saa\":{}}}",
+            self.hatua, self.aina, self.pini, self.hali, self.saa
+        )
+    }
+}
+
 fn rekodi(b: &mut Bodi, aina: &'static str, pini: i64, hali: bool) {
     let hatua = b.tukio.len() as u64;
-    b.tukio.push(Tukio {
+    let t = Tukio {
         hatua,
         aina,
         pini,
         hali,
         saa: b.saa,
-    });
+    };
+    crate::platform::write_event(&t.to_json());
+    b.tukio.push(t);
 }
 
 /// Drive pin `pini` to `hali`.
