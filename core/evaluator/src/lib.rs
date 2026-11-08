@@ -30,6 +30,7 @@ mod stack;
 mod sync;
 mod tir;
 mod value;
+pub mod ubao;
 
 pub use crate::builtins::BuiltinFn;
 pub use asb::{artifact_formats, load_asb_bytecode, parse_format, AsbLoadError};

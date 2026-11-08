@@ -65,6 +65,10 @@ struct Analyzer<'a> {
 
 use super::types::{parse_value_type, parse_value_type_with};
 
+/// Builtins that reach past the language and need a `#[wazi]` grant at each call (SEM121): raw
+/// system calls and the virtual board's pins.
+const WAZI_BUILTINS: &[&str] = &["syscall", "ubao_andika", "ubao_soma"];
+
 #[derive(Copy, Clone)]
 enum UseMode {
     Move,
@@ -1467,8 +1471,8 @@ impl<'a> Analyzer<'a> {
                 };
                 if let Some(name) = callee_name {
                     // `syscall` and every `#[wazi]` function run only inside a grant (SEM121).
-                    let needs_grant =
-                        name.as_str() == "syscall" || self.wazi_fns.contains(name.as_str());
+                    let needs_grant = WAZI_BUILTINS.contains(&name.as_str())
+                        || self.wazi_fns.contains(name.as_str());
                     if needs_grant && !self.in_wazi {
                         self.errors.push(
                             Diagnostic::new(
