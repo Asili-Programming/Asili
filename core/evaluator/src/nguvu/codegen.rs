@@ -3,7 +3,7 @@
 //!
 //! Frame layout: `rbp` frame pointer, the ABI's callee-saved general registers pushed, the
 //! callee-saved xmm registers this function uses (Win64 only, all 128 bits), then one 8-byte
-//! home slot per virtual register, then the callee's shadow space (Win64). Virtual registers live where [`regalloc`] put them; operands
+//! home slot per virtual register, then the callee's shadow space (Win64). Virtual registers live where [`regalloc`](super::regalloc) put them; operands
 //! are used in place when they sit in a register, and `rax`/`rcx`/`rdx`, `xmm0`/`xmm1` are
 //! scratch. A comparison feeding the block's branch is fused into `cmp` + `jcc`.
 

@@ -1,5 +1,5 @@
 //! Thumb-2 code generation for Cortex-M (ARMv7E-M with the `fpv5-d16` floating-point unit,
-//! AAPCS-VFP) from allocated IR, through the [`t32`] encoder — the device target for strict
+//! AAPCS-VFP) from allocated IR, through the [`t32`](super::t32) encoder — the device target for strict
 //! code (`pata jenga --lengo cortex-m`, see [`super::device`]).
 //!
 //! The IR's integers are 64-bit; here each lives in a *pair* of 32-bit registers (low word

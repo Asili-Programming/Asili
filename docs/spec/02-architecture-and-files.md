@@ -13,9 +13,10 @@ The repository follows a Linux-kernel–style modular layout. Each directory is 
 | **/core** | Kiini | Platform-agnostic lexer, parser, AST, evaluator, diagnostics (Mwalimu error reporting). |
 | **/driver** | Mfumo / Dereva | Hardware/OS abstraction. **Dereva** is the internal HAL/FFI layer; **mfumo** is the high-level System API (StdLib) built on it. |
 | **/pata** | Tooling | CLI, package manager, formatter (Nadhifu), linter, LSP (Mwalimu), Debug Adapter Protocol server. |
-| **/extensions/vscode** | Kiendelezi | VS Code extension: syntax highlighting, Mwalimu LSP client. Separate build/package tooling (`npm`/`esbuild`), not part of the Cargo workspace. |
 | **/lib** | Maktaba | Standard library (Msingi) and tests, docs (`.asdoc`). Stdlib has two layers: surface in `lib/std/` (`.as`/`.asi`); implementation as built-in modules (evaluator/CLI) that can resolve without disk. Third-party modules come from `[tegemezi]` in `pata.toml`. |
 | **/target** | Pato | Generated binaries and intermediate `.asb` bytecode. |
+
+The VS Code extension (Kiendelezi: syntax highlighting, Mwalimu LSP client) and the browser playground live in their own repositories, [asili-vscode](https://github.com/Asili-Programming/asili-vscode) and [asili-playground](https://github.com/Asili-Programming/asili-playground), built against an Asili checkout.
 
 **Subsystem maintainers (Msimamizi):** Kiini (Core), Dereva (Drivers/FFI), Pata (Tooling), Msingi (StdLib). Patches that cross subsystems require acks from the relevant maintainers.
 

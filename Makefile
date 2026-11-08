@@ -1,7 +1,7 @@
 # Asili workspace — build, test, install
 # Requires: cargo (Rust toolchain)
 
-.PHONY: build test install install-ext
+.PHONY: build test install
 
 build:
 	cargo build
@@ -22,10 +22,5 @@ install: build-release
 	install -m 755 target/release/pata-lsp "$(DESTDIR)/pata-lsp"
 	install -m 755 target/release/tenda "$(DESTDIR)/tenda"
 
-# Build the VSCode extension (bundles pata-lsp + its own TS sources into a .vsix) and
-# install it into VS Code. Requires `code` on PATH and npm/npx.
-install-ext: build-release
-	mkdir -p extensions/vscode/bin
-	cp target/release/pata-lsp extensions/vscode/bin/pata-lsp
-	cd extensions/vscode && npm install && npx --yes @vscode/vsce package --no-dependencies
-	code --install-extension extensions/vscode/asili-*.vsix
+# The VS Code extension lives in its own repository, Asili-Programming/asili-vscode; it builds its
+# bundled pata-lsp from an Asili checkout. See that repository's README to install it.

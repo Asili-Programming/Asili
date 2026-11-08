@@ -27,17 +27,11 @@ ehthumbs.db
 *.temp
 .cache/
 
-# Node (extensions, LSP tooling)
+# Node (driver/wasm tests)
 node_modules/
 
-# Packaged VS Code extension (build artifact, published via GitHub Releases instead)
-extensions/vscode/*.vsix
-
-# Generated API docs (rustdoc + TypeDoc), assembled by CI and published to GitHub Pages
+# Generated API docs (rustdoc), assembled by CI and published to GitHub Pages
 docs-site/
-
-# wasm-pack build output for the browser playground (build with examples/playground/build.sh)
-examples/playground/pkg/
 
 # Local env (secrets)
 .env

@@ -1,16 +1,30 @@
-//! The editors' word lists — the VS Code grammar (`extensions/vscode/syntaxes/asili.tmLanguage.json`)
-//! and the browser playground (`examples/playground/main.js`) — are generated from the compiler's
-//! own lists, so they cannot drift: keywords from `asili_lexer::KEYWORDS`, types from
+//! The editors' word lists — the VS Code grammar (`syntaxes/asili.tmLanguage.json` in
+//! `Asili-Programming/asili-vscode`) and the browser playground's highlighter (`main.js` in
+//! `Asili-Programming/asili-playground`) — are generated from the compiler's own lists, so they
+//! cannot drift: keywords from `asili_lexer::KEYWORDS`, types from
 //! `asili_parser::builtins::BUILTIN_TYPE_NAMES` plus the builtin `umbo`s, builtin functions from
-//! the builtin table. This test fails while a file differs; `ASILI_GOLDEN=write` rewrites them.
+//! the builtin table.
+//!
+//! Those files live in their own repositories, so this test finds them through
+//! `ASILI_VSCODE_DIR` and `ASILI_PLAYGROUND_DIR` (each repository's root). Each of those
+//! repositories' CI checks out Asili and runs this test against itself; with neither variable set
+//! there is nothing to check here. It fails while a file differs; `ASILI_GOLDEN=write` rewrites
+//! them:
+//!
+//! ```text
+//! ASILI_VSCODE_DIR=../asili-vscode ASILI_PLAYGROUND_DIR=../asili-playground \
+//!     ASILI_GOLDEN=write cargo test -p pata-core --test editor_word_lists
+//! ```
 
 use asili_parser::builtins::{
     builtin_module_exports, builtin_structs, BUILTIN_MODULE_NAMES, BUILTIN_TYPE_NAMES,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-fn root() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+/// The repository root named by `var`, relative paths taken from the Asili checkout's root.
+fn repo(var: &str) -> Option<PathBuf> {
+    let dir = std::env::var_os(var)?;
+    Some(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(dir))
 }
 
 fn types() -> Vec<String> {
@@ -67,13 +81,9 @@ fn js_set(name: &str, words: &[String]) -> String {
     out
 }
 
-#[test]
-fn editor_word_lists_are_generated() {
-    let write = std::env::var_os("ASILI_GOLDEN").is_some_and(|v| v == "write");
-    let mut stale = Vec::new();
-
-    let grammar_path = root().join("extensions/vscode/syntaxes/asili.tmLanguage.json");
-    let grammar = std::fs::read_to_string(&grammar_path).expect("grammar");
+fn check_grammar(grammar_path: &Path, write: bool, stale: &mut Vec<String>) {
+    let grammar = std::fs::read_to_string(grammar_path)
+        .unwrap_or_else(|e| panic!("{}: {e}", grammar_path.display()));
     let mut want = set_json_string(
         &grammar,
         "\"builtin-type\": {",
@@ -88,7 +98,7 @@ fn editor_word_lists_are_generated() {
     );
     if want != grammar {
         if write {
-            std::fs::write(&grammar_path, &want).expect("write grammar");
+            std::fs::write(grammar_path, &want).expect("write grammar");
         } else {
             stale.push(grammar_path.display().to_string());
         }
@@ -105,9 +115,11 @@ fn editor_word_lists_are_generated() {
             "keyword `{kw}` is not in any pattern of asili.tmLanguage.json"
         );
     }
+}
 
-    let js_path = root().join("examples/playground/main.js");
-    let js = std::fs::read_to_string(&js_path).expect("main.js");
+fn check_playground(js_path: &Path, write: bool, stale: &mut Vec<String>) {
+    let js =
+        std::fs::read_to_string(js_path).unwrap_or_else(|e| panic!("{}: {e}", js_path.display()));
     let start = js.find("const KEYWORDS = new Set(").expect("KEYWORDS");
     let end = js[start..].find("// </generated>").expect("marker") + start;
     let mut kws: Vec<String> = asili_lexer::KEYWORDS
@@ -123,15 +135,33 @@ fn editor_word_lists_are_generated() {
     let want_js = format!("{}{}{}", &js[..start], block, &js[end..]);
     if want_js != js {
         if write {
-            std::fs::write(&js_path, &want_js).expect("write main.js");
+            std::fs::write(js_path, &want_js).expect("write main.js");
         } else {
             stale.push(js_path.display().to_string());
         }
     }
+}
+
+#[test]
+fn editor_word_lists_are_generated() {
+    let write = std::env::var_os("ASILI_GOLDEN").is_some_and(|v| v == "write");
+    let mut stale = Vec::new();
+
+    if let Some(dir) = repo("ASILI_VSCODE_DIR") {
+        check_grammar(
+            &dir.join("syntaxes/asili.tmLanguage.json"),
+            write,
+            &mut stale,
+        );
+    }
+    if let Some(dir) = repo("ASILI_PLAYGROUND_DIR") {
+        check_playground(&dir.join("main.js"), write, &mut stale);
+    }
     assert!(
         stale.is_empty(),
         "editor word lists differ from the compiler's; run \
-         `ASILI_GOLDEN=write cargo test -p pata-core --test editor_word_lists`:\n{}",
+         `ASILI_GOLDEN=write cargo test -p pata-core --test editor_word_lists` with \
+         ASILI_VSCODE_DIR / ASILI_PLAYGROUND_DIR set:\n{}",
         stale.join("\n")
     );
 }

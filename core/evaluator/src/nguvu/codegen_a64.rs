@@ -1,4 +1,4 @@
-//! AArch64 code generation (AAPCS64) from allocated IR, through the [`a64`] encoder.
+//! AArch64 code generation (AAPCS64) from allocated IR, through the [`a64`](super::a64) encoder.
 //!
 //! The same IR, allocation and block schedule as the x86-64 generator; only instruction
 //! selection differs. AArch64 is three-address with 31 general registers, so values rarely
