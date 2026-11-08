@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
 
+### Changed
+
+- **License**: Asili is now licensed under the Apache License, Version 2.0 (previously GPL-2.0).
+  The `LICENSE` file and the README are updated to match.
+
 ### Fixed
 
 - **Dependencies**: `rustls` is updated from 0.23.44 to 0.23.46 in `Cargo.lock`, which clears the
