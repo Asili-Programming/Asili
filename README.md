@@ -4,6 +4,8 @@
 
 **Asili** (Origin / Nature) is a programming language that uses Swahili as the primary vocabulary for logic and structure. The toolchain (**Pata**) provides a single pipeline for learning, scripting, and embedded-style targets.
 
+Website: <https://asili-programming.github.io> (Swahili and English, with a browser playground at <https://asili-programming.github.io/playground/>).
+
 - **Syntax:** Swahili keywords (`kazi`, `weka`, `ikiwa`, `linganisha`, `rejesha`, …).
 - **Types:** Primitives (`Namba`, `Neno`, `Ukweli`), collections (`Orodha<T>`, `Kamusi<K,V>`), `Chaguo<T>`, `Tokeo<T,E>`, structs and impls.
 - **Stdlib:** Modular built-ins (msingi, mfumo, majira, matumizi, faili, hisabati, ruwaza, usimbaji, runtime, syscall, kiungo, sambamba, kasha_gc) plus `lib/std` interface stubs.
