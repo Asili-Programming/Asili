@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "asili-evaluator"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "asili-diagnostics",
  "asili-lexer",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "asili-lexer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "asili-diagnostics",
 ]
@@ -181,7 +181,7 @@ version = "0.1.0"
 
 [[package]]
 name = "asili-mtandao"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "brotli",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "asili-parser"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "asili-diagnostics",
  "asili-lexer",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "asili-runner"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "asili-evaluator",
  "asili-lexer",
@@ -241,7 +241,7 @@ version = "0.1.0"
 
 [[package]]
 name = "asili-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "asili-evaluator",
  "asili-lexer",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "pata-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "asili-diagnostics",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "pata-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "asili-diagnostics",
  "asili-lexer",
@@ -1717,7 +1717,7 @@ dependencies = [
 
 [[package]]
 name = "pata-dap"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "asili-evaluator",
  "asili-lexer",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "pata-fmt"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "asili-lexer",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "pata-lint"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "asili-diagnostics",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "pata-lsp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "asili-diagnostics",
  "asili-evaluator",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "pata-package"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "chrono",
