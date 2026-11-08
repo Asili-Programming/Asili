@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependencies**: `rustls` is updated from 0.23.44 to 0.23.46 in `Cargo.lock`, which clears the
+  open Dependabot alerts for `rustls`. No code or public interface changes.
+
 ## [0.7.0] - 2026-11-08
 
 ### Added
