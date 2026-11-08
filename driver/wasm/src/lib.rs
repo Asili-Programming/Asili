@@ -5,7 +5,9 @@
 
 use asili_evaluator::{compile_module_explained, run_bytecode};
 use asili_lexer::tokenize;
-use asili_parser::{merge_modules, parse_tokens, ImportPath, Module};
+use asili_parser::{
+    extern_env_from_imports, merge_modules, parse_tokens, semantic_check_with_env, ImportPath, Module,
+};
 use std::collections::HashMap;
 
 /// Run Asili source: tokenize, parse, run `kuu` with empty args. Single-module only — any `leta`
@@ -31,6 +33,36 @@ pub fn run_board_source(source: &str, triples: &[f64]) -> Result<(), String> {
         .collect();
     asili_evaluator::ubao::anza(ingizo);
     run_source(source)
+}
+
+/// Diagnostics for `source` as a JSON array, `[]` when it is clean: each item is
+/// `{"line":L,"column":C,"code":"SEM001","message":"..."}` (line and column are 0 when a
+/// diagnostic has no position). Lexing, parsing and the semantic checks run in the order the CLI
+/// runs them, so the editor cannot disagree with `pata kagua`'s compile front end.
+pub fn check_source(source: &str) -> String {
+    let diags = match tokenize(source) {
+        Err(d) => d,
+        Ok(tokens) => match parse_tokens(&tokens) {
+            Err(d) => d,
+            Ok(module) => {
+                let (functions, constants) = extern_env_from_imports(&module);
+                match semantic_check_with_env(&module, true, functions, constants) {
+                    Ok(()) => Vec::new(),
+                    Err(d) => d,
+                }
+            }
+        },
+    };
+    let items: Vec<String> = diags
+        .iter()
+        .map(|d| {
+            let (line, column) = d.span.as_ref().map_or((0, 0), |s| (s.line, s.column));
+            let code = serde_json::to_string(d.code).unwrap_or_else(|_| "\"\"".into());
+            let message = serde_json::to_string(&d.message).unwrap_or_else(|_| "\"\"".into());
+            format!("{{\"line\":{line},\"column\":{column},\"code\":{code},\"message\":{message}}}")
+        })
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 /// Lower `module` to bytecode and run its `kuu` as native code (a wasm module the page
@@ -99,6 +131,12 @@ mod browser_entry {
         run_source(source).map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Diagnostics for `source` as JSON (see `check_source`), for the editor's error marks.
+    #[wasm_bindgen]
+    pub fn check(source: &str) -> String {
+        super::check_source(source)
+    }
+
     /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
     #[wasm_bindgen(js_name = runBoard)]
     pub fn run_board(source: &str, triples: &[f64]) -> Result<(), JsValue> {
@@ -151,5 +189,32 @@ kazi kuu(hoja: Orodha<Neno>) -> Tupu {
         let modules = HashMap::new();
         let err = run_bundle("kuu", &modules).unwrap_err();
         assert!(err.contains("kuu"));
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::check_source;
+
+    #[test]
+    fn clean_program_has_no_diagnostics() {
+        let src = "leta matumizi\n\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  chapisha(\"hi\")\n}\n";
+        assert_eq!(check_source(src), "[]");
+    }
+
+    #[test]
+    fn semantic_error_has_line_code_and_message() {
+        let src = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka x: Namba = \"nope\"\n}\n";
+        let out = check_source(src);
+        assert!(out.starts_with("[{\"line\":"), "{out}");
+        assert!(out.contains("\"code\":\"SEM"), "{out}");
+        assert!(out.contains("\"message\":"), "{out}");
+    }
+
+    #[test]
+    fn parse_error_is_reported_with_position() {
+        let out = check_source("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka = 3\n}\n");
+        assert!(out.contains("\"code\":\"PAR"), "{out}");
+        assert!(!out.contains("\"line\":0,"), "{out}");
     }
 }

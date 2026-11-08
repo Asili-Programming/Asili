@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 asili-lexer = { path = "../../core/lexer" }
 asili-parser = { path = "../../core/parser" }
 asili-evaluator = { path = "../../core/evaluator" }
+serde_json = "1"
 wasm-bindgen = { version = "0.2", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 
