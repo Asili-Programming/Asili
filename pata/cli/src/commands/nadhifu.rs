@@ -2,8 +2,28 @@ use super::{CliError, CliResult};
 use crate::pipeline::format::{check_or_write_named, collect_asili_files, print_diff};
 use std::path::{Path, PathBuf};
 
+const NADHIFU_USAGE: &str = r#"matumizi: pata nadhifu [njia] [chagua...]
+
+Nadhifisha mafaili ya .as (faili moja au saraka nzima; chaguo-msingi ni saraka ya sasa).
+
+Chagua:
+  --kagua    Kagua tu, bila kuandika; inatoka na 1 ikiwa faili haiko katika muundo sahihi.
+  --diff     Onyesha tofauti bila kubadilisha faili; inatoka na 1 kukiwa na tofauti.
+  --json     Toa matokeo kama JSON.
+  --msaada   Onyesha ujumbe huu.
+
+Mifano:
+  pata nadhifu
+  pata nadhifu src/kuu.as --diff
+  pata nadhifu --kagua --json
+"#;
+
 // Contract: ../../commands/nadhifu.md
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{NADHIFU_USAGE}");
+        return Ok(());
+    }
     let (check_only, show_diff, json, path) = parse_args(args)?;
     let root = path
         .map(PathBuf::from)

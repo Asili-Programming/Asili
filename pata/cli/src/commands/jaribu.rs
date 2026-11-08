@@ -4,9 +4,36 @@ use crate::pipeline::compile::{
 };
 use std::path::Path;
 
+const JARIBU_USAGE: &str = r#"matumizi: pata jaribu [chagua...]
+
+Endesha majaribio ya mradi: kila kazi yenye #[jaribio].
+
+Chagua:
+  --chuja <neno>          Endesha tu majaribio ambayo jina lake lina <neno>.
+  --orodha                Orodhesha majina ya majaribio bila kuyaendesha.
+  --json                  Toa matokeo kama JSON.
+  --simama-haraka         Simama mara jaribio la kwanza linaposhindwa.
+  --nyuzi-za-jaribio <n>  Endesha majaribio sambamba kwa nyuzi <n>.
+  --muda <sekunde>        Muda wa juu wa kila jaribio (mf. 0.5); jaribio linalozidi linashindwa.
+  --chanjo                Pima chanjo ya majaribio: mistari iliyotekelezwa.
+  --msaada                Onyesha ujumbe huu.
+
+Inatoka na 0 majaribio yote yakifaulu, 1 jaribio likishindwa, na 2 kwa kosa la matumizi au la
+usanidi.
+
+Mifano:
+  pata jaribu
+  pata jaribu --chuja hesabu
+  pata jaribu --orodha --json
+"#;
+
 // Exit codes: 0 = all tests passed; 1 = one or more tests failed; 2 = usage or config error.
 // Contract: ../../commands/jaribu.md
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{JARIBU_USAGE}");
+        return Ok(());
+    }
     let (filter, fail_fast, list_only, json, num_threads, timeout_secs, coverage) =
         parse_args(args)?;
     let timeout = timeout_secs.map(std::time::Duration::from_secs_f64);

@@ -757,6 +757,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`--msaada` on every command**: `pata jaribu`, `njozi`, `nadhifu`, `thibitisha`, `ongeza`,
+  `ondoa`, `repl` and `mwalimu` now print their usage, flags and examples, as `pata --msaada`
+  already promised. Before, the first four rejected the flag as unknown, `ongeza`/`ondoa` tried to
+  read `pata.toml` first, `repl` opened a session and `mwalimu` started the language server. A
+  test checks every command listed in `pata --msaada`.
 - Returning `Tokeo::Kosa(e)`, `Tokeo::Sawa(v)` or `Chaguo::Hamna` from a function declared
   `-> Tokeo<T, E>` / `-> Chaguo<T>` was rejected (`SEM026`).
 

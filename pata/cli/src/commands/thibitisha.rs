@@ -27,7 +27,27 @@ use std::path::Path;
 // run against a project that doesn't compile), everything after it always runs regardless of
 // earlier check outcomes. `--json` reports the same collected list as a machine-readable array;
 // text mode reports each check's name and pass/fail, matching CI-log conventions.
+const THIBITISHA_USAGE: &str = r#"matumizi: pata thibitisha [chagua...]
+
+Thibitisha mradi: unajengwa, vipengele vya umma vina maelezo, chanzo kiko katika muundo sahihi,
+kila sifa ina utekelezaji, sahihi za #[kiunganishi] ni salama kwa FFI, na aina hazijabadilika
+tangu lebo ya mwisho ya v<semver>. Ukaguzi wote huendeshwa na matokeo yote huonyeshwa pamoja.
+
+Chagua:
+  --kiwango-cha-jaribio <0-100>  Kagua pia kwamba chanjo ya majaribio ni angalau asilimia hii.
+  --json                         Toa matokeo ya ukaguzi kama JSON.
+  --msaada                       Onyesha ujumbe huu.
+
+Mifano:
+  pata thibitisha
+  pata thibitisha --kiwango-cha-jaribio 80
+"#;
+
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{THIBITISHA_USAGE}");
+        return Ok(());
+    }
     let (threshold, json) = parse_args(args)?;
 
     let output = compile_project(Path::new("."), None)?;

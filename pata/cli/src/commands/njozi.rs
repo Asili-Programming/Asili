@@ -2,8 +2,28 @@ use super::{CliError, CliResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const NJOZI_USAGE: &str = r#"matumizi: pata njozi [jina] [njia] [chagua...]
+
+Unda mradi mpya. Jina la chaguo-msingi ni asili-app; njia ya chaguo-msingi ni saraka yenye jina
+hilo.
+
+Chagua:
+  --kiasi      Mradi wa programu yenye kazi kuu (chaguo-msingi).
+  --maktaba    Mradi wa maktaba.
+  --workspace  Workspace ya miradi kadhaa.
+  --msaada     Onyesha ujumbe huu.
+
+Mifano:
+  pata njozi salamu
+  pata njozi zana --maktaba
+"#;
+
 // Contract: ../../commands/njozi.md
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{NJOZI_USAGE}");
+        return Ok(());
+    }
     let (project_name, destination, template) = parse_inputs(args)?;
     create_scaffold(&project_name, &destination, template)?;
     println!(

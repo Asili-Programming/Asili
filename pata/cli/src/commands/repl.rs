@@ -16,14 +16,33 @@ const REPL_FUNC: &str = "__repl__";
 const PROMPT: &str = "> ";
 const HISTORY_PATH: &str = ".asili_history";
 
-pub fn run(_args: &[String]) -> CliResult {
+const REPL_USAGE: &str = r#"matumizi: pata repl
+
+Fungua REPL ya Asili: andika msimbo na uone matokeo mara moja. Historia huhifadhiwa katika
+.asili_history ya saraka ya sasa.
+
+Ndani ya REPL:
+  ?mada          Onyesha msaada wa mada (mf. ?hisabati).
+  ?lugha en|sw   Badilisha lugha ya msaada.
+  toka, exit     Ondoka.
+"#;
+
+pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{REPL_USAGE}");
+        return Ok(());
+    }
     let mut session = ReplSession::new();
     let mut lang = "sw".to_string();
 
     // Initialize rustyline editor for arrow keys, line editing, and history
-    let mut rl = DefaultEditor::new()
-        .map_err(|e| CliError::new(format!("imeshindwa kuanzisha kihariri cha mstari: {}", e), 1))?;
-    
+    let mut rl = DefaultEditor::new().map_err(|e| {
+        CliError::new(
+            format!("imeshindwa kuanzisha kihariri cha mstari: {}", e),
+            1,
+        )
+    })?;
+
     // Load persistent history from disk if it exists
     let _ = rl.load_history(HISTORY_PATH);
 

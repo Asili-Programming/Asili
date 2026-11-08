@@ -98,3 +98,39 @@ Amri:
 Onyesha msaada kwa amri: pata <amri> --msaada.
 "#
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The command names listed under "Amri:" in `pata --msaada`, so a new command is checked
+    /// as soon as it is listed there.
+    fn listed_commands() -> Vec<String> {
+        usage()
+            .lines()
+            .skip_while(|l| !l.starts_with("Amri:"))
+            .skip(1)
+            .take_while(|l| !l.trim().is_empty())
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn every_listed_command_answers_msaada() {
+        let commands = listed_commands();
+        assert!(
+            commands.len() >= 12,
+            "expected the full command list, got {commands:?}"
+        );
+        // No command may touch the project, start a server or read stdin for `--msaada`, so this
+        // runs from wherever the test runner is, with no project around it.
+        for command in commands {
+            let result = dispatch(&[command.clone(), "--msaada".to_string()]);
+            assert!(
+                result.is_ok(),
+                "`pata {command} --msaada` failed: {:?}",
+                result.err().map(|e| e.message)
+            );
+        }
+    }
+}

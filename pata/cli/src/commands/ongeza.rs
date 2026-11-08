@@ -15,7 +15,27 @@ use std::path::Path;
 // dependency on every subsequent resolve, matched against the `.pata-version` marker this
 // command writes right after fetching. Plain version dependencies (no `--git`) resolve against
 // the local registry index at `.asili/registry/` instead — see `pata_package::resolver`.
+const ONGEZA_USAGE: &str = r#"matumizi: pata ongeza <jina> [chagua...]
+
+Ongeza tegemezi kwenye [tegemezi] ya pata.toml na uiandike kwenye pata.lock. Bila --git, toleo
+hutafutwa katika sajili ya ndani .asili/registry/.
+
+Chagua:
+  --toleo <kizuizi>  Kizuizi cha toleo (chaguo-msingi: ^0.1).
+  --git <url>        Pakua tegemezi kutoka hazina ya git kwenda .asili/packages/<jina>/.
+  --tawi <jina>      Tawi la git la kupakua (pamoja na --git).
+  --msaada           Onyesha ujumbe huu.
+
+Mifano:
+  pata ongeza hisabati --toleo ^1.2
+  pata ongeza mtu --git https://example.com/mtu.git --tawi main
+"#;
+
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{ONGEZA_USAGE}");
+        return Ok(());
+    }
     let (lib, version, git_url, branch) = parse_args(args)?;
     validate_dep_name(&lib)?;
     validate_semver_like(&version)?;

@@ -7,7 +7,22 @@ use std::path::Path;
 
 pub type CliResult = Result<(), CliError>;
 
+const ONDOA_USAGE: &str = r#"matumizi: pata ondoa <jina>
+
+Ondoa tegemezi kutoka [tegemezi] ya pata.toml na kutoka pata.lock.
+
+Chagua:
+  --msaada  Onyesha ujumbe huu.
+
+Mfano:
+  pata ondoa hisabati
+"#;
+
 pub fn run(args: &[String]) -> CliResult {
+    if args.iter().any(|a| a == "--msaada") {
+        print!("{ONDOA_USAGE}");
+        return Ok(());
+    }
     if args.is_empty() {
         return Err(CliError::new(
             "matumizi: pata ondoa <jina-la-tegemezi>".to_string(),
