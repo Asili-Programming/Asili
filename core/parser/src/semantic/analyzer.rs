@@ -2,7 +2,7 @@ use asili_diagnostics::{ContextMap, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    AssignOp, Attribute, BinaryOp, Block, Expr, FnContract, ForMode, Function, ImplDecl,
+    AssignOp, Attribute, BinaryOp, Block, Expr, ExprId, FnContract, ForMode, Function, ImplDecl,
     ImportPath, Module, Pattern, Stmt, TypeExpr, UnaryOp, ValueType,
 };
 
@@ -56,9 +56,18 @@ struct Analyzer<'a> {
     /// a file referencing its own module-level constant failed with SEM045 "jina halijulikani",
     /// even though the same constant worked fine when imported into a different file.
     local_constants: HashMap<String, ValueType>,
+    /// Functions marked `#[wazi]`: the only places a `wazi` operation (`syscall`) may run, and
+    /// the only functions a caller outside a grant may not call (SEM121).
+    wazi_fns: HashSet<String>,
+    /// Whether the function being checked is itself a `wazi` grant.
+    in_wazi: bool,
 }
 
-use super::types::parse_value_type;
+use super::types::{parse_value_type, parse_value_type_with};
+
+/// Builtins that reach past the language and need a `#[wazi]` grant at each call (SEM121): raw
+/// system calls and the virtual board's pins.
+const WAZI_BUILTINS: &[&str] = &["syscall", "ubao_andika", "ubao_soma"];
 
 #[derive(Copy, Clone)]
 enum UseMode {
@@ -79,13 +88,21 @@ impl<'a> Analyzer<'a> {
     ) -> Self {
         let mut fn_map = HashMap::new();
         for f in &module.functions {
-            fn_map.insert(f.name.clone(), f);
+            fn_map.insert(f.name.to_string(), f);
         }
         let mut local_constants = HashMap::new();
         for c in &module.constants {
             local_constants.insert(c.name.clone(), parse_value_type(&c.ty.name));
         }
+        let wazi_fns = module
+            .functions
+            .iter()
+            .filter(|f| f.attrs.iter().any(|a| a.name == "wazi"))
+            .map(|f| f.name.to_string())
+            .collect();
         Self {
+            wazi_fns,
+            in_wazi: false,
             module,
             require_main,
             errors: Vec::new(),
@@ -114,8 +131,8 @@ impl<'a> Analyzer<'a> {
     /// instead); indexing a `Kamusi<K, V>` yields `V`.
     fn check_index(
         &mut self,
-        base: &Expr,
-        index: &Expr,
+        base: ExprId,
+        index: ExprId,
         line: usize,
         scopes: &mut Vec<HashMap<String, Binding>>,
     ) -> (ValueType, bool) {
@@ -132,11 +149,22 @@ impl<'a> Analyzer<'a> {
                 }
                 (*inner.clone(), true)
             }
+            // A byte is its value 0–255.
+            ValueType::Baiti => {
+                if idx_ty != ValueType::Namba && idx_ty != ValueType::Unknown {
+                    self.errors.push(
+                        Diagnostic::new("SEM102", "fahirisi inahitaji Namba")
+                            .with_stage("semantiki")
+                            .with_span(line, 1),
+                    );
+                }
+                (ValueType::Namba, true)
+            }
             ValueType::Kamusi(_, v) => (*v.clone(), false),
             ValueType::Unknown => (ValueType::Unknown, false),
             _ => {
                 self.errors.push(
-                    Diagnostic::new("SEM103", "fahirisi inahitaji Orodha au Kamusi")
+                    Diagnostic::new("SEM103", "fahirisi inahitaji Orodha, Baiti au Kamusi")
                         .with_stage("semantiki")
                         .with_span(line, 1),
                 );
@@ -145,47 +173,32 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn collect_idents_from_expr(expr: &Expr) -> Vec<String> {
-        match expr {
-            Expr::Ident { name: n, .. } => vec![n.clone()],
-            Expr::Group(e) => Self::collect_idents_from_expr(e),
-            Expr::Unary { expr: e, .. } => Self::collect_idents_from_expr(e),
-            Expr::Binary { left, right, .. } => {
-                let mut v = Self::collect_idents_from_expr(left);
-                v.extend(Self::collect_idents_from_expr(right));
-                v
-            }
-            Expr::Index { base, index, .. } => {
-                let mut v = Self::collect_idents_from_expr(base);
-                v.extend(Self::collect_idents_from_expr(index));
-                v
-            }
-            Expr::Call { callee, args, .. } => {
-                let mut v = Self::collect_idents_from_expr(callee);
-                for a in args {
-                    v.extend(Self::collect_idents_from_expr(a));
+    /// Names an expression reads, in source order, through the sub-expressions whose value can
+    /// flow into it (an explicit worklist).
+    fn collect_idents_from_expr(&self, expr: ExprId) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut work = vec![expr];
+        while let Some(e) = work.pop() {
+            let next: Vec<ExprId> = match &self.module[e] {
+                Expr::Ident { name, .. } => {
+                    names.push(name.to_string());
+                    continue;
                 }
-                v
-            }
-            Expr::MethodCall { receiver, args, .. } => {
-                let mut v = Self::collect_idents_from_expr(receiver);
-                for a in args {
-                    v.extend(Self::collect_idents_from_expr(a));
-                }
-                v
-            }
-            Expr::Propagate { expr: e, .. } => Self::collect_idents_from_expr(e),
-            Expr::FieldAccess { receiver, .. } => Self::collect_idents_from_expr(receiver),
-            Expr::StructLiteral { fields, .. } => {
-                let mut v = Vec::new();
-                for (_, e) in fields {
-                    v.extend(Self::collect_idents_from_expr(e));
-                }
-                v
-            }
-            Expr::Cast { expr: e, .. } => Self::collect_idents_from_expr(e),
-            _ => vec![],
+                Expr::Group(e)
+                | Expr::Unary { expr: e, .. }
+                | Expr::Propagate { expr: e, .. }
+                | Expr::FieldAccess { receiver: e, .. }
+                | Expr::Cast { expr: e, .. } => vec![*e],
+                node @ (Expr::Binary { .. }
+                | Expr::Index { .. }
+                | Expr::Call { .. }
+                | Expr::MethodCall { .. }
+                | Expr::StructLiteral { .. }) => node.children(),
+                _ => continue,
+            };
+            work.extend(next.into_iter().rev());
         }
+        names
     }
 
     fn mark_tokeo_consumed(&mut self, scopes: &[HashMap<String, Binding>], idents: &[String]) {
@@ -214,23 +227,17 @@ impl<'a> Analyzer<'a> {
         line: usize,
     ) {
         let field_tys: Vec<(String, ValueType)> = self
-            .module
-            .structs
-            .iter()
-            .find(|s| s.name == struct_name)
-            .map(|s| {
-                s.fields
-                    .iter()
-                    .map(|(fname, fty)| {
-                        let ty = fty
-                            .as_ref()
-                            .map(|t| self.type_from_decl(&t.name))
-                            .unwrap_or(ValueType::Unknown);
-                        (fname.clone(), ty)
-                    })
-                    .collect()
+            .struct_shape(struct_name)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| {
+                let ty =
+                    f.ty.as_deref()
+                        .map(|t| self.type_from_decl(t))
+                        .unwrap_or(ValueType::Unknown);
+                (f.name, ty)
             })
-            .unwrap_or_default();
+            .collect();
         for (fname, sub_pat) in fields {
             if let Pattern::Ident {
                 name: bind_name, ..
@@ -243,7 +250,7 @@ impl<'a> Analyzer<'a> {
                     .unwrap_or(ValueType::Unknown);
                 if let Some(scope) = scopes.last_mut() {
                     scope.insert(
-                        bind_name.clone(),
+                        bind_name.to_string(),
                         Binding::new(ty, true, Span { line, column: 1 }),
                     );
                 }
@@ -286,7 +293,7 @@ impl<'a> Analyzer<'a> {
             {
                 if let Some(scope) = scopes.last_mut() {
                     scope.insert(
-                        bind_name.clone(),
+                        bind_name.to_string(),
                         Binding::new(ty, true, Span { line, column: 1 }),
                     );
                 }
@@ -303,6 +310,8 @@ impl<'a> Analyzer<'a> {
             "kiunganishi",
             "kabla",
             "baada",
+            "salama",
+            "hali_salama",
         ];
         for imp in &self.module.imports {
             let mod_name = match &imp.path {
@@ -320,8 +329,27 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        // `#[wazi]` is a function attribute: a grant for `wazi` operations (see SEM121).
+        let mut fn_attrs = allowed_attrs.to_vec();
+        fn_attrs.push("wazi");
         for f in &self.module.functions {
-            self.check_attrs(&f.attrs, &allowed_attrs);
+            self.check_attrs(&f.attrs, &fn_attrs);
+            let wazi = f.attrs.iter().any(|a| a.name == "wazi");
+            let salama = f.attrs.iter().any(|a| a.name == "salama");
+            if wazi && salama {
+                // A syscall has no time bound, so no strict function may hold one (SEM122).
+                self.errors.push(
+                    Diagnostic::new(
+                        "SEM122",
+                        format!(
+                            "kazi {} haiwezi kuwa `#[salama]` na `#[wazi]` kwa wakati mmoja",
+                            f.name
+                        ),
+                    )
+                    .with_stage("semantiki")
+                    .with_span(f.line, 1),
+                );
+            }
             if f.name == "kuu" {
                 has_main = true;
                 self.check_main_sig(f);
@@ -467,6 +495,13 @@ impl<'a> Analyzer<'a> {
     }
 
     fn check_main_sig(&mut self, f: &Function) {
+        if f.is_async {
+            self.errors.push(
+                Diagnostic::new("SEM106", "kazi kuu haiwezi kuwa sawia")
+                    .with_stage("semantiki")
+                    .with_span(f.line, 1),
+            );
+        }
         if f.return_type.name.trim() != "Tupu" {
             self.errors.push(
                 Diagnostic::new("SEM001", "kazi kuu lazima irudishe Tupu")
@@ -499,6 +534,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn check_function(&mut self, f: &Function) {
+        self.in_wazi = f.attrs.iter().any(|a| a.name == "wazi");
         if f.return_type.name.contains("&") || f.return_type.name.contains("Rejeo") {
             self.errors.push(
                 Diagnostic::new(
@@ -516,7 +552,7 @@ impl<'a> Analyzer<'a> {
         for p in &f.params {
             let ty = self.type_from_decl(&p.ty.name);
             scopes[0].insert(
-                p.name.clone(),
+                p.name.to_string(),
                 Binding::new(
                     ty,
                     false,
@@ -603,7 +639,7 @@ impl<'a> Analyzer<'a> {
                 line,
                 ..
             } => {
-                let inferred = self.check_expr(value, scopes, UseMode::Return);
+                let inferred = self.check_expr(*value, scopes, UseMode::Return);
                 let declared = ty
                     .as_ref()
                     .map(|t| self.type_from_decl(&t.name))
@@ -617,7 +653,7 @@ impl<'a> Analyzer<'a> {
                 }
                 if let Some(scope) = scopes.last_mut() {
                     scope.insert(
-                        name.clone(),
+                        name.to_string(),
                         Binding::new(
                             declared.clone(),
                             *mutable,
@@ -630,7 +666,7 @@ impl<'a> Analyzer<'a> {
                 }
                 if matches!(declared, ValueType::Tokeo(_, _)) {
                     if let Some(set) = self.unconsumed_tokeo.last_mut() {
-                        set.insert(name.clone());
+                        set.insert(name.to_string());
                     }
                 }
             }
@@ -640,7 +676,7 @@ impl<'a> Analyzer<'a> {
                 line,
                 ..
             } => {
-                let value_ty = self.check_expr(value, scopes, UseMode::Move);
+                let value_ty = self.check_expr(*value, scopes, UseMode::Move);
                 match pattern {
                     Pattern::Jozi(first, second) => {
                         if let ValueType::Jozi(first_ty, second_ty) = value_ty {
@@ -667,10 +703,10 @@ impl<'a> Analyzer<'a> {
                 line,
                 ..
             } => {
-                let rhs_ty = self.check_expr(value, scopes, UseMode::Return);
+                let rhs_ty = self.check_expr(*value, scopes, UseMode::Return);
                 let mut found = false;
                 for scope in scopes.iter_mut().rev() {
-                    if let Some(b) = scope.get_mut(name) {
+                    if let Some(b) = scope.get_mut(name.as_str()) {
                         found = true;
                         if !b.mutable {
                             self.errors.push(
@@ -759,7 +795,7 @@ impl<'a> Analyzer<'a> {
                 else_block,
                 line,
             } => {
-                let ty = self.check_expr(cond, scopes, UseMode::Move);
+                let ty = self.check_expr(*cond, scopes, UseMode::Move);
                 if ty != ValueType::Ukweli {
                     self.errors.push(
                         Diagnostic::new("SEM020", "sharti la ikiwa lazima liwe Ukweli")
@@ -769,7 +805,7 @@ impl<'a> Analyzer<'a> {
                 }
                 self.check_block(then_block, scopes, return_type, false);
                 for (c, b) in else_if {
-                    let ty = self.check_expr(c, scopes, UseMode::Move);
+                    let ty = self.check_expr(*c, scopes, UseMode::Move);
                     if ty != ValueType::Ukweli {
                         self.errors.push(
                             Diagnostic::new("SEM021", "sharti la au_ikiwa lazima liwe Ukweli")
@@ -789,7 +825,7 @@ impl<'a> Analyzer<'a> {
                 body,
                 line,
             } => {
-                let ty = self.check_expr(cond, scopes, UseMode::Move);
+                let ty = self.check_expr(*cond, scopes, UseMode::Move);
                 if ty != ValueType::Ukweli {
                     self.errors.push(
                         Diagnostic::new("SEM022", "sharti la wakati lazima liwe Ukweli")
@@ -810,7 +846,7 @@ impl<'a> Analyzer<'a> {
             } => {
                 let var_ty = match mode {
                     ForMode::InExpr(expr) => {
-                        let iter_ty = self.check_expr(expr, scopes, UseMode::BorrowImm);
+                        let iter_ty = self.check_expr(*expr, scopes, UseMode::BorrowImm);
                         match iter_ty {
                             ValueType::Orodha(inner) => *inner,
                             ValueType::Kamusi(k, v) => ValueType::Jozi(k, v),
@@ -818,8 +854,8 @@ impl<'a> Analyzer<'a> {
                         }
                     }
                     ForMode::Range { start, end } => {
-                        let st = self.check_expr(start, scopes, UseMode::Move);
-                        let en = self.check_expr(end, scopes, UseMode::Move);
+                        let st = self.check_expr(*start, scopes, UseMode::Move);
+                        let en = self.check_expr(*end, scopes, UseMode::Move);
                         if st != ValueType::Namba || en != ValueType::Namba {
                             self.errors.push(
                                 Diagnostic::new("SEM048", "kwa kutoka/hadi inahitaji Namba")
@@ -836,7 +872,7 @@ impl<'a> Analyzer<'a> {
                 self.dropped_vars.push(HashSet::new());
                 if let Some(scope) = scopes.last_mut() {
                     scope.insert(
-                        var.clone(),
+                        var.to_string(),
                         Binding::new(
                             var_ty,
                             true,
@@ -870,15 +906,13 @@ impl<'a> Analyzer<'a> {
                 self.loop_depth -= 1;
             }
             Stmt::Match { expr, arms, line } => {
-                let _ = self.check_expr(expr, scopes, UseMode::Move);
-                let idents = Self::collect_idents_from_expr(expr);
+                let _ = self.check_expr(*expr, scopes, UseMode::Move);
+                let idents = self.collect_idents_from_expr(*expr);
                 self.mark_tokeo_consumed(scopes, &idents);
                 for a in arms {
                     scopes.push(HashMap::new());
                     match &a.pattern {
-                        Pattern::Literal(e) => {
-                            let _ = self.check_expr(e, scopes, UseMode::Move);
-                        }
+                        Pattern::Literal(_) => {}
                         Pattern::Enum {
                             enum_name,
                             variant_name,
@@ -922,7 +956,7 @@ impl<'a> Analyzer<'a> {
                                     {
                                         if let Some(scope) = scopes.last_mut() {
                                             scope.insert(
-                                                bind_name.clone(),
+                                                bind_name.to_string(),
                                                 Binding::new(
                                                     inner_ty,
                                                     true,
@@ -1016,7 +1050,7 @@ impl<'a> Analyzer<'a> {
             Stmt::Return { value, line } => {
                 let got = value
                     .as_ref()
-                    .map(|e| self.check_expr(e, scopes, UseMode::Return))
+                    .map(|e| self.check_expr(*e, scopes, UseMode::Return))
                     .unwrap_or(ValueType::Tupu);
                 let want = self.type_from_decl(return_type);
                 self.check_type_compatibility(
@@ -1034,7 +1068,7 @@ impl<'a> Analyzer<'a> {
                 let mut found = false;
                 let mut already_dropped = false;
                 for scope in scopes.iter_mut().rev() {
-                    if let Some(b) = scope.get_mut(name) {
+                    if let Some(b) = scope.get_mut(name.as_str()) {
                         found = true;
                         if b.dropped_at.is_some() {
                             already_dropped = true;
@@ -1073,19 +1107,19 @@ impl<'a> Analyzer<'a> {
                 } else {
                     // Track this variable as dropped in the current scope
                     if let Some(set) = self.dropped_vars.last_mut() {
-                        set.insert(name.clone());
+                        set.insert(name.to_string());
                     }
                 }
             }
             Stmt::Expr { expr, .. } => {
-                let _ = self.check_expr(expr, scopes, UseMode::Move);
+                let _ = self.check_expr(*expr, scopes, UseMode::Move);
             }
         }
     }
 
     fn check_expr(
         &mut self,
-        expr: &Expr,
+        expr: ExprId,
         scopes: &mut Vec<HashMap<String, Binding>>,
         mode: UseMode,
     ) -> ValueType {
@@ -1096,17 +1130,20 @@ impl<'a> Analyzer<'a> {
 
     fn check_expr_inner(
         &mut self,
-        expr: &Expr,
+        expr_id: ExprId,
         scopes: &mut Vec<HashMap<String, Binding>>,
         mode: UseMode,
     ) -> ValueType {
+        let module = self.module;
+        let expr = &module[expr_id];
         match expr {
             Expr::Number(_) => ValueType::Namba,
             Expr::String(_) => ValueType::Neno,
+            Expr::Baiti(_) => ValueType::Baiti,
             Expr::Bool(_) => ValueType::Ukweli,
             Expr::Char(_) => ValueType::Herufi,
             Expr::Hamna => ValueType::Hamna,
-            Expr::Group(e) => self.check_expr(e, scopes, mode),
+            Expr::Group(e) => self.check_expr(*e, scopes, mode),
             Expr::If {
                 cond,
                 then_expr,
@@ -1114,7 +1151,7 @@ impl<'a> Analyzer<'a> {
                 else_expr,
                 line,
             } => {
-                let cond_ty = self.check_expr(cond, scopes, UseMode::BorrowImm);
+                let cond_ty = self.check_expr(*cond, scopes, UseMode::BorrowImm);
                 if cond_ty != ValueType::Ukweli && cond_ty != ValueType::Unknown {
                     self.errors.push(
                         Diagnostic::new("SEM020", "sharti la ikiwa lazima liwe Ukweli")
@@ -1122,9 +1159,9 @@ impl<'a> Analyzer<'a> {
                             .with_span(*line, 1),
                     );
                 }
-                let result_ty = self.check_expr(then_expr, scopes, mode);
+                let result_ty = self.check_expr(*then_expr, scopes, mode);
                 for (branch_cond, branch_expr) in else_if {
-                    let branch_cond_ty = self.check_expr(branch_cond, scopes, UseMode::BorrowImm);
+                    let branch_cond_ty = self.check_expr(*branch_cond, scopes, UseMode::BorrowImm);
                     if branch_cond_ty != ValueType::Ukweli && branch_cond_ty != ValueType::Unknown {
                         self.errors.push(
                             Diagnostic::new("SEM021", "sharti la au_ikiwa lazima liwe Ukweli")
@@ -1132,7 +1169,7 @@ impl<'a> Analyzer<'a> {
                                 .with_span(*line, 1),
                         );
                     }
-                    let branch_ty = self.check_expr(branch_expr, scopes, mode);
+                    let branch_ty = self.check_expr(*branch_expr, scopes, mode);
                     if !self.compatible(&result_ty, &branch_ty)
                         && result_ty != ValueType::Unknown
                         && branch_ty != ValueType::Unknown
@@ -1145,7 +1182,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if let Some(branch_expr) = else_expr {
-                    let branch_ty = self.check_expr(branch_expr, scopes, mode);
+                    let branch_ty = self.check_expr(*branch_expr, scopes, mode);
                     if !self.compatible(&result_ty, &branch_ty)
                         && result_ty != ValueType::Unknown
                         && branch_ty != ValueType::Unknown
@@ -1162,24 +1199,24 @@ impl<'a> Analyzer<'a> {
             Expr::Ident { name, .. } => self.use_ident(name, scopes, mode),
             Expr::Unary { op, expr, line } => {
                 let t = match op {
-                    UnaryOp::BorrowImm => self.check_expr(expr, scopes, UseMode::BorrowImm),
-                    UnaryOp::BorrowMut => self.check_expr(expr, scopes, UseMode::BorrowMut),
+                    UnaryOp::BorrowImm => self.check_expr(*expr, scopes, UseMode::BorrowImm),
+                    UnaryOp::BorrowMut => self.check_expr(*expr, scopes, UseMode::BorrowMut),
                     // `jaribu b[i]` on an `Orodha`: the element (out of range aborts).
-                    UnaryOp::Jaribu => match &**expr {
+                    UnaryOp::Jaribu => match &module[*expr] {
                         Expr::Index {
                             base,
                             index,
                             line: index_line,
                         } => {
-                            let (t, is_list) = self.check_index(base, index, *index_line, scopes);
+                            let (t, is_list) = self.check_index(*base, *index, *index_line, scopes);
                             if is_list {
                                 return t;
                             }
                             t
                         }
-                        _ => self.check_expr(expr, scopes, UseMode::Move),
+                        _ => self.check_expr(*expr, scopes, UseMode::Move),
                     },
-                    _ => self.check_expr(expr, scopes, UseMode::Move),
+                    _ => self.check_expr(*expr, scopes, UseMode::Move),
                 };
                 match op {
                     UnaryOp::Neg => {
@@ -1214,6 +1251,18 @@ impl<'a> Analyzer<'a> {
                     }
                     UnaryOp::BorrowImm => ValueType::Rejeo(Box::new(t), false),
                     UnaryOp::BorrowMut => ValueType::Rejeo(Box::new(t), true),
+                    UnaryOp::Subiri => match t {
+                        ValueType::Ahadi(inner) => *inner,
+                        ValueType::Unknown => ValueType::Unknown,
+                        _ => {
+                            self.errors.push(
+                                Diagnostic::new("SEM107", "subiri inahitaji Ahadi")
+                                    .with_stage("semantiki")
+                                    .with_span(*line, 1),
+                            );
+                            ValueType::Unknown
+                        }
+                    },
                     UnaryOp::Jaribu => match t {
                         ValueType::Tokeo(ok, _) => *ok,
                         ValueType::Chaguo(inner) => *inner,
@@ -1234,8 +1283,8 @@ impl<'a> Analyzer<'a> {
                 right,
                 line,
             } => {
-                let l = self.check_expr(left, scopes, UseMode::BorrowImm);
-                let r = self.check_expr(right, scopes, UseMode::BorrowImm);
+                let l = self.check_expr(*left, scopes, UseMode::BorrowImm);
+                let r = self.check_expr(*right, scopes, UseMode::BorrowImm);
                 // Namba_Kuu/Namba_Sahihi arithmetic widens the same way the evaluator's
                 // big_numeric_binary_op does at runtime: Namba paired with either widens to
                 // match; Namba_Kuu paired with Namba_Sahihi promotes to Namba_Sahihi. Checked
@@ -1302,6 +1351,11 @@ impl<'a> Analyzer<'a> {
                             && !(is_wild(&l) && is_wild(&r))
                         {
                             ValueType::Neno
+                        } else if (l == ValueType::Baiti || is_wild(&l))
+                            && (r == ValueType::Baiti || is_wild(&r))
+                            && !(is_wild(&l) && is_wild(&r))
+                        {
+                            ValueType::Baiti
                         } else if (l == ValueType::Namba || is_wild(&l))
                             && (r == ValueType::Namba || is_wild(&r))
                             && !(is_wild(&l) && is_wild(&r))
@@ -1311,7 +1365,7 @@ impl<'a> Analyzer<'a> {
                             self.errors.push(
                                 Diagnostic::new(
                                     "SEM033",
-                                    "opereta '+' inahitaji (Namba, Namba) au (Neno, Neno) pekee",
+                                    "opereta '+' inahitaji (Namba, Namba), (Neno, Neno) au (Baiti, Baiti) pekee",
                                 )
                                 .with_stage("semantiki")
                                 .with_span(*line, 1),
@@ -1388,7 +1442,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Expr::Cast { expr, ty, .. } => {
-                let source = self.check_expr(expr, scopes, UseMode::Move);
+                let source = self.check_expr(*expr, scopes, UseMode::Move);
                 let target = self.type_from_decl(&ty.name);
                 let s = ty.name.replace(' ', "");
                 // Fallible: Biti*/uBiti* (may not fit the fixed width), and Namba_Kuu/
@@ -1405,21 +1459,36 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Expr::Call { callee, args, line } => {
-                let callee_name = if let Expr::Ident { name: n, .. } = &**callee {
-                    Some(n.clone())
+                let callee_name = if let Expr::Ident { name: n, .. } = &module[*callee] {
+                    Some(*n)
                 } else {
                     None
                 };
                 let callee_ty = if callee_name.is_some() {
                     ValueType::Unknown
                 } else {
-                    self.check_expr(callee, scopes, UseMode::Move)
+                    self.check_expr(*callee, scopes, UseMode::Move)
                 };
                 if let Some(name) = callee_name {
-                    if let Some(f) = self.fn_map.get(&name).cloned() {
+                    // `syscall` and every `#[wazi]` function run only inside a grant (SEM121).
+                    let needs_grant = WAZI_BUILTINS.contains(&name.as_str())
+                        || self.wazi_fns.contains(name.as_str());
+                    if needs_grant && !self.in_wazi {
+                        self.errors.push(
+                            Diagnostic::new(
+                                "SEM121",
+                                format!(
+                                    "`{name}` inahitaji kuitwa kutoka kazi yenye kiambatanisho `#[wazi]`"
+                                ),
+                            )
+                            .with_stage("semantiki")
+                            .with_span(*line, 1),
+                        );
+                    }
+                    if let Some(f) = self.fn_map.get(name.as_str()).cloned() {
                         let use_mode = UseMode::BorrowImm;
                         for a in args {
-                            let _ = self.check_expr(a, scopes, use_mode);
+                            let _ = self.check_expr(*a, scopes, use_mode);
                         }
                         if f.params.len() != args.len() {
                             self.errors.push(
@@ -1432,36 +1501,29 @@ impl<'a> Analyzer<'a> {
                             );
                         } else {
                             for (arg, param) in args.iter().zip(f.params.iter()) {
-                                if let Expr::Ident { name: n, .. } = arg {
+                                if let Expr::Ident { name: n, .. } = &module[*arg] {
                                     let pt = self.type_from_decl(&param.ty.name);
                                     if matches!(pt, ValueType::Tokeo(_, _)) {
-                                        self.mark_tokeo_consumed(scopes, std::slice::from_ref(n));
+                                        self.mark_tokeo_consumed(scopes, &[n.to_string()]);
                                     }
                                 }
                             }
                         }
-                        return self.type_from_decl(&f.return_type.name);
+                        let ret = self.type_from_decl(&f.return_type.name);
+                        // A `sawia kazi` starts a task: the call gives its `Ahadi`.
+                        return if f.is_async {
+                            ValueType::Ahadi(Box::new(ret))
+                        } else {
+                            ret
+                        };
                     }
-                    if let Some(sig) = self.extern_fn_map.get(&name).cloned() {
-                        // TODO: variadic-by-name is a hardcoded special case, not a general
-                        // FnContract flag — matches the existing "orodha" precedent rather than
-                        // introducing new arity-checking machinery for this one addition.
-                        // mkondo_tumikia's 4th parameter (tls: Chaguo<TlsUsanidi>) is optional —
-                        // callers not using TLS omit it entirely, matching this same
-                        // trailing-optional-argument shape, not true variadic argument counts,
-                        // but reusing this escape hatch is simpler than adding a distinct
-                        // "N required + M optional" arity concept for one builtin.
-                        let variadic = name == "orodha"
-                            || name == "seti"
-                            || name == "tenda"
-                            || name == "mkondo_tumikia"
-                            || name == "mkondo_tumikia_http";
+                    if let Some(sig) = self.extern_fn_map.get(name.as_str()).cloned() {
                         // Evaluate all arg types upfront for both validation and generic instantiation.
                         let arg_types: Vec<ValueType> = args
                             .iter()
-                            .map(|a| self.check_expr(a, scopes, UseMode::Move))
+                            .map(|a| self.check_expr(*a, scopes, UseMode::Move))
                             .collect();
-                        if !variadic && sig.params.len() != arg_types.len() {
+                        if !sig.accepts(arg_types.len()) {
                             self.errors.push(
                                 Diagnostic::new(
                                     "SEM046",
@@ -1470,10 +1532,11 @@ impl<'a> Analyzer<'a> {
                                 .with_stage("semantiki")
                                 .with_span(*line, 1),
                             );
-                        } else if !variadic {
-                            for (idx, (got, want)) in
-                                arg_types.iter().zip(sig.params.iter()).enumerate()
-                            {
+                        } else {
+                            for (idx, got) in arg_types.iter().enumerate() {
+                                let Some(want) = sig.param_for_arg(idx) else {
+                                    continue;
+                                };
                                 if !self.compatible(want, got) {
                                     self.errors.push(
                                         Diagnostic::new(
@@ -1486,9 +1549,9 @@ impl<'a> Analyzer<'a> {
                                         .with_span(*line, 1),
                                     );
                                 }
-                                if let Expr::Ident { name: n, .. } = &args[idx] {
+                                if let Expr::Ident { name: n, .. } = &module[args[idx]] {
                                     if matches!(want, ValueType::Tokeo(_, _)) {
-                                        self.mark_tokeo_consumed(scopes, std::slice::from_ref(n));
+                                        self.mark_tokeo_consumed(scopes, &[n.to_string()]);
                                     }
                                 }
                             }
@@ -1543,26 +1606,16 @@ impl<'a> Analyzer<'a> {
                 args,
                 line,
             } => {
-                let receiver_ty = self.check_expr(receiver, scopes, UseMode::BorrowImm);
+                let receiver_ty = self.check_expr(*receiver, scopes, UseMode::BorrowImm);
+                // A built-in type's methods come from the builtin tables (`method_receiver`);
+                // anything else needs to be a `umbo` or `jenum` with a `shughuli` block.
+                let builtin = method_receiver(&receiver_ty);
                 let receiver_ty_name = match &receiver_ty {
                     ValueType::Struct(name) => name.clone(),
-                    ValueType::Neno => "Neno".to_string(),
-                    ValueType::Orodha(_) => "Orodha".to_string(),
-                    ValueType::Kamusi(_, _) => "Kamusi".to_string(),
-                    ValueType::Jozi(_, _) => "Jozi".to_string(),
-                    ValueType::Chaguo(_) => "Chaguo".to_string(),
-                    ValueType::Tokeo(_, _) => "Tokeo".to_string(),
-                    ValueType::KashaGC(_) => "Kasha_GC".to_string(),
-                    ValueType::KashaGCDhaifu(_) => "Kasha_GC_Dhaifu".to_string(),
-                    ValueType::Faili => "Faili".to_string(),
-                    ValueType::Mkondo => "Mkondo".to_string(),
-                    ValueType::Kumbukumbu(_) => "Kumbukumbu".to_string(),
-                    ValueType::Seti(_) => "Seti".to_string(),
-                    ValueType::NjiaTx(_) => "NjiaTx".to_string(),
-                    ValueType::NjiaRx(_) => "NjiaRx".to_string(),
-                    ValueType::NjiaTxBounded(_) => "NjiaTxBounded".to_string(),
-                    ValueType::NjiaRxBounded(_) => "NjiaRxBounded".to_string(),
-                    ValueType::Fungo(_) => "Fungo".to_string(),
+                    _ if builtin.is_some() => {
+                        let full = crate::format_value_type(&receiver_ty);
+                        full.split('<').next().unwrap_or(&full).to_string()
+                    }
                     _ => {
                         self.errors.push(
                             Diagnostic::new("SEM039", format!("aina '{}' haina njia", receiver_ty))
@@ -1578,137 +1631,32 @@ impl<'a> Analyzer<'a> {
                     .structs
                     .iter()
                     .any(|s| s.name == receiver_ty_name);
-                let is_builtin = matches!(
-                    receiver_ty,
-                    ValueType::Neno
-                        | ValueType::Orodha(_)
-                        | ValueType::Kamusi(_, _)
-                        | ValueType::Jozi(_, _)
-                        | ValueType::Chaguo(_)
-                        | ValueType::Tokeo(_, _)
-                        | ValueType::KashaGC(_)
-                        | ValueType::KashaGCDhaifu(_)
-                        | ValueType::Faili
-                        | ValueType::Mkondo
-                        | ValueType::Kumbukumbu(_)
-                        | ValueType::Seti(_)
-                        | ValueType::NjiaTx(_)
-                        | ValueType::NjiaRx(_)
-                        | ValueType::NjiaTxBounded(_)
-                        | ValueType::NjiaRxBounded(_)
-                        | ValueType::Fungo(_)
-                );
+                let is_builtin = builtin.is_some();
                 if is_builtin {
                     for arg in args {
-                        let _ = self.check_expr(arg, scopes, UseMode::Move);
+                        let _ = self.check_expr(*arg, scopes, UseMode::Move);
                     }
-                    return match (receiver_ty, method_name.as_str()) {
-                        (ValueType::Neno, "clona") => ValueType::Neno,
-                        (ValueType::Neno, "urefu" | "biti_ngapi") => ValueType::Namba,
-                        (ValueType::Neno, "herufi_kwa") => {
-                            ValueType::Chaguo(Box::new(ValueType::Herufi))
-                        }
-                        (
-                            ValueType::Neno,
-                            "kwa_herufi_ndogo" | "kwa_herufi_kubwa" | "badilisha" | "rudia",
-                        ) => ValueType::Neno,
-                        (ValueType::Neno, "tupu" | "anza_na" | "maliza_na" | "ina") => {
-                            ValueType::Ukweli
-                        }
-                        (ValueType::Neno, "hesabu") => ValueType::Namba,
-                        (ValueType::Neno, "gawanya") => {
-                            ValueType::Orodha(Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Neno, "kata") => ValueType::Neno,
-                        (ValueType::Neno, "tafuta") => {
-                            ValueType::Chaguo(Box::new(ValueType::Namba))
-                        }
-                        (ValueType::Jozi(k, v), "clona") => ValueType::Jozi(k.clone(), v.clone()),
-                        (ValueType::Jozi(k, _), "kwanza") => *k,
-                        (ValueType::Jozi(_, v), "pili") => *v,
-                        (ValueType::Orodha(ref t), "clona") => ValueType::Orodha(t.clone()),
-                        (ValueType::Orodha(_), "urefu") => ValueType::Namba,
-                        (ValueType::Orodha(_), "ongeza") => ValueType::Tupu,
-                        (ValueType::Orodha(_), "ingiza") => ValueType::Tupu,
-                        (ValueType::Orodha(ref t), "ondoa") => ValueType::Chaguo(t.clone()),
-                        (ValueType::Orodha(ref t), "pata") => ValueType::Chaguo(t.clone()),
-                        (ValueType::Orodha(_), "badilisha" | "kila_mmoja" | "kila_na_fahirisi") => {
-                            ValueType::Tupu
-                        }
-                        (ValueType::Orodha(ref t), "ramani" | "chuja") => {
-                            ValueType::Orodha(t.clone())
-                        }
-                        (ValueType::Orodha(_), "hesabu") => ValueType::Namba,
-                        (ValueType::Orodha(_), "chunguza") => ValueType::Ukweli,
-                        (ValueType::Orodha(_), "unganisha" | "jiunge") => ValueType::Neno,
-                        (ValueType::Orodha(_), "kwa_neno") => {
-                            ValueType::Orodha(Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Orodha(ref t), "vipande") => {
-                            ValueType::Orodha(Box::new(ValueType::Orodha(t.clone())))
-                        }
-                        (ValueType::Kamusi(ref k, ref v), "clona") => {
-                            ValueType::Kamusi(k.clone(), v.clone())
-                        }
-                        (ValueType::Kamusi(_, _), "idadi") => ValueType::Namba,
-                        (ValueType::Kamusi(_, ref v), "pata") => ValueType::Chaguo(v.clone()),
-                        (ValueType::Kamusi(_, _), "ingiza" | "weka_key") => ValueType::Tupu,
-                        (ValueType::Kamusi(_, _), "vipo") => ValueType::Ukweli,
-                        (ValueType::Kamusi(ref k, _), "funguo") => ValueType::Orodha(k.clone()),
-                        (ValueType::Tokeo(ref t, _), "angu") => *t.clone(),
-                        (ValueType::Tokeo(_, _), "ni_kosa" | "ni_sawa") => ValueType::Ukweli,
-                        (ValueType::Tokeo(_, ref e), "kosa") => *e.clone(),
-                        (ValueType::Chaguo(ref t), "angu" | "hakikisha") => *t.clone(),
-                        (ValueType::Chaguo(_), "ni_po" | "ni_tupu") => ValueType::Ukweli,
-                        (ValueType::KashaGC(ref t), "pata") => *t.clone(),
-                        (ValueType::KashaGC(_), "weka") => ValueType::Tupu,
-                        (ValueType::KashaGC(_), "idadi") => ValueType::Namba,
-                        (ValueType::KashaGC(ref t), "shirikisha") => ValueType::KashaGC(t.clone()),
-                        (ValueType::KashaGCDhaifu(ref t), "imarisha") => {
-                            ValueType::Chaguo(Box::new(ValueType::KashaGC(t.clone())))
-                        }
-                        (ValueType::Faili, "soma") => {
-                            ValueType::Tokeo(Box::new(ValueType::Neno), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Faili, "andika") => {
-                            ValueType::Tokeo(Box::new(ValueType::Tupu), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Faili, "funga") => ValueType::Tupu,
-                        (ValueType::Mkondo, "soma") => {
-                            ValueType::Tokeo(Box::new(ValueType::Neno), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Mkondo, "soma_bailisi") => {
-                            ValueType::Tokeo(Box::new(ValueType::Neno), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Mkondo, "andika") => {
-                            ValueType::Tokeo(Box::new(ValueType::Tupu), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Mkondo, "funga") => ValueType::Tupu,
-                        (ValueType::Kumbukumbu(ref t), "pata") => *t.clone(),
-                        (ValueType::Seti(ref t), "clona") => ValueType::Seti(t.clone()),
-                        (ValueType::Seti(_), "ongeza") => ValueType::Tupu,
-                        (ValueType::Seti(_), "ondoa") => ValueType::Ukweli,
-                        (ValueType::Seti(_), "ina") => ValueType::Ukweli,
-                        (ValueType::Seti(_), "urefu") => ValueType::Namba,
-                        (ValueType::Seti(ref t), "orodha") => ValueType::Orodha(t.clone()),
-                        (ValueType::NjiaTx(_), "tuma") => {
-                            ValueType::Tokeo(Box::new(ValueType::Tupu), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::NjiaRx(ref t), "pokea") => {
-                            ValueType::Tokeo(t.clone(), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::NjiaTxBounded(_), "tuma") => {
-                            ValueType::Tokeo(Box::new(ValueType::Tupu), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::NjiaRxBounded(ref t), "pokea") => {
-                            ValueType::Tokeo(t.clone(), Box::new(ValueType::Neno))
-                        }
-                        (ValueType::Fungo(_), "funga") => ValueType::Tupu,
-                        (ValueType::Fungo(_), "fungua") => ValueType::Tupu,
-                        (ValueType::Fungo(ref t), "pata") => *t.clone(),
-                        (ValueType::Fungo(_), "weka") => ValueType::Tupu,
-                        _ => ValueType::Unknown,
-                    };
+                    // A method no built-in type has (and no `shughuli` block defines) is an error
+                    // here, not a failure when the program runs.
+                    let known = builtin
+                        .is_none_or(|r| crate::builtins::has_builtin_method(r, method_name))
+                        || self
+                            .module
+                            .impls
+                            .iter()
+                            .any(|i| i.body.iter().any(|f| f.name == *method_name));
+                    if !known {
+                        self.errors.push(
+                            Diagnostic::new(
+                                "SEM040",
+                                format!("njia '{}' haipo kwa '{}'", method_name, receiver_ty_name),
+                            )
+                            .with_stage("semantiki")
+                            .with_span(*line, 1),
+                        );
+                        return ValueType::Unknown;
+                    }
+                    return crate::builtins::method_return_type(&receiver_ty, method_name);
                 }
                 if !is_enum && !_is_struct {
                     self.errors.push(
@@ -1747,14 +1695,14 @@ impl<'a> Analyzer<'a> {
                             ("Tokeo", "ni_kosa" | "ni_sawa") => Some(ValueType::Ukweli),
                             ("Tokeo", "kosa" | "angu") => {
                                 for arg in args {
-                                    let _ = self.check_expr(arg, scopes, UseMode::Move);
+                                    let _ = self.check_expr(*arg, scopes, UseMode::Move);
                                 }
                                 Some(ValueType::TypeVar("T".to_string()))
                             }
                             ("Chaguo", "ni_po" | "ni_tupu") => Some(ValueType::Ukweli),
                             ("Chaguo", "angu" | "hakikisha") => {
                                 for arg in args {
-                                    let _ = self.check_expr(arg, scopes, UseMode::Move);
+                                    let _ = self.check_expr(*arg, scopes, UseMode::Move);
                                 }
                                 Some(ValueType::TypeVar("T".to_string()))
                             }
@@ -1795,7 +1743,7 @@ impl<'a> Analyzer<'a> {
 
                 // Type check arguments
                 for (i, arg) in args.iter().enumerate() {
-                    let arg_ty = self.check_expr(arg, scopes, UseMode::Move);
+                    let arg_ty = self.check_expr(*arg, scopes, UseMode::Move);
                     let param_ty = self.type_from_decl(&func.params[i + 1].ty.name);
                     self.check_type_compatibility(
                         &param_ty,
@@ -1823,7 +1771,7 @@ impl<'a> Analyzer<'a> {
                 line,
                 ..
             } => {
-                let Some(st) = self.module.structs.iter().find(|s| s.name == *struct_name) else {
+                let Some(shape) = self.struct_shape(struct_name) else {
                     self.errors.push(
                         Diagnostic::new("SEM093", format!("umbo haijulikani: {}", struct_name))
                             .with_stage("semantiki")
@@ -1833,7 +1781,8 @@ impl<'a> Analyzer<'a> {
                 };
                 let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for (fname, fexpr) in fields {
-                    if !st.fields.iter().any(|(n, _)| n == fname) {
+                    let decl = shape.iter().find(|f| f.name == *fname);
+                    if decl.is_none() {
                         self.errors.push(
                             Diagnostic::new(
                                 "SEM094",
@@ -1852,9 +1801,9 @@ impl<'a> Analyzer<'a> {
                             .with_span(*line, 1),
                         );
                     }
-                    let ft = self.check_expr(fexpr, scopes, UseMode::Move);
-                    if let Some((_, Some(ref fty))) = st.fields.iter().find(|(n, _)| n == fname) {
-                        let want = self.type_from_decl(&fty.name);
+                    let ft = self.check_expr(*fexpr, scopes, UseMode::Move);
+                    if let Some(fty) = decl.and_then(|d| d.ty.as_deref()) {
+                        let want = self.type_from_decl(fty);
                         if !self.compatible(&want, &ft) {
                             self.errors.push(
                                 Diagnostic::new(
@@ -1870,12 +1819,12 @@ impl<'a> Analyzer<'a> {
                         }
                     }
                 }
-                for (fname, _) in &st.fields {
-                    if !fields.iter().any(|(n, _)| n == fname) {
+                for f in shape.iter().filter(|f| !f.optional) {
+                    if !fields.iter().any(|(n, _)| *n == f.name) {
                         self.errors.push(
                             Diagnostic::new(
                                 "SEM097",
-                                format!("umbo '{}' linahitaji uga '{}'", struct_name, fname),
+                                format!("umbo '{}' linahitaji uga '{}'", struct_name, f.name),
                             )
                             .with_stage("semantiki")
                             .with_span(*line, 1),
@@ -1886,7 +1835,7 @@ impl<'a> Analyzer<'a> {
             }
             Expr::EnumConstruct {
                 enum_name,
-                variant_name: _,
+                variant_name,
                 data,
                 line,
                 ..
@@ -1900,25 +1849,31 @@ impl<'a> Analyzer<'a> {
                     );
                     return ValueType::Unknown;
                 }
-                if let Some(d) = data {
-                    let _ = self.check_expr(d, scopes, UseMode::Move);
+                let inner = match data {
+                    Some(d) => self.check_expr(*d, scopes, UseMode::Move),
+                    None => ValueType::Unknown,
+                };
+                // `Chaguo::Kuna(x)` is the `Chaguo<T>` builtins take (`tls?: TlsUsanidi?`).
+                if enum_name.as_str() == "Chaguo" && variant_name.as_str() == "Kuna" {
+                    return ValueType::Chaguo(Box::new(inner));
                 }
-                ValueType::Struct(enum_name.clone())
+                ValueType::Struct(enum_name.to_string())
             }
-            Expr::Index { base, index, line } => self.check_index(base, index, *line, scopes).0,
+            Expr::Index { base, index, line } => self.check_index(*base, *index, *line, scopes).0,
             Expr::FieldAccess {
                 receiver,
                 field,
                 line,
                 ..
             } => {
-                let rec_ty = self.check_expr(receiver, scopes, UseMode::BorrowImm);
+                let rec_ty = self.check_expr(*receiver, scopes, UseMode::BorrowImm);
                 match &rec_ty {
                     ValueType::Struct(name) => {
-                        let Some(st) = self.module.structs.iter().find(|s| s.name == *name) else {
+                        let Some(shape) = self.struct_shape(name) else {
                             return ValueType::Unknown;
                         };
-                        if !st.fields.iter().any(|(n, _)| n == field) {
+                        let decl = shape.iter().find(|f| f.name == *field);
+                        if decl.is_none() {
                             self.errors.push(
                                 Diagnostic::new(
                                     "SEM098",
@@ -1928,14 +1883,14 @@ impl<'a> Analyzer<'a> {
                                 .with_span(*line, 1),
                             );
                             ValueType::Unknown
-                        } else if let Some((_, Some(ref fty))) =
-                            st.fields.iter().find(|(n, _)| n == field)
-                        {
-                            self.type_from_decl(&fty.name)
+                        } else if let Some(fty) = decl.and_then(|d| d.ty.as_deref()) {
+                            self.type_from_decl(fty)
                         } else {
                             ValueType::Unknown
                         }
                     }
+                    // Not known here (e.g. a generic's result): assume it has the field.
+                    ValueType::Unknown => ValueType::Unknown,
                     _ => {
                         self.errors.push(
                             Diagnostic::new("SEM099", "uga unahitaji kitu cha aina ya umbo")
@@ -1952,15 +1907,15 @@ impl<'a> Analyzer<'a> {
                     base,
                     index,
                     line: index_line,
-                } = &**expr
+                } = &module[*expr]
                 {
-                    let (t, is_list) = self.check_index(base, index, *index_line, scopes);
+                    let (t, is_list) = self.check_index(*base, *index, *index_line, scopes);
                     if is_list {
                         return t;
                     }
                 }
-                let t = self.check_expr(expr, scopes, UseMode::Move);
-                let idents = Self::collect_idents_from_expr(expr);
+                let t = self.check_expr(*expr, scopes, UseMode::Move);
+                let idents = self.collect_idents_from_expr(*expr);
                 self.mark_tokeo_consumed(scopes, &idents);
                 match t {
                     ValueType::Tokeo(ok, _) => *ok,
@@ -1978,7 +1933,7 @@ impl<'a> Analyzer<'a> {
             Expr::List { elements, line } => {
                 let mut ty = ValueType::Unknown;
                 for e in elements {
-                    let ety = self.check_expr(e, scopes, UseMode::Move);
+                    let ety = self.check_expr(*e, scopes, UseMode::Move);
                     if matches!(ty, ValueType::Unknown) {
                         ty = ety;
                     } else if !self.compatible(&ty, &ety) {
@@ -1995,8 +1950,8 @@ impl<'a> Analyzer<'a> {
                 let mut kty = ValueType::Unknown;
                 let mut vty = ValueType::Unknown;
                 for (k, v) in entries {
-                    let kety = self.check_expr(k, scopes, UseMode::Move);
-                    let vety = self.check_expr(v, scopes, UseMode::Move);
+                    let kety = self.check_expr(*k, scopes, UseMode::Move);
+                    let vety = self.check_expr(*v, scopes, UseMode::Move);
                     if matches!(kty, ValueType::Unknown) {
                         kty = kety.clone();
                     }
@@ -2203,6 +2158,9 @@ impl<'a> Analyzer<'a> {
                 | ValueType::Herufi
                 | ValueType::Wakati
                 | ValueType::Anuani
+                // Shared handles: a copy is the same listener / configuration.
+                | ValueType::MkondoSikilizaji
+                | ValueType::TlsUsanidi
         )
     }
 
@@ -2228,6 +2186,12 @@ impl<'a> Analyzer<'a> {
                 self.compatible(a1, b1) && self.compatible(a2, b2)
             }
             (ValueType::Chaguo(a1), ValueType::Chaguo(b1)) => self.compatible(a1, b1),
+            (ValueType::Ahadi(a1), ValueType::Ahadi(b1)) => self.compatible(a1, b1),
+            // `Tokeo::Kosa(e)` / `Chaguo::Hamna` are typed by their enum alone.
+            (ValueType::Tokeo(..), ValueType::Struct(n))
+            | (ValueType::Struct(n), ValueType::Tokeo(..)) => n == "Tokeo",
+            (ValueType::Chaguo(_), ValueType::Struct(n))
+            | (ValueType::Struct(n), ValueType::Chaguo(_)) => n == "Chaguo",
             (ValueType::Tokeo(a1, a2), ValueType::Tokeo(b1, b2)) => {
                 self.compatible(a1, b1) && self.compatible(a2, b2)
             }
@@ -2277,16 +2241,49 @@ impl<'a> Analyzer<'a> {
         true
     }
 
+    /// A written type, with this module's `umbo`/`jenum` names resolved at any depth.
     fn type_from_decl(&self, t: &str) -> ValueType {
-        let s = t.trim();
-        if self.module.structs.iter().any(|st| st.name == s) {
-            return ValueType::Struct(s.to_string());
-        }
-        if self.module.enums.iter().any(|e| e.name == s) {
-            return ValueType::Struct(s.to_string());
-        }
-        parse_value_type(t)
+        parse_value_type_with(t, &|name| {
+            (self.module.structs.iter().any(|st| st.name == name)
+                || self.module.enums.iter().any(|e| e.name == name))
+            .then(|| ValueType::Struct(name.to_string()))
+            .or_else(|| crate::builtins::resolve_builtin_type(name))
+        })
     }
+
+    /// The fields of `umbo` `name`: the module's own declaration, else a builtin one.
+    fn struct_shape(&self, name: &str) -> Option<Vec<ShapeField>> {
+        if let Some(st) = self.module.structs.iter().find(|s| s.name == name) {
+            return Some(
+                st.fields
+                    .iter()
+                    .map(|(n, t)| ShapeField {
+                        name: n.clone(),
+                        ty: t.as_ref().map(|t| t.name.clone()),
+                        optional: false,
+                    })
+                    .collect(),
+            );
+        }
+        let st = crate::builtins::builtin_struct(name)?;
+        Some(
+            st.fields
+                .iter()
+                .map(|f| ShapeField {
+                    name: f.name.clone(),
+                    ty: Some(f.ty.clone()),
+                    optional: f.optional,
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One field of a `umbo` as the analyzer checks it.
+struct ShapeField {
+    name: String,
+    ty: Option<String>,
+    optional: bool,
 }
 
 pub(crate) fn run_semantic_check(
@@ -2324,4 +2321,33 @@ pub(crate) fn run_semantic_check_with_modules(
     );
     a.run();
     std::mem::take(&mut a.errors)
+}
+
+/// The built-in method table a receiver type uses, if it has one.
+fn method_receiver(ty: &ValueType) -> Option<crate::builtins::MethodReceiver> {
+    use crate::builtins::MethodReceiver as R;
+    Some(match ty {
+        ValueType::Neno => R::Neno,
+        ValueType::Orodha(_) => R::Orodha,
+        ValueType::Kamusi(_, _) => R::Kamusi,
+        ValueType::Seti(_) => R::Seti,
+        ValueType::Chaguo(_) => R::Chaguo,
+        ValueType::Tokeo(_, _) => R::Tokeo,
+        ValueType::Jozi(_, _) => R::Jozi,
+        ValueType::KashaGC(_) => R::KashaGC,
+        ValueType::KashaGCDhaifu(_) => R::KashaGCDhaifu,
+        ValueType::Faili => R::Faili,
+        ValueType::Mkondo => R::Mkondo,
+        ValueType::Kumbukumbu(_) => R::Kumbukumbu,
+        ValueType::NjiaTx(_) | ValueType::NjiaTxBounded(_) => R::NjiaTx,
+        ValueType::NjiaRx(_) | ValueType::NjiaRxBounded(_) => R::NjiaRx,
+        ValueType::Fungo(_) => R::Fungo,
+        ValueType::Wakati => R::Wakati,
+        ValueType::Baiti => R::Baiti,
+        ValueType::Ahadi(_) => R::Ahadi,
+        ValueType::MkondoSikilizaji => R::MkondoSikilizaji,
+        ValueType::MkondoUdp => R::MkondoUdp,
+        ValueType::MkondoWs => R::MkondoWs,
+        _ => return None,
+    })
 }

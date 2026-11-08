@@ -1,9 +1,15 @@
 # Wasm driver design
 
+> **Status (2026-10):** programs no longer tree-walk in wasm, and the WASI target described
+> below was removed. The browser build lowers each program to bytecode and compiles it with
+> `nguvu`'s wasm target (`core/evaluator/src/nguvu/wasm.rs`) into a module the page
+> instantiates beside the build (`globalThis.asili_nguvu_load`; see `driver/wasm/README.md`).
+> A WASI runtime cannot instantiate such a module, so `asili_wasi` and the `wasm-wasi` features
+> are gone. The rest of this page is the original design, kept for its I/O-shim rationale.
+
 The Wasm driver is `driver/wasm` (crate `asili-wasm`), a thin layer that runs Asili source in a
 WebAssembly environment. It depends directly on `asili-lexer`, `asili-parser`, and
-`asili-evaluator` (`driver/wasm/Cargo.toml:9-14`) — no separate bytecode/codegen step; a Wasm
-build still tree-walks the same AST as the native CLI.
+`asili-evaluator` (`driver/wasm/Cargo.toml:9-14`).
 
 ## Two targets, one crate
 
@@ -192,3 +198,13 @@ JS host.
   entry in the phase/feature map.
 - [mwalimu-design.md](mwalimu-design.md) / [package-manager-design.md](package-manager-design.md)
   — sibling design docs this one follows in structure/style.
+
+## Virtual board (added with `ubao`)
+
+`asili-wasm` also exports `runBoard(source, triples)` (`driver/wasm/src/lib.rs`, `run_board_source`).
+`triples` is the scenario flattened to `saa, pini, hali` repeated, and the run sees those scripted
+pin levels. Each pin write, pin read and clock step is sent to the page as one console line tagged
+`\u0001ASILI-EVT ` followed by JSON (`core/evaluator/src/platform.rs`, `write_event`). The page
+separates these from program output by the tag. `driver/wasm/tests/ubao_trace.mjs` runs a fixture
+under Node and checks it against the events the native test (`driver/wasm/tests/ubao_trace.rs`)
+expects.

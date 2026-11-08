@@ -1,14 +1,15 @@
-//! Differential tests: the tree-walking evaluator and every bytecode tier (the VM interpreter
-//! and the LLVM AOT library when `clang` is available) must agree on each snippet — values
-//! and error messages alike. Operator, cast, method, unwrapping, iteration and display
-//! semantics are shared code (`eval::ops`, `eval::methods`), and these tests keep it that way.
+//! Differential tests: native `nguvu` code built from each snippet's bytecode must give the
+//! language's reference results (`tests/golden/engines_agree.txt`, recorded from the tree-walking
+//! evaluator before it was removed) — values and error messages alike. Operator, cast, method,
+//! unwrapping, iteration and display semantics are shared code (`eval::ops`, `eval::methods`),
+//! and these tests keep them right.
 
-use asili_evaluator::aot::{build_library, AotError, NativeLibrary};
-use asili_evaluator::{
-    compile_module_explained, run_bytecode_function_on, run_function, Engine, Value,
-};
+use asili_evaluator::{compile_module_explained, run_bytecode_function_on, Value};
 use asili_lexer::tokenize;
 use asili_parser::parse_tokens;
+
+#[path = "support/golden.rs"]
+mod golden;
 
 fn canon(v: &Value) -> String {
     match v {
@@ -27,36 +28,30 @@ fn agree(name: &str, source: &str, functions: &[&str]) {
     let module = parse_tokens(&tokens).unwrap_or_else(|e| panic!("{name}: parse: {e:?}"));
     let program = compile_module_explained(&module)
         .unwrap_or_else(|why| panic!("{name}: expected bytecode lowering, blocked at {why}"));
-    let dir = std::env::temp_dir().join(format!("asili-agree-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let lib = match build_library(&program, &dir, name) {
-        Ok(path) => Some(NativeLibrary::load(&path, &program).expect("load AOT library")),
-        Err(AotError::Unavailable(_)) => None,
-        Err(AotError::Failed(why)) => panic!("{name}: AOT build failed: {why}"),
-    };
-    let show = |r: Result<Value, asili_evaluator::EvalError>| match r {
-        Ok(v) => canon(&v),
-        Err(e) => format!("ERR {e}"),
-    };
-    for function in functions {
-        let tree = show(run_function(&module, function, vec![]));
-        let vm = |engine| show(run_bytecode_function_on(engine, &program, function, vec![]));
-        assert_eq!(
-            vm(Engine::Interpreter),
-            tree,
-            "{name}::{function}: VM vs tree-walker"
-        );
-        if let Some(lib) = &lib {
-            assert_eq!(
-                vm(Engine::Aot(lib)),
-                tree,
-                "{name}::{function}: AOT vs tree-walker"
-            );
-        }
-    }
-    let _ = std::fs::remove_dir_all(&dir);
+    agree_program(name, &module, &program, functions);
 }
 
+fn agree_program(
+    name: &str,
+    _module: &asili_parser::Module,
+    program: &asili_evaluator::BytecodeProgram,
+    functions: &[&str],
+) {
+    if !asili_evaluator::nguvu::supported() {
+        return;
+    }
+    let own = asili_evaluator::nguvu::compile(program).expect("nguvu compile");
+    for function in functions {
+        let got = match run_bytecode_function_on(&own, program, function, vec![]) {
+            Ok(v) => canon(&v),
+            Err(e) => format!("ERR {e}"),
+        };
+        let key = format!("{name}::{function}");
+        assert_eq!(got, golden::expected("engines_agree", &key, &got), "{key}");
+    }
+}
+
+// Verifies: REQ-NUM-1
 #[test]
 fn operators_on_every_type() {
     agree(
@@ -96,6 +91,7 @@ fn operators_on_every_type() {
     );
 }
 
+// Verifies: REQ-NUM-1
 #[test]
 fn casts_and_number_display() {
     agree(
@@ -141,8 +137,24 @@ fn unwrapping_with_question_mark_and_jaribu() {
             weka b: Orodha<Namba> = [5]
             rejesha b.pata(0)? + b.pata(3).angu(10)
         }
+        kazi jaribu_rudisha() -> Tokeo<Namba, Neno> {
+            weka x = jaribu gawio(1, 0)
+            chapisha("haifiki")
+            rejesha gawio(x, 1)
+        }
+        kazi jaribu_sawa() -> Tokeo<Namba, Neno> {
+            weka x = jaribu gawio(6, 2)
+            rejesha gawio(x, 1)
+        }
         "#,
-        &["sawa", "kosa", "jaribu_kosa", "chaguo"],
+        &[
+            "sawa",
+            "kosa",
+            "jaribu_kosa",
+            "chaguo",
+            "jaribu_rudisha",
+            "jaribu_sawa",
+        ],
     );
 }
 
@@ -297,5 +309,961 @@ fn indexing_without_question_mark() {
             "maneno_nje",
             "kamusi_pata",
         ],
+    );
+}
+
+#[test]
+fn number_list_representations_match_the_tree_walker() {
+    // Lists switch between integer and float words; values (including -0.0 and huge
+    // integers) must read back exactly as the evaluator's `Orodha` holds them.
+    agree(
+        "numlist",
+        r#"
+        kazi kusanya_zote(l: Orodha<Namba>) -> Namba {
+            weka s: Namba = 0
+            kwa i kutoka 0 hadi l.urefu() {
+                s = s + l[i]
+            }
+            rejesha s
+        }
+        kazi t() -> Orodha<Namba> {
+            # built from integers, read and written as integers in native code
+            weka a: Orodha<Namba> = orodha_rudia(0, 16)
+            kwa i kutoka 0 hadi 16 {
+                a[i] = i * i - 7
+            }
+            weka r: Orodha<Namba> = []
+            kwa i kutoka 0 hadi 16 {
+                r.ongeza(a[15 - i] // 2)
+            }
+            # -0.0 into a list still held as integers: the sign must survive
+            weka z: Orodha<Namba> = [1, 2]
+            z[0] = -0.0
+            z.ongeza(-0.0)
+            r.ongeza(1 / z[0])
+            r.ongeza(1 / z[2])
+            # a list that turns into floats part-way
+            weka b: Orodha<Namba> = [1, 2, 3]
+            b.ongeza(0.5)
+            b.ongeza(-0.0)
+            b.ongeza(9007199254740993)
+            b.ongeza(10 ** 300)
+            b[0] = -0.0
+            kwa i kutoka 0 hadi b.urefu() {
+                r.ongeza(b[i])
+            }
+            # passed to another function and back
+            r.ongeza(kusanya_zote(a))
+            r.ongeza(kusanya_zote(b))
+            weka c: Orodha<Namba> = [4, 5, 6]
+            c.ondoa(1)
+            c.ongeza(-3)
+            r.ongeza(kusanya_zote(c))
+            r.ongeza(c[1])
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn calls_between_kazi_agree() {
+    agree(
+        "calls",
+        r#"
+        umbo Nukta {
+            x: Namba,
+            y: Namba,
+        }
+        kazi urefu_wa(p: Nukta) -> Namba {
+            weka (a, b) = jozi(p.x, p.y)
+            rejesha mraba(p.x) + mraba(p.y)
+        }
+        kazi mraba(n: Namba) -> Namba {
+            weka s: Namba = 0
+            kwa i kutoka 0 hadi n {
+                s += n
+            }
+            rejesha s
+        }
+        kazi aina(n: Namba) -> Neno {
+            linganisha n {
+                0 => { rejesha "sifuri" }
+                1 => { rejesha "moja" }
+                _ => { rejesha "nyingi" }
+            }
+            rejesha ""
+        }
+        kazi jumla_ya_aina(k: Namba) -> Neno {
+            # calling another kazi in a loop
+            weka r: Neno = ""
+            kwa i kutoka 0 hadi k {
+                r = r + aina(i)
+            }
+            rejesha r
+        }
+        kazi fib(n: Namba) -> Namba {
+            ikiwa n < 2 {
+                rejesha n
+            }
+            rejesha fib(n - 1) + fib(n - 2)
+        }
+        kazi t() -> Orodha<Namba> {
+            weka r: Orodha<Namba> = []
+            weka p = Nukta { x: 3, y: 4 }
+            r.ongeza(urefu_wa(p))
+            r.ongeza(fib(15))
+            rejesha r
+        }
+        kazi aina_tano() -> Neno {
+            rejesha jumla_ya_aina(5)
+        }
+        kazi kosa() -> Namba {
+            weka p = Nukta { x: 1, y: 2 }
+            rejesha urefu_wa(p) + (1 / 0) * 0
+        }
+        "#,
+        &["t", "aina_tano", "kosa"],
+    );
+}
+
+#[test]
+fn structs_enums_maps_and_global_constants() {
+    agree(
+        "values",
+        r#"
+        umbo Nukta {
+            x: Namba,
+            y: Namba,
+            jina: Neno,
+        }
+        jenum Rangi {
+            Nyekundu,
+            Kijani(Namba),
+        }
+        kazi mraba(p: Nukta) -> Namba {
+            rejesha p.x * p.x + p.y * p.y
+        }
+        kazi t() -> Orodha<Namba> {
+            weka r: Orodha<Namba> = []
+            # fields given out of declaration order
+            weka p = Nukta { jina: "a", y: 4, x: 3 }
+            r.ongeza(mraba(p))
+            r.ongeza(p.x + p.y)
+            r.ongeza(Ukomo)
+            r.ongeza(- Ukomo)
+            r.ongeza(PI)
+            ikiwa Siyo_Namba == Siyo_Namba {
+                r.ongeza(1)
+            }
+            rejesha r
+        }
+        kazi maandishi() -> Neno {
+            weka p = Nukta { x: 1, y: 2, jina: "nukta" }
+            weka k = Rangi::Kijani(7)
+            weka m = { "a": 1, "b": p.jina, "a": 3 }
+            # (not the whole map: its iteration order is unspecified)
+            rejesha (p kama Neno) + " " + p.jina + " " + (k kama Neno) + " " + (Rangi::Nyekundu kama Neno) + " " + (m.idadi() kama Neno) + " " + (m.pata("a") kama Neno) + " " + (m.pata("b") kama Neno)
+        }
+        kazi uga_mbaya() -> Namba {
+            weka p = Nukta { x: 1, y: 2, jina: "n" }
+            rejesha p.z
+        }
+        kazi si_umbo() -> Namba {
+            weka n = 5
+            rejesha n.x
+        }
+        "#,
+        &["t", "maandishi", "uga_mbaya", "si_umbo"],
+    );
+}
+
+#[test]
+fn linganisha_patterns() {
+    agree(
+        "match",
+        r#"
+        umbo Sanduku {
+            upana: Namba,
+            ndani: Nukta,
+        }
+        umbo Nukta {
+            x: Namba,
+            y: Namba,
+        }
+        jenum Umbo {
+            Duara(Namba),
+            Mraba(Namba),
+            Tupu,
+        }
+        kazi aina(v: Namba) -> Neno {
+            linganisha v {
+                0 => { rejesha "sifuri" }
+                1 => { rejesha "moja" }
+                n => { rejesha "nyingine " + (n kama Neno) }
+            }
+            rejesha "hakuna"
+        }
+        kazi eneo(u: Umbo) -> Namba {
+            linganisha u {
+                Umbo::Duara(r) => { rejesha r * r * 3 }
+                Umbo::Mraba(s) => { rejesha s * s }
+                Umbo::Tupu => { rejesha 0 }
+            }
+            rejesha - 1
+        }
+        kazi t() -> Orodha<Neno> {
+            weka r: Orodha<Neno> = []
+            kwa i kutoka 0 hadi 4 {
+                r.ongeza(aina(i))
+            }
+            r.ongeza(aina(0.30000000000000004))
+            r.ongeza(eneo(Umbo::Duara(2)) kama Neno)
+            r.ongeza(eneo(Umbo::Mraba(3)) kama Neno)
+            r.ongeza(eneo(Umbo::Tupu) kama Neno)
+            # strings, chars, booleans, Hamna, and no arm matching
+            kwa neno katika ["a", "b", "c"] {
+                linganisha neno {
+                    "a" => { r.ongeza("ni a") }
+                    "b" => { r.ongeza("ni b") }
+                }
+            }
+            linganisha 'x' {
+                'y' => { r.ongeza("y") }
+                'x' => { r.ongeza("x") }
+            }
+            linganisha kweli {
+                si_kweli => { r.ongeza("uongo") }
+                kweli => { r.ongeza("kweli") }
+            }
+            weka h = Hamna
+            linganisha h {
+                Hamna => { r.ongeza("hamna") }
+            }
+            # nested struct patterns, pairs, and a binding that shadows an outer name
+            weka x = "nje"
+            weka s = Sanduku { upana: 5, ndani: Nukta { x: 1, y: 2 } }
+            linganisha s {
+                Sanduku { upana: 4, ndani: Nukta { x: x, y: _ } } => { r.ongeza("nne " + (x kama Neno)) }
+                Sanduku { upana: w, ndani: Nukta { x: x, y: y } } => {
+                    r.ongeza((w + x + y) kama Neno)
+                }
+            }
+            r.ongeza(x)
+            linganisha jozi(1, "b") {
+                (1, b) => { r.ongeza(b) }
+                _ => { r.ongeza("?") }
+            }
+            # Chaguo from a builtin (not a constructor)
+            weka m = { "k": 9 }
+            linganisha m.pata("k") {
+                Chaguo::Kuna(v) => { r.ongeza("kuna " + (v kama Neno)) }
+                Chaguo::Hamna => { r.ongeza("hamna") }
+            }
+            linganisha m.pata("z") {
+                Chaguo::Kuna(v) => { r.ongeza("kuna " + (v kama Neno)) }
+                Chaguo::Hamna => { r.ongeza("hamna z") }
+            }
+            # vunja out of a loop from inside an arm
+            weka k = 0
+            wakati kweli {
+                linganisha k {
+                    3 => { vunja }
+                    _ => { k += 1 }
+                }
+            }
+            r.ongeza(k kama Neno)
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn user_methods_named_like_builtins_stay_user_methods() {
+    // `ongeza`/`urefu` are also builtin method names: a call on a `umbo` value must reach the
+    // user's `shughuli ya` method on every tier.
+    agree(
+        "impl_clash",
+        r#"
+        umbo Mfuko {
+            vitu: Namba,
+        }
+        shughuli ya Mfuko {
+            kazi ongeza(self: Mfuko, n: Namba) -> Namba {
+                rejesha self.vitu + n * 10
+            }
+            kazi urefu(self: Mfuko) -> Namba {
+                rejesha self.vitu * 2
+            }
+        }
+        kazi t() -> Orodha<Namba> {
+            weka m = Mfuko { vitu: 3 }
+            weka r: Orodha<Namba> = []
+            r.ongeza(m.ongeza(4))
+            r.ongeza(m.urefu())
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+const METHODS: &str = r#"
+    sifa Eneo {
+        kazi eneo(self: Self) -> Namba
+    }
+    umbo Mstatili {
+        upana: Namba,
+        urefu_wake: Namba,
+    }
+    shughuli ya Mstatili {
+        kazi mzunguko(self: Mstatili) -> Namba {
+            rejesha 2 * (self.upana + self.urefu_wake)
+        }
+        kazi jumla_ya_hatua(self: Mstatili, n: Namba) -> Namba {
+            weka s: Namba = 0
+            kwa i kutoka 0 hadi n {
+                s += self.mzunguko() + i
+            }
+            rejesha s
+        }
+        # inherent and trait methods of the same name: inherent wins
+        kazi eneo(self: Mstatili) -> Namba {
+            rejesha self.upana * self.urefu_wake
+        }
+    }
+    shughuli ya Mstatili: Eneo {
+        kazi eneo(self: Mstatili) -> Namba {
+            rejesha - 1
+        }
+    }
+    umbo Duara {
+        nusu: Namba,
+    }
+    shughuli ya Duara: Eneo {
+        kazi eneo(self: Duara) -> Namba {
+            rejesha self.nusu * self.nusu * 3
+        }
+    }
+"#;
+
+#[test]
+fn methods_dispatch_like_the_tree_walker() {
+    agree(
+        "user_methods",
+        &format!(
+            "{METHODS}{}",
+            r#"
+            kazi t() -> Orodha<Namba> {
+                weka m = Mstatili { upana: 3, urefu_wake: 4 }
+                weka d: Duara = Duara { nusu: 2 }
+                weka r: Orodha<Namba> = []
+                # a method call as a statement (result discarded)
+                m.mzunguko()
+                r.ongeza(m.eneo())
+                r.ongeza(m.mzunguko())
+                r.ongeza(m.jumla_ya_hatua(5))
+                r.ongeza(d.eneo())
+                rejesha r
+            }
+            "#
+        ),
+        &["t"],
+    );
+    agree(
+        "methods_from_a_pattern_weka",
+        &format!(
+            "{METHODS}{}",
+            r#"
+            kazi t() -> Orodha<Namba> {
+                weka m = Mstatili { upana: 3, urefu_wake: 4 }
+                weka (a, b) = jozi(1, 2)
+                weka r: Orodha<Namba> = []
+                r.ongeza(m.eneo())
+                r.ongeza(m.jumla_ya_hatua(5))
+                rejesha r
+            }
+            "#
+        ),
+        &["t"],
+    );
+}
+
+#[test]
+fn tupa_releases_bindings() {
+    agree(
+        "tupa",
+        r#"
+        kazi achilia() -> Namba {
+            weka x: Namba = 1
+            weka jumla: Namba = 0
+            kwa i kutoka 0 hadi 4 {
+                weka b: Orodha<Namba> = [i, i * 2]
+                weka n: Namba = b[1]
+                weka s = "neno" + (i kama Neno)
+                jumla = jumla + n + s.urefu()
+                tupa b
+                tupa n
+                tupa s
+            }
+            ikiwa kweli {
+                weka x: Namba = 40
+                jumla = jumla + x
+                tupa x
+                jumla = jumla + x
+            }
+            rejesha jumla
+        }
+        "#,
+        &["achilia"],
+    );
+}
+
+#[test]
+fn typed_struct_fields() {
+    agree(
+        "fields",
+        r#"
+        umbo Nukta {
+            jina: Neno,
+            x: Namba,
+            y: Namba,
+        }
+        umbo Sanduku {
+            ndani: Nukta,
+            upana: Namba,
+        }
+        kazi songa(p: Nukta, dx: Namba) -> Nukta {
+            weka x = p.x + dx
+            ikiwa x > 10 {
+                x = x - 20
+            }
+            rejesha Nukta { jina: p.jina + "'", x: x, y: p.y * 2 }
+        }
+        kazi hesabu() -> Orodha<Namba> {
+            weka s = Sanduku { ndani: Nukta { jina: "a", x: 1.5, y: -2 }, upana: 3 }
+            weka r: Orodha<Namba> = []
+            weka p: Nukta = s.ndani
+            kwa i kutoka 0 hadi 5 {
+                p = songa(p, s.upana + i)
+                r.ongeza(p.x)
+                r.ongeza(p.y % 7)
+                r.ongeza(p.jina.urefu())
+            }
+            r.ongeza(s.ndani.x * s.upana)
+            rejesha r
+        }
+        "#,
+        &["hesabu"],
+    );
+}
+
+#[test]
+fn shared_lists_keep_value_semantics() {
+    agree(
+        "cow",
+        r#"
+        kazi badili(m: Orodha<Neno>) -> Namba {
+            m.ongeza("ndani")
+            m.badilisha(0, "x")
+            rejesha m.urefu()
+        }
+        kazi nakala() -> Orodha<Neno> {
+            weka a: Orodha<Neno> = ["moja", "mbili"]
+            weka b = a.clona()
+            b.ongeza("tatu")
+            weka c = b.clona()
+            c.ondoa(0)
+            weka n = badili(a.clona())
+            kwa w katika a {
+                a.ongeza(w + "!")
+            }
+            weka r: Orodha<Neno> = []
+            r.ongeza(a.urefu() kama Neno)
+            r.ongeza(b.urefu() kama Neno)
+            r.ongeza(c.urefu() kama Neno)
+            r.ongeza(n kama Neno)
+            r.ongeza(a[0])
+            r.ongeza(b[0])
+            r.ongeza(c[0])
+            r.ongeza(a[3])
+            rejesha r
+        }
+        "#,
+        &["nakala"],
+    );
+}
+
+#[test]
+fn kwa_katika_over_generic_lists() {
+    // Native code keeps the loop index in a machine register: `IterItem` must be told it
+    // reads it (`native::num_reads`), or every pass sees the first item.
+    agree(
+        "iter",
+        r#"
+        umbo Nukta {
+            x: Namba,
+            y: Namba,
+        }
+        kazi urefu_wote(maneno: Orodha < Neno >) -> Namba {
+            weka s: Namba = 0
+            kwa w katika maneno {
+                s += w.urefu()
+            }
+            rejesha s
+        }
+        kazi jumla(ns: Orodha<Nukta>) -> Namba {
+            weka s: Namba = 0
+            kwa n katika ns {
+                s += n.x * 10 + n.y
+            }
+            rejesha s
+        }
+        kazi maneno() -> Namba {
+            weka m: Orodha<Neno> = []
+            kwa i kutoka 0 hadi 40 {
+                m.ongeza("neno" + (i kama Neno))
+            }
+            rejesha urefu_wote(m.clona())
+        }
+        kazi nukta() -> Namba {
+            weka ns: Orodha<Nukta> = []
+            kwa i kutoka 0 hadi 40 {
+                ns.ongeza(Nukta { x: i, y: 40 - i })
+            }
+            rejesha jumla(ns)
+        }
+        "#,
+        &["maneno", "nukta"],
+    );
+}
+
+#[test]
+fn own_kazi_shadow_builtins() {
+    let source = r#"
+        kazi jumla(a: Namba, b: Namba) -> Namba {
+            rejesha a * 100 + b
+        }
+        kazi sakafu(n: Namba) -> Namba {
+            rejesha n + 0.25
+        }
+        kazi t() -> Namba {
+            rejesha jumla(2, 3) + sakafu(1.5)
+        }
+        "#;
+    agree("shadow", source, &["t"]);
+    // Every engine used to call the builtins instead.
+    let module = parse_tokens(&tokenize(source).unwrap()).unwrap();
+    assert_eq!(
+        canon(&asili_evaluator::run_function(&module, "t", vec![]).unwrap()),
+        canon(&Value::Namba(204.75))
+    );
+}
+
+#[test]
+fn list_literal_element_types() {
+    agree(
+        "literal_types",
+        r#"
+        kazi t() -> Orodha<Namba> {
+            weka maneno = ["simba", "tembo", "chui"]
+            weka k: Kamusi<Neno, Namba> = { "simba": 0 }
+            weka r: Orodha<Namba> = []
+            kwa i kutoka 0 hadi 9 {
+                weka neno = maneno[i % 3]
+                weka nakala = neno.clona()
+                r.ongeza(nakala.urefu())
+                linganisha k.pata(neno.clona()) {
+                    Chaguo::Kuna(n) => { k.ingiza(neno.clona(), n + 1) }
+                    Chaguo::Hamna => { k.ingiza(neno.clona(), 1) }
+                }
+            }
+            weka m = maneno.clona()
+            m.ongeza("x")
+            r.ongeza(maneno.urefu())
+            r.ongeza(m.urefu())
+            r.ongeza(k.idadi())
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn copies_of_maps_and_sets_stay_independent() {
+    // `Kamusi` and `Seti` share storage between copies until one is written (copy on write).
+    agree(
+        "cow_maps",
+        r#"
+        kazi nakala() -> Orodha<Namba> {
+            weka a: Kamusi<Neno, Namba> = {}
+            a["x"] = 1
+            weka b = a.clona()
+            b["y"] = 2
+            b["x"] = 5
+            weka s = seti()
+            s.ongeza(1)
+            weka t = s.clona()
+            t.ongeza(2)
+            rejesha [a.idadi(), b.idadi(), a.pata("x").angu(0), b.pata("x").angu(0), s.urefu(), t.urefu()]
+        }
+        "#,
+        &["nakala"],
+    );
+}
+
+#[test]
+fn values_stay_small() {
+    // Every `Value` is moved and copied constantly; keep it at four words.
+    assert!(std::mem::size_of::<asili_evaluator::Value>() <= 32);
+}
+
+#[test]
+fn inlined_calls_and_structs_kept_in_registers() {
+    // Small `rejesha` functions are inlined, and structs that never leave a function live in
+    // registers: results, errors and the call-depth limit must not change.
+    agree(
+        "scalars",
+        r#"
+        umbo Nukta {
+            x: Namba,
+            y: Namba,
+        }
+        umbo Mtu {
+            jina: Neno,
+            umri: Namba,
+        }
+        kazi songa(p: Nukta, d: Namba) -> Nukta {
+            rejesha Nukta { x: p.x + d, y: p.y - d }
+        }
+        kazi mraba(n: Namba) -> Namba {
+            rejesha n * n
+        }
+        kazi jumla(p: Nukta) -> Namba {
+            weka s = p.x
+            rejesha s + p.y
+        }
+        kazi mzunguko() -> Namba {
+            weka p = Nukta { x: 0, y: 0 }
+            kwa i kutoka 0 hadi 1000 {
+                p = songa(p, mraba(i % 7))
+            }
+            rejesha p.x - p.y
+        }
+        kazi pishana() -> Orodha<Namba> {
+            # `q` is built while `p` is still read: each keeps its own fields.
+            weka r: Orodha<Namba> = []
+            weka p = Nukta { x: 1, y: 2 }
+            weka q = Nukta { x: 10, y: 20 }
+            r.ongeza(p.x + q.y)
+            p = q
+            q = Nukta { x: 5, y: 6 }
+            r.ongeza(p.x + q.x)
+            ikiwa p.x > 3 {
+                p = Nukta { x: q.y, y: p.x }
+            }
+            r.ongeza(p.x * 100 + p.y)
+            rejesha r
+        }
+        kazi inatoroka() -> Namba {
+            # passed to a function that is not inlined, so it stays a struct
+            weka p = Nukta { x: 3, y: 4 }
+            weka q = Nukta { x: 1, y: 1 }
+            rejesha jumla(p) + q.x
+        }
+        kazi maandishi() -> Neno {
+            weka m = Mtu { jina: "Amani", umri: 30 }
+            rejesha m.jina + " " + (m.umri kama Neno)
+        }
+        kazi g(x: Namba) -> Namba {
+            rejesha x + 1
+        }
+        kazi f(n: Namba) -> Namba {
+            ikiwa n == 0 {
+                rejesha g(n)
+            }
+            rejesha f(n - 1) + 0
+        }
+        kazi kina_sawa() -> Namba {
+            rejesha f(9997)
+        }
+        kazi kina_juu() -> Namba {
+            rejesha f(9998)
+        }
+        "#,
+        &[
+            "mzunguko",
+            "pishana",
+            "inatoroka",
+            "maandishi",
+            "kina_sawa",
+            "kina_juu",
+        ],
+    );
+}
+
+#[test]
+fn appending_to_text_never_changes_its_copies() {
+    // `s = s + t` appends in place only when nothing else shares the text.
+    agree(
+        "append",
+        r#"
+        kazi ongeza() -> Orodha<Neno> {
+            weka s = "a"
+            weka nakala = s.clona()
+            weka m: Kamusi<Neno, Namba> = {}
+            m[s.clona()] = 1
+            kwa i kutoka 0 hadi 5 {
+                s = s + "b"
+            }
+            weka sehemu: Orodha<Neno> = [s.clona()]
+            s = s + (7 kama Neno)
+            weka funguo = ""
+            kwa k katika m.funguo() {
+                funguo = funguo + k
+            }
+            rejesha [s, nakala, sehemu[0], funguo]
+        }
+        "#,
+        &["ongeza"],
+    );
+}
+
+#[test]
+fn appending_to_numeric_lists() {
+    // Pushes that fit are made in place by native code; the runtime grows the list otherwise.
+    agree(
+        "push",
+        r#"
+        kazi urefu_wa(a: Orodha<Namba>) -> Namba {
+            rejesha a.urefu()
+        }
+        kazi jumla_ya(a: Orodha<Namba>) -> Namba {
+            weka s = 0
+            kwa x katika a {
+                s = s + x
+            }
+            rejesha s
+        }
+        kazi sukuma() -> Orodha<Namba> {
+            weka a: Orodha<Namba> = []
+            weka b: Orodha<Namba> = [1, 2]
+            weka r: Orodha<Namba> = []
+            kwa i kutoka 0 hadi 300 {
+                a.ongeza(i % 7)
+                b.ongeza(i * 1000)
+                ikiwa i % 50 == 0 {
+                    r.ongeza(urefu_wa(a) + jumla_ya(b))
+                    a.ondoa(0)
+                }
+            }
+            weka c: Orodha<Namba> = []
+            kwa i kutoka 0 hadi 40 {
+                c.ongeza(i / 4)
+            }
+            r.ongeza(a.urefu())
+            r.ongeza(jumla_ya(a))
+            r.ongeza(b.urefu())
+            r.ongeza(jumla_ya(b))
+            r.ongeza(jumla_ya(c))
+            rejesha r
+        }
+        "#,
+        &["sukuma"],
+    );
+}
+
+#[test]
+fn pattern_bindings() {
+    agree(
+        "pattern_bindings",
+        r#"
+        kazi jozi_mbili() -> Namba {
+            weka (a, b) = jozi(3, 4)
+            weka (c, d) = jozi(a + 1, b * 2)
+            c += 10
+            rejesha a + b + c + d
+        }
+        kazi ndani() -> Neno {
+            weka (n, (m, k)) = jozi("a", jozi("b", "c"))
+            rejesha n + m + k
+        }
+        kazi haulingani() -> Namba {
+            weka (a, b) = 5
+            rejesha a
+        }
+        "#,
+        &["jozi_mbili", "ndani", "haulingani"],
+    );
+}
+
+#[test]
+fn computed_module_constants() {
+    agree(
+        "computed_constants",
+        r#"
+        thabiti MSINGI = 3
+        thabiti MARA_MBILI = MSINGI * 2
+        thabiti JINA: Neno = "asili" + "-" + (MARA_MBILI kama Neno)
+        thabiti ORODHA = orodha(MSINGI, MARA_MBILI)
+        kazi t() -> Neno {
+            rejesha JINA + (ORODHA.urefu() kama Neno) + ((MARA_MBILI + 1) kama Neno)
+        }
+        kazi kosa_ndani() -> Namba {
+            rejesha MARA_MBILI / 0
+        }
+        "#,
+        &["t", "kosa_ndani"],
+    );
+}
+
+#[test]
+fn maps_with_computed_keys() {
+    agree(
+        "computed_map_keys",
+        r#"
+        kazi t() -> Neno {
+            weka a = "x"
+            weka m = { a + "1": 1, a + "2": 2 }
+            m = { "n": m.idadi(), a: m.pata("x1").angu(0) }
+            rejesha (m.pata("n").angu(0) kama Neno) + (m.pata("x").angu(0) kama Neno)
+        }
+        kazi ufunguo_mbaya() -> Namba {
+            weka m = { orodha(1): 1 }
+            rejesha 0
+        }
+        "#,
+        &["t", "ufunguo_mbaya"],
+    );
+}
+
+#[test]
+fn calls_ignore_locals_of_the_same_name() {
+    agree(
+        "call_vs_local",
+        r#"
+        kazi mara_mbili(n: Namba) -> Namba {
+            rejesha n * 2
+        }
+        kazi t() -> Namba {
+            weka mara_mbili = 5
+            weka urefu = 1
+            rejesha mara_mbili(mara_mbili) + urefu
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn tupa_of_an_outer_binding() {
+    agree(
+        "tupa_outer",
+        r#"
+        kazi t() -> Namba {
+            weka x = orodha(1, 2, 3)
+            weka n = x.urefu()
+            ikiwa n > 2 {
+                tupa x
+            }
+            rejesha n
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn baiti_bytes() {
+    agree(
+        "baiti",
+        r#"
+        kazi msingi() -> Orodha<Neno> {
+            weka b = b"Hi\x00\xff\n"
+            weka jumla = 0
+            kwa x katika b { jumla += x }
+            rejesha [
+                b kama Neno,
+                b.urefu() kama Neno,
+                b[1] kama Neno,
+                jumla kama Neno,
+                b.hex(),
+                (b + b"!").hex(),
+                (b"abc" < b"abd") kama Neno,
+                (b"ab" == "ab".baiti()) kama Neno,
+            ]
+        }
+        kazi njia() -> Orodha<Neno> {
+            weka b = "habari dunia".baiti()
+            rejesha [
+                b.kata(0, 6).kwa_neno().angu("?"),
+                b.tafuta(b" ").angu(-1) kama Neno,
+                b.tafuta(100).angu(-1) kama Neno,
+                b.gawanya(b" ").urefu() kama Neno,
+                b.anza_na("hab") kama Neno,
+                b.geuza().kata(0, 5).kwa_neno().angu("?"),
+                b"\xff".kwa_neno().ni_kosa() kama Neno,
+                b"\x01\x02\x03\x04".soma_nambari(0, 4, "be").angu(-1) kama Neno,
+                b"\x01\x02\x03\x04".soma_nambari(0, 2, "le").angu(-1) kama Neno,
+                b"\x01".soma_nambari(0, 2, "be").angu(-1) kama Neno,
+                b"abc".base64(),
+                b"".hashi_sha256(),
+                (b"\x41\x42" kama Neno),
+            ]
+        }
+        kazi zaidi() -> Orodha<Neno> {
+            weka x = jaribu baiti([72, 105])
+            weka y = jaribu baiti_ya_nambari(258, 2, "be")
+            weka z = "hapana"
+            linganisha b"ok" {
+                b"ok" => { z = "ndiyo" }
+                _ => { z = "hapana" }
+            }
+            rejesha [
+                x kama Neno,
+                y.hex(),
+                baiti([256]).ni_kosa() kama Neno,
+                ([1, 2] kama Baiti).hex(),
+                z,
+                b"abc".kwa_orodha().urefu() kama Neno,
+            ]
+        }
+        kazi nje() -> Namba {
+            weka b = b"ab"
+            rejesha b[5]
+        }
+        "#,
+        &["msingi", "njia", "zaidi", "nje"],
+    );
+}
+
+// Verifies: ubao (virtual board builtins). The board's clock belongs to the thread, so the three
+// functions share it in the order listed: `saa` and `nje` see the 7 ms that `pini` stepped.
+#[test]
+fn ubao_pins_and_clock() {
+    agree(
+        "ubao",
+        r#"
+        leta ubao
+        #[wazi]
+        kazi pini() -> Ukweli {
+            ubao_andika(2, kweli)
+            ubao_subiri(7)
+            rejesha ubao_soma(2) == si_kweli
+        }
+        #[wazi]
+        kazi saa() -> Namba {
+            ubao_subiri(5)
+            rejesha ubao_saa()
+        }
+        kazi nje() -> Namba {
+            rejesha ubao_saa()
+        }
+        "#,
+        &["pini", "saa", "nje"],
     );
 }

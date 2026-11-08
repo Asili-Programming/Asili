@@ -45,8 +45,8 @@ pub fn canonical_format_with_indent(input: &str, indent_unit: &str) -> String {
 /// identifier or a closing `)`/`]` — otherwise they're a grouping expression (`1 + (2 * 3)`) or
 /// an array literal (`weka a = [1, 2, 3]`), which keep the space a preceding operator/keyword
 /// already gets. See `Printer::hugs_previous`.
-const NO_SPACE_BEFORE: &[&str] = &[")", "]", ",", ";", ":", ".", "?"];
-const NO_SPACE_AFTER: &[&str] = &["(", "[", ".", "#"];
+const NO_SPACE_BEFORE: &[&str] = &[")", "]", ",", ";", ":", ".", "?", "::"];
+const NO_SPACE_AFTER: &[&str] = &["(", "[", ".", "#", "::"];
 /// Opens a new indented block; the matching close dedents before printing.
 const OPENERS: &[&str] = &["{"];
 const CLOSERS: &[&str] = &["}"];
@@ -56,6 +56,9 @@ struct Printer<'a> {
     comments: &'a [Comment],
     out: String,
     depth: usize,
+    /// Open `(`/`[` around the current token: a `;` inside them (`[0; 500]`) is not a
+    /// statement separator.
+    inline: usize,
     /// Comments already emitted (`after_token_index`), so a comment isn't printed twice when
     /// multiple comments share the same anchor.
     next_comment: usize,
@@ -76,6 +79,7 @@ impl<'a> Printer<'a> {
             comments,
             out: String::new(),
             depth: 0,
+            inline: 0,
             next_comment: 0,
             generic_brackets,
             indent_unit: indent_unit.to_string(),
@@ -139,11 +143,16 @@ impl<'a> Printer<'a> {
         }
 
         self.out.push_str(lex);
+        match lex {
+            "(" | "[" => self.inline += 1,
+            ")" | "]" => self.inline = self.inline.saturating_sub(1),
+            _ => {}
+        }
 
         if OPENERS.contains(&lex) {
             self.depth += 1;
             self.newline_indent();
-        } else if lex == ";" || self.starts_new_line_after(idx) {
+        } else if (lex == ";" && self.inline == 0) || self.starts_new_line_after(idx) {
             // A gap of 2+ source lines between tokens means the author left at least one blank
             // line — preserve exactly one, so paragraph breaks between top-level declarations
             // survive instead of being silently deleted.
@@ -253,7 +262,8 @@ impl<'a> Printer<'a> {
 }
 
 /// Converts a lexer token's internal representation back into the source syntax it came from.
-/// Two token shapes need this:
+/// Three token shapes need this (the third: a byte string, `BAITI:<hex>`, printed by
+/// `asili_lexer::bytes_literal`):
 /// - A char literal like `'A'` is folded into one token whose lexeme is the debug form `CHAR:A`
 ///   (see `core/lexer/src/lib.rs`) — printing that debug form verbatim isn't valid Asili syntax
 ///   and doesn't round-trip (a second format pass would re-tokenize `CHAR:A` as three tokens).
@@ -264,11 +274,20 @@ impl<'a> Printer<'a> {
 ///   on the way out.
 /// Every other lexeme already prints as-is.
 fn render_lexeme(lexeme: &str) -> std::borrow::Cow<'_, str> {
+    // A byte string's lexeme is `BAITI:<hex>`.
+    if let Some(hex) = lexeme.strip_prefix("BAITI:") {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+            .collect();
+        return std::borrow::Cow::Owned(asili_lexer::bytes_literal(&bytes));
+    }
     if let Some(rest) = lexeme.strip_prefix("CHAR:") {
         let ch = rest.chars().next().unwrap_or('\0');
         return std::borrow::Cow::Owned(match ch {
             '\n' => "'\\n'".to_string(),
             '\t' => "'\\t'".to_string(),
+            '\r' => "'\\r'".to_string(),
+            '\0' => "'\\0'".to_string(),
             '\'' => "'\\''".to_string(),
             '\\' => "'\\\\'".to_string(),
             other => format!("'{other}'"),
@@ -276,7 +295,7 @@ fn render_lexeme(lexeme: &str) -> std::borrow::Cow<'_, str> {
     }
     if lexeme.starts_with('"') && lexeme.ends_with('"') && lexeme.len() >= 2 {
         let inner = &lexeme[1..lexeme.len() - 1];
-        if inner.contains(['\n', '\t', '"', '\\']) {
+        if inner.contains(['\n', '\t', '"', '\\']) || inner.chars().any(char::is_control) {
             let mut out = String::with_capacity(lexeme.len() + 4);
             out.push('"');
             for c in inner.chars() {
@@ -285,6 +304,9 @@ fn render_lexeme(lexeme: &str) -> std::borrow::Cow<'_, str> {
                     '\t' => out.push_str("\\t"),
                     '"' => out.push_str("\\\""),
                     '\\' => out.push_str("\\\\"),
+                    '\r' => out.push_str("\\r"),
+                    '\0' => out.push_str("\\0"),
+                    c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
                     other => out.push(other),
                 }
             }
@@ -404,6 +426,14 @@ mod tests {
         assert!(output.contains("foo()"));
         assert!(output.contains("{\n"));
         assert!(output.contains("chapisha(\"x\")"));
+    }
+
+    #[test]
+    fn byte_strings_round_trip() {
+        let input = "kazi f() -> Baiti { rejesha b\"Hi\\x00\\xff\\n\" }\n";
+        let a = canonical_format(input);
+        assert!(a.contains(r#"b"Hi\x00\xff\n""#), "{a}");
+        assert_eq!(a, canonical_format(&a));
     }
 
     #[test]
@@ -543,8 +573,24 @@ weka c = 'x'"#;
     }
 
     #[test]
+    fn control_character_escapes_round_trip() {
+        // `\r`, `\0` and `\u{…}` decode to control or other characters; control characters are
+        // printed escaped again, everything else as itself.
+        let input = r#"chapisha("a\rb\0c\u{1b}d\u{e9}")"#;
+        let once = canonical_format(input);
+        assert!(once.contains(r#""a\rb\0c\u{1b}dé""#), "got: {once}");
+        assert_eq!(once, canonical_format(&once));
+    }
+
+    #[test]
     fn escaped_char_literals_round_trip() {
-        for (src, expect) in [(r"'\n'", r"'\n'"), (r"'\''", r"'\''"), (r"'\\'", r"'\\'")] {
+        for (src, expect) in [
+            (r"'\n'", r"'\n'"),
+            (r"'\''", r"'\''"),
+            (r"'\\'", r"'\\'"),
+            (r"'\r'", r"'\r'"),
+            (r"'\0'", r"'\0'"),
+        ] {
             let input = format!("weka c = {src}\n");
             let output = canonical_format(&input);
             assert!(
@@ -649,6 +695,15 @@ weka c = 'x'"#;
         let input = "kazi kuu() -> Tupu {\nweka x = 1\n}\n";
         let output = canonical_format_with_indent(input, "\t");
         assert!(output.contains("\n\tweka x = 1"), "got: {output:?}");
+    }
+
+    #[test]
+    fn repeat_lists_and_paths_stay_on_one_line() {
+        let input = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    weka a: Orodha<Namba> = [0; 500]; weka r = Rangi::Kijani\n}\n";
+        let output = canonical_format(input);
+        assert!(output.contains("= [0; 500];\n"), "{output}");
+        assert!(output.contains("weka r = Rangi::Kijani"), "{output}");
+        assert_eq!(canonical_format(&output), output);
     }
 
     #[test]

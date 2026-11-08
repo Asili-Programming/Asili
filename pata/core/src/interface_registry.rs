@@ -47,7 +47,7 @@ impl TraitStub {
                         .iter()
                         .enumerate()
                         .map(|(i, ty)| Param {
-                            name: format!("_{i}"),
+                            name: format!("_{i}").into(),
                             ty: TypeExpr {
                                 name: ty.to_string(),
                             },
@@ -115,31 +115,10 @@ pub struct InterfaceRegistry {
     modules: HashMap<String, Arc<ModuleInterface>>,
 }
 
+/// One `kazi` line of an `.asi` file — the signature syntax builtin tables use too.
 fn parse_fn_sahihi(line: &str) -> Option<(String, FnContract)> {
-    let tail = line.strip_prefix("kazi ")?;
-    let open = tail.find('(')?;
-    let close = tail.rfind(')')?;
-    let name = tail[..open].trim().to_string();
-    let params_raw = &tail[open + 1..close];
-    let mut params = Vec::new();
-    for p in params_raw
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        let ty = if let Some((_, t)) = p.split_once(':') {
-            parse_value_type(t.trim())
-        } else {
-            ValueType::Unknown
-        };
-        params.push(ty);
-    }
-    let ret = if let Some((_, r)) = tail[close + 1..].split_once("->") {
-        parse_value_type(r.trim())
-    } else {
-        ValueType::Tupu
-    };
-    Some((name, FnContract { params, ret }))
+    line.starts_with("kazi ").then_some(())?;
+    asili_parser::builtins::parse_signature(line, &asili_parser::builtins::resolve_builtin_type)
 }
 
 fn parse_thabiti_line(line: &str) -> Option<(String, ValueType)> {
@@ -178,10 +157,18 @@ fn parse_asi_content(
     let mut traits = HashMap::new();
 
     let mut lines = content.lines();
+    // `#` lines right above a `kazi` are its description (LSP hover).
+    let mut doc: Vec<&str> = Vec::new();
     while let Some(raw) = lines.next() {
         let line = raw.trim();
+        if let Some(comment) = line.strip_prefix('#') {
+            doc.push(comment.trim());
+            continue;
+        }
+        let above = std::mem::take(&mut doc);
         if line.starts_with("kazi ") {
-            if let Some((name, sig)) = parse_fn_sahihi(line) {
+            if let Some((name, mut sig)) = parse_fn_sahihi(line) {
+                sig.doc = above.join(" ");
                 functions.insert(name, sig);
             }
         } else if line.starts_with("thabiti ") {
@@ -338,5 +325,74 @@ impl InterfaceRegistry {
             }
         }
         env
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asili_parser::builtins::{render_stub, BUILTIN_MODULES};
+    use std::path::Path;
+
+    /// `lib/std/<m>.asi` is generated from the builtin table (`core/parser/src/builtins.rs`), so
+    /// it cannot drift: this test fails when a file differs from what the table renders, and
+    /// `ASILI_GOLDEN=write` rewrites them. A stub for a module that no longer exists fails too.
+    #[test]
+    fn stdlib_stubs_are_generated() {
+        let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib/std");
+        let write = std::env::var_os("ASILI_GOLDEN").is_some_and(|v| v == "write");
+        let mut problems = Vec::new();
+        for m in BUILTIN_MODULES {
+            let path = std_dir.join(format!("{}.asi", m.name));
+            let want = render_stub(m);
+            if write {
+                fs::write(&path, &want).expect("write stub");
+            } else if fs::read_to_string(&path).ok().as_deref() != Some(want.as_str()) {
+                problems.push(format!("lib/std/{}.asi", m.name));
+            }
+            // What the stub says is what the compiler knows.
+            let (functions, constants, _) = parse_asi_content(&want);
+            let table = builtin_modules::builtin_module_exports(m.name).expect("table");
+            assert_eq!(functions.len(), table.functions.len(), "{}", m.name);
+            for (name, real) in &table.functions {
+                let stub = &functions[name];
+                assert_eq!(
+                    (
+                        &stub.params,
+                        &stub.ret,
+                        &stub.names,
+                        stub.optional,
+                        stub.variadic,
+                        &stub.doc
+                    ),
+                    (
+                        &real.params,
+                        &real.ret,
+                        &real.names,
+                        real.optional,
+                        real.variadic,
+                        &real.doc
+                    ),
+                    "{}::{name}",
+                    m.name
+                );
+            }
+            assert_eq!(constants, table.constants, "{}", m.name);
+        }
+        for entry in fs::read_dir(&std_dir).expect("lib/std") {
+            let path = entry.expect("entry").path();
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if path.extension().is_some_and(|e| e == "asi")
+                && !BUILTIN_MODULES.iter().any(|m| m.name == stem)
+            {
+                problems.push(format!("{} (no such builtin module)", path.display()));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "lib/std stubs differ from core/parser/src/builtins.rs; run \
+             `ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs`:\n{}",
+            problems.join("\n")
+        );
     }
 }

@@ -52,11 +52,12 @@ Per [spec/07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md)'s ph
       `[eneo-kazi]` table) share the same single manifest file/syntax as an ordinary project — no
       separate `Asili.toml`. See [package-manager-design.md](package-manager-design.md) for the
       full current architecture.
-- [x] Wasm — `driver/wasm` builds for both `wasm32-unknown-unknown` (browser, `wasm-browser`
-      feature, `console.log`/`console.error` via wasm-bindgen) and `wasm32-wasip1` (WASI,
-      `wasm-wasi` feature — uses `std`'s native WASI support directly, no `wasi` crate needed).
-      Multi-module `leta` resolves via `run_bundle` (in-memory bundler). Verified with real
-      execution under Node's WASI loader and wasm-bindgen JS glue, not just compilation. See
+- [x] Wasm — `driver/wasm` builds for the browser (`wasm32-unknown-unknown`, `wasm-browser`
+      feature, `console.log`/`console.error` via wasm-bindgen). Programs run as native code: a
+      wasm module of their own (`nguvu/wasm.rs`) the page instantiates beside the build.
+      Multi-module `leta` resolves via `run_bundle` (in-memory bundler). Verified by running
+      every example under Node (`driver/wasm/tests/agree.sh`, a CI job). The WASI build was
+      removed: a WASI runtime cannot instantiate the per-program module. See
       [wasm-driver-design.md](wasm-driver-design.md) for the full architecture (dual-target
       feature gating, the `platform.rs` I/O shim, the `run_bundle` bundler vs. the CLI's
       disk-based resolver, and known gaps like no cycle detection).
@@ -147,31 +148,37 @@ Researched, decided, not built.
       `.funga()`/`.fungua()` needed the `parking_lot`/`lock_api` crates for real manual
       lock/unlock (`std::sync::Mutex`'s guard can't span two separate calls). See
       [concurrency-design.md](concurrency-design.md) for the full architecture.
-- [ ] **`syscall` (raw syscall stub, `core/evaluator/src/builtins/syscall.rs`) is callable from
-      anywhere via `leta syscall` with no `wazi`-block gating**, even though the spec positions
-      raw hardware/syscall-level access as `wazi`-only. A stub today (`FIXME(Phase IV)`, always
-      returns `Anuani(0)`), so nothing is broken, but this needs a decision before real syscall
-      dispatch is implemented. See [wazi-hardware-design.md](wazi-hardware-design.md).
+- [x] **`syscall` is gated** (`core/parser/src/semantic/analyzer.rs`, SEM121): a call is an error
+      unless the calling function is marked `#[wazi]`; a `#[wazi]` function may not also be
+      `#[salama]` (SEM122). The `wazi { ... }` block form is not implemented. The call itself is
+      still a stub (`FIXME(Phase IV)`, returns `Anuani(0)`). See
+      [wazi-hardware-design.md](wazi-hardware-design.md).
+- [x] **Virtual board `ubao`** (`core/evaluator/src/ubao.rs`, `builtins/ubao.rs`): pins and a clock
+      in the host, with the pin calls gated by `#[wazi]`. Not a device driver; see
+      [peripheral-io-design.md](peripheral-io-design.md).
 - [ ] `kiungo` (FFI) is a documented stub: `core/evaluator/src/builtins/kiungo.rs`
       unconditionally returns `Err` from both exported functions, with a `TODO(Phase IV)`
       comment about `libloading`. Correctly scoped to this phase, not a surprise gap.
-- [x] **Bytecode VM and ahead-of-time native code (LLVM)** — `core/evaluator/src/bytecode.rs`
+- [x] **Bytecode and native code (`nguvu`)** — `core/evaluator/src/bytecode.rs`
       lowers most of the language (everything except `linganisha`, `tupa`, pattern `weka`, map
-      and struct literals, enum construction and field access) to a typed register VM with
-      separate `f64`, `Vec<f64>` and `Value` register files. `pata jenga` then compiles the
-      bytecode ahead of time to native code through LLVM IR and `clang -O2` (`aot.rs`); without
-      `clang` the bytecode runs on the VM. A flow-sensitive integer
-      range analysis (`native.rs`) keeps provably whole-number `Namba` registers in `i64`,
-      speculating on unbounded counters with a bound check that deoptimizes back into the VM,
-      and drops provably in-range list bounds checks. All engines share one implementation of
-      the language's value semantics (`eval/ops.rs`, `eval/methods.rs`); `tests/engines_agree.rs`
-      and `tests/native_tiers.rs` check that the tree-walker, VM and AOT agree bit-for-bit.
-      The Arto Inkala Sudoku (90,665 attempts, 10,041 backtracks) solves in ~4.8 ms native
-      (gcc `-O2` C: 4.4 ms), ~110 ms VM, vs. 3.4 s on the tree-walker and 0.33 s in
-      CPython. See [performance.md](performance.md). Remaining: programs using the constructs
-      above still fall back to the tree-walker wholesale (per-function fallback would be finer),
-      `kazi` calls from native code go through the interpreter's call path (no inlining yet),
-      and there is no standalone native executable (the library is loaded by `pata tenda`).
+      and struct literals, enum construction and field access) to typed register bytecode with
+      separate `f64`, number-list and `Value` register files. Bytecode only ever runs as x86-64
+      or AArch64 machine code from Asili's own backend (`core/evaluator/src/nguvu/`, no
+      external compiler): `pata jenga` writes `<name>.nguvu`, the runner compiles in memory when
+      it is missing, and there is no interpreter of any kind — the register VM and then the
+      tree-walker were removed; in the browser native code is a wasm module. Every construct
+      lowers to bytecode (a construct that doesn't is a build error), and tests, coverage, the
+      REPL and the debugger run native code too. A flow-sensitive integer
+      range analysis (`native.rs`) keeps provably whole-number `Namba` registers in `i64` (never
+      by speculation: a register it cannot bound stays `f64`), and drops provably in-range list
+      bounds checks. Native code's host calls one implementation of the language's value
+      semantics (`eval/ops.rs`, `eval/methods.rs`, `eval/pattern.rs`); `tests/engines_agree.rs`
+      and `tests/native_tiers.rs` check native code bit-for-bit against reference results
+      recorded from the tree-walker before it was removed. The Arto Inkala Sudoku (90,665
+      attempts, 10,041 backtracks) solves faster than clang `-O2` C (~5.5 ms whole process vs
+      ~6.7 ms), ~180 ms as wasm under Node (it was ~0.95 s on the tree-walker), 0.3 s in CPython.
+      See [performance.md](performance.md); for safety-critical use, the
+      [safety-critical roadmap](safety-critical-roadmap.md).
 
 ---
 
@@ -444,3 +451,8 @@ starting:
 ungated `syscall` finding), [takwimu-akili-design.md](takwimu-akili-design.md) (tensors/data
 loading/NLP — unphased in the roadmap, unlike everything else here), and
 [kielelezo-macros-design.md](kielelezo-macros-design.md).
+
+Two of these are now implemented: `sawia`/`subiri` (async tasks on each thread's event loop)
+and the networking stack (sockets, UDP, HTTP/1.1, HTTP/2 and HTTP/3, WebSocket). Their decisions
+are in [networking-design.md](networking-design.md); the async design doc records the reasoning
+behind the task model.

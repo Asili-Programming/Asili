@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build rustdoc + TypeDoc
+    name: Build rustdoc
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -39,25 +39,8 @@ jobs:
           cp docs-site-src/index.html docs-site/index.html
           cp -r target/doc docs-site/rustdoc
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install extension deps
-        working-directory: extensions/vscode
-        run: npm install
-
-      - name: Install docs-tooling deps (isolated TypeDoc + TypeScript)
-        working-directory: extensions/vscode/docs-tooling
-        run: npm install
-
-      - name: Generate TypeDoc
-        working-directory: extensions/vscode/docs-tooling
-        run: npm run typedoc
-
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs-site
 
@@ -71,4 +54,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

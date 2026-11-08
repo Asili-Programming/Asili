@@ -2,35 +2,17 @@
 
 use std::cmp::Ordering;
 
-use super::{EvalError, EvalOut, LoopAction, Value};
-
-pub(crate) fn handle_loop_out(my_label: Option<&String>, out: EvalOut) -> LoopAction {
-    match out {
-        EvalOut::Return(v) => LoopAction::Propagate(EvalOut::Return(v)),
-        EvalOut::Break(None) => LoopAction::Break,
-        EvalOut::Break(Some(ref l)) => {
-            if my_label == Some(l) {
-                LoopAction::Break
-            } else {
-                LoopAction::Propagate(EvalOut::Break(Some(l.clone())))
-            }
-        }
-        EvalOut::Continue(None) => LoopAction::Continue,
-        EvalOut::Continue(Some(ref l)) => {
-            if my_label != Some(l) {
-                LoopAction::Propagate(EvalOut::Continue(Some(l.clone())))
-            } else {
-                LoopAction::Continue
-            }
-        }
-        EvalOut::Next => LoopAction::Continue,
-    }
-}
-
+use super::{EvalError, Value};
 // TODO: parse_number silently returns 0.0 for any invalid numeric literal (e.g. "0x1F", "1_000",
 // "1e3" with locale-specific separators, binary "0b1010"). Invalid literals should produce a lex
 // error at tokenization time, not silently evaluate to zero at runtime.
 pub(crate) fn parse_number(s: &str) -> f64 {
+    // Most literals are short runs of digits: exact as integers, and much cheaper than the
+    // general float parser.
+    let b = s.as_bytes();
+    if !b.is_empty() && b.len() <= 15 && b.iter().all(u8::is_ascii_digit) {
+        return b.iter().fold(0u64, |n, d| n * 10 + (d - b'0') as u64) as f64;
+    }
     s.trim().parse().unwrap_or(0.0)
 }
 
@@ -53,27 +35,78 @@ pub(crate) fn as_u64(v: &Value) -> Option<u64> {
 
 pub(crate) fn as_string(v: &Value) -> Option<String> {
     match v {
-        Value::Neno(s) => Some(s.clone()),
+        Value::Neno(s) => Some(s.to_string()),
         _ => None,
     }
 }
 
 /// Text of a `Namba`, as `kama Neno`, `jiunge`, `kwa_neno` and string building show it.
 pub(crate) fn format_namba(n: f64) -> String {
+    with_namba_text(n, |s| s.to_string())
+}
+
+/// `n kama Neno` as a shared `Neno`: one allocation for whole numbers.
+pub(crate) fn namba_text(n: f64) -> super::Text {
+    with_namba_text(n, |s: &str| super::Text::from(s))
+}
+
+/// Call `f` with `n`'s text (whole numbers are written on the stack, not allocated).
+fn with_namba_text<R>(n: f64, f: impl FnOnce(&str) -> R) -> R {
     if n.is_nan() {
-        "Siyo_Namba".to_string()
+        f("Siyo_Namba")
     } else if n.is_infinite() && n > 0.0 {
-        "Ukomo".to_string()
+        f("Ukomo")
     } else if n.is_infinite() {
-        "-Ukomo".to_string()
+        f("-Ukomo")
+    } else if n.abs() < 9_007_199_254_740_992.0
+        // Whole (`fract() == 0`, without its libm call on targets lacking `roundsd`).
+        && (n as i64) as f64 == n
+        && !(n == 0.0 && n.is_sign_negative())
+    {
+        // Whole numbers print as their digits either way; writing the digits directly is much
+        // faster than the float (or even the generic integer) formatter.
+        // Two digits per step from a table of "00".."99" (as `itoa` does): half the divisions.
+        const PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+        let mut buf = [0u8; 20];
+        let mut i = buf.len();
+        let mut m = n.abs() as u64;
+        while m >= 100 {
+            let pair = (m % 100) as usize * 2;
+            m /= 100;
+            i -= 2;
+            buf[i..i + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+        }
+        if m >= 10 {
+            let pair = m as usize * 2;
+            i -= 2;
+            buf[i..i + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+        } else {
+            i -= 1;
+            buf[i] = b'0' + m as u8;
+        }
+        if n < 0.0 {
+            i -= 1;
+            buf[i] = b'-';
+        }
+        // SAFETY: ASCII digits and an optional '-'.
+        f(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
     } else {
-        n.to_string()
+        f(&n.to_string())
     }
+}
+
+/// `a` followed by `b` as a `Neno`, in one allocation.
+pub(crate) fn concat_text(a: &str, b: &str) -> super::Text {
+    super::Text::concat(a, b)
 }
 
 pub(crate) fn to_display_string(v: &Value) -> Option<String> {
     match v {
-        Value::Neno(s) => Some(s.clone()),
+        Value::Neno(s) => Some(s.to_string()),
         Value::Namba(n) => Some(format_namba(*n)),
         Value::Ukweli(b) => Some(if *b { "kweli" } else { "si_kweli" }.to_string()),
         Value::Herufi(c) => Some(c.to_string()),
@@ -98,28 +131,6 @@ pub(crate) fn args_f64_2(args: &[Value], fn_name: &str) -> Result<(f64, f64), Ev
     let a = arg_f64(args, 0, fn_name)?;
     let b = arg_f64(args, 1, fn_name)?;
     Ok((a, b))
-}
-
-pub(crate) fn binary_f64(
-    l: &Value,
-    r: &Value,
-    op_name: &str,
-    f: impl Fn(f64, f64) -> f64,
-) -> Result<Value, EvalError> {
-    let a = as_f64(l).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    let b = as_f64(r).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    Ok(Value::Namba(f(a, b)))
-}
-
-pub(crate) fn binary_f64_cmp(
-    l: &Value,
-    r: &Value,
-    op_name: &str,
-    f: impl Fn(f64, f64) -> bool,
-) -> Result<Value, EvalError> {
-    let a = as_f64(l).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    let b = as_f64(r).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    Ok(Value::Ukweli(f(a, b)))
 }
 
 /// Namba_Kuu/Namba_Sahihi arithmetic and comparison. A `Namba` operand widens infallibly to
@@ -151,27 +162,28 @@ pub(crate) fn big_numeric_binary_op(
     if both_int {
         let to_bigint = |v: &Value| -> BigInt {
             match v {
-                Value::NambaKuu(n) => n.clone(),
+                Value::NambaKuu(n) => (*n.clone()).clone(),
                 Value::Namba(n) => BigInt::from(*n as i64),
-                _ => unreachable!("both_int guard checked above"),
+                // Not reached: `both_int` admits only these two.
+                _ => BigInt::default(),
             }
         };
         let ai = to_bigint(l);
         let bi = to_bigint(r);
         let zero = BigInt::from(0);
         let result = match op {
-            BinaryOp::Add => Value::NambaKuu(&ai + &bi),
-            BinaryOp::Sub => Value::NambaKuu(&ai - &bi),
-            BinaryOp::Mul => Value::NambaKuu(&ai * &bi),
+            BinaryOp::Add => Value::NambaKuu(std::rc::Rc::new(&ai + &bi)),
+            BinaryOp::Sub => Value::NambaKuu(std::rc::Rc::new(&ai - &bi)),
+            BinaryOp::Mul => Value::NambaKuu(std::rc::Rc::new(&ai * &bi)),
             BinaryOp::Div if bi == zero => return Err(EvalError::DivByZero),
-            BinaryOp::Div => Value::NambaKuu(&ai / &bi),
+            BinaryOp::Div => Value::NambaKuu(std::rc::Rc::new(&ai / &bi)),
             BinaryOp::Rem if bi == zero => return Err(EvalError::DivByZero),
-            BinaryOp::Rem => Value::NambaKuu(&ai % &bi),
+            BinaryOp::Rem => Value::NambaKuu(std::rc::Rc::new(&ai % &bi)),
             BinaryOp::Pow => {
                 let exp: u32 = bi.try_into().map_err(|_| {
                     EvalError::TypeErr("** ya Namba_Kuu inahitaji kipeo kisicho hasi".into())
                 })?;
-                Value::NambaKuu(ai.pow(exp))
+                Value::NambaKuu(std::rc::Rc::new(ai.pow(exp)))
             }
             BinaryOp::Eq => Value::Ukweli(ai == bi),
             BinaryOp::Ne => Value::Ukweli(ai != bi),
@@ -186,8 +198,8 @@ pub(crate) fn big_numeric_binary_op(
 
     let to_bigdecimal = |v: &Value| -> Option<BigDecimal> {
         match v {
-            Value::NambaSahihi(n) => Some(n.clone()),
-            Value::NambaKuu(n) => Some(BigDecimal::from(n.clone())),
+            Value::NambaSahihi(n) => Some((**n).clone()),
+            Value::NambaKuu(n) => Some(BigDecimal::from((**n).clone())),
             Value::Namba(n) => BigDecimal::from_f64(*n),
             _ => None,
         }
@@ -197,13 +209,13 @@ pub(crate) fn big_numeric_binary_op(
     };
     let zero = BigDecimal::from(0);
     let result = match op {
-        BinaryOp::Add => Value::NambaSahihi(&ad + &bd),
-        BinaryOp::Sub => Value::NambaSahihi(&ad - &bd),
-        BinaryOp::Mul => Value::NambaSahihi(&ad * &bd),
+        BinaryOp::Add => Value::NambaSahihi(std::rc::Rc::new(&ad + &bd)),
+        BinaryOp::Sub => Value::NambaSahihi(std::rc::Rc::new(&ad - &bd)),
+        BinaryOp::Mul => Value::NambaSahihi(std::rc::Rc::new(&ad * &bd)),
         BinaryOp::Div if bd == zero => return Err(EvalError::DivByZero),
-        BinaryOp::Div => Value::NambaSahihi(ad / bd),
+        BinaryOp::Div => Value::NambaSahihi(std::rc::Rc::new(ad / bd)),
         BinaryOp::Rem if bd == zero => return Err(EvalError::DivByZero),
-        BinaryOp::Rem => Value::NambaSahihi(&ad % &bd),
+        BinaryOp::Rem => Value::NambaSahihi(std::rc::Rc::new(&ad % &bd)),
         BinaryOp::Pow => {
             // BigDecimal only supports integer exponents (exact decimal arithmetic has no
             // general fractional-power operation); the right operand's own integer value
@@ -214,7 +226,7 @@ pub(crate) fn big_numeric_binary_op(
                 Value::NambaSahihi(n) => n.to_string().parse::<f64>().unwrap_or(0.0) as i64,
                 _ => 0,
             };
-            Value::NambaSahihi(ad.powi(exp))
+            Value::NambaSahihi(std::rc::Rc::new(ad.powi(exp)))
         }
         BinaryOp::Eq => Value::Ukweli(ad == bd),
         BinaryOp::Ne => Value::Ukweli(ad != bd),
@@ -229,19 +241,8 @@ pub(crate) fn big_numeric_binary_op(
 
 /// Lexicographic comparison for Neno. Returns Some(Ukweli) when both are strings, else None.
 pub(crate) fn binary_cmp_neno(l: &Value, r: &Value, f: impl Fn(Ordering) -> bool) -> Option<Value> {
-    let s1 = as_string(l)?;
-    let s2 = as_string(r)?;
-    Some(Value::Ukweli(f(s1.cmp(&s2))))
-}
-
-pub(crate) fn assign_f64_op(
-    current: &Value,
-    rhs: &Value,
-    op_name: &str,
-    f: impl Fn(f64, f64) -> f64,
-) -> Result<Value, EvalError> {
-    let a =
-        as_f64(current).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    let b = as_f64(rhs).ok_or_else(|| EvalError::TypeErr(format!("{op_name} inahitaji Namba")))?;
-    Ok(Value::Namba(f(a, b)))
+    match (l, r) {
+        (Value::Neno(s1), Value::Neno(s2)) => Some(Value::Ukweli(f(s1.cmp(s2)))),
+        _ => None,
+    }
 }

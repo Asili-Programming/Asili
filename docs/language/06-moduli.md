@@ -42,6 +42,10 @@ weka ab = absolute(-5)        # 5
 weka s = sakafu(3.7)          # 3
 weka juu = dari(3.2)          # 4
 weka n = nasibu()             # random float [0,1)
+weka r = nasibu_kamili(1, 6)  # a whole number from 1 to 6, both included
+nasibu_mbegu(42)              # from here on, the same numbers every run (tests, simulations)
+weka c = changanya([1, 2, 3]) # the list in random order
+weka x = chagua_nasibu([4, 5])  # Chaguo: a random element, Hamna for an empty list
 ```
 
 **Maadili ya hisabati (constants)** — available ambiently:
@@ -93,6 +97,12 @@ leta mfumo
 weka hoja = vigezo()                # Orodha<Neno> of CLI args
 weka path = pata_env("PATH")       # Chaguo<Neno>
 toka(1)                             # exit with code
+weka_env("LUGHA", "sw")             # set an environment variable for this program (and the
+                                    # programs it runs)
+weka orodha = jaribu endesha("ls", ["-l"])   # run a program: its output if it exits with 0,
+                                    # else a Kosa naming the exit code and its stderr
+jaribu mlinzi_anza(100)            # watchdog: feed with mlinzi_lisha() within every 100 ms
+kikomo_kumbukumbu(8000000)         # memory limit in bytes (runner); see #[hali_salama]
 jaribu sikiliza_ishara(2, shimla)   # register signal handler (e.g. SIGINT = 2); returns
                                      # Tokeo<Tupu, Neno> — Kosa on platforms with no signal
                                      # support (non-Unix)
@@ -146,6 +156,47 @@ hufasiri HTTP/1.1 halisi — `kazi_jina(ombi: OmbiHttp) -> JibuHttp` badala ya
 [http-server-design.md](../design/http-server-design.md),
 [tls-design.md](../design/tls-design.md), [http-framing-design.md](../design/http-framing-design.md).
 
+**HTTP (mteja)**: one function, `http_ombi(njia, anwani, chaguo?)`.
+
+```asili
+leta mfumo
+
+# GET: the whole response, whatever its status.
+weka j = jaribu http_ombi("GET", "https://example.com/")
+chapisha(j.hali kama Neno)                       # 200, or 404, ...
+chapisha(j.vichwa.pata("content-type").angu(""))  # header names in lowercase
+chapisha(j.mwili)
+
+# POST JSON with a token, retrying a busy server, and a non-2xx status as an error.
+weka data = kamusi_tupu()
+data.ingiza("jina", "Amara")
+weka jibu = jaribu http_ombi("POST", "https://api.example.com/v1/watu", ChaguoHttp {
+    json: data,
+    tokeni: "...",
+    jaribu_tena: 3,
+    kosa_hali: kweli,
+})
+
+# Upload a file as a form, download a large file to disk.
+http_ombi("POST", "https://example.com/pakia", ChaguoHttp {
+    fomu_sehemu: {"maelezo": "ripoti"},
+    fomu_faili: {"hati": "ripoti.pdf"},
+})?
+http_ombi("GET", "https://example.com/data.zip", ChaguoHttp { hifadhi: "data.zip", kikomo: 1000000000 })?
+```
+
+`ChaguoHttp`, `JibuHttp` and `OmbiHttp` are builtin `umbo`s — no declaration needed — and every
+`ChaguoHttp` field is optional: headers (`vichwa`), query (`hoja`), one body (`mwili`,
+`mwili_base64`, `json`, `fomu`, `fomu_sehemu`/`fomu_faili`, `faili`) and its type (`aina`), Basic
+(`mtumiaji`/`nenosiri`) or Bearer (`tokeni`) authentication, timeouts (`muda`,
+`muda_kuunganisha`), redirects (`elekezo`), retries (`jaribu_tena`), proxy (`wakala`), IPv4/IPv6
+(`familia_ip`), trusted roots (`cheti_ca`), client certificates (`cheti`/`ufunguo`), cookies
+(`vidakuzi`), body limit (`kikomo`), saving to a file (`hifadhi`), base64 bodies
+(`jibu_base64`) and status errors (`kosa_hali`). The full table, the `JibuHttp` fields and the
+security rules (no HTTPS→HTTP redirect, credentials dropped across origins, certificates always
+checked) are in [05-standard-library.md](../spec/05-standard-library.md#http-client). Not
+available in the browser playground.
+
 **JSON**:
 
 ```asili
@@ -167,23 +218,26 @@ leta majira
 weka wakati_sasa = sasa()              # Wakati: current timestamp
 weka sek = sekunde(wakati_sasa)        # Namba: seconds since epoch
 weka w2 = kutoka_sekunde(1700000000)   # Wakati: from epoch seconds
-weka umbizwa = umbiza(wakati_sasa)     # formatted string (no format-string argument today —
-                                        # umbiza takes exactly 1 arg: a Wakati)
+weka umbizwa = umbiza(wakati_sasa)     # "2026-10-09 12:30:00" (UTC)
+weka iso = kwa_iso(wakati_sasa)         # "2026-10-09T12:30:00Z" (milliseconds when present)
+weka eneo = umbiza_eneo(wakati_sasa, 180)  # "2026-10-09 15:30:00+03:00": UTC+3, in minutes
+weka w3 = jaribu kutoka_iso("2026-10-09T15:30:00+03:00")  # Tokeo<Wakati, Neno>; also
+                                        # "YYYY-MM-DD", a space for T, Z, ±HH:MM or ±HHMM
+weka w4 = jaribu kutoka_tarehe(2024, 2, 29)   # Tokeo<Wakati, Neno>: midnight UTC
+weka p = tarehe(wakati_sasa)            # Kamusi<Neno, Namba>: mwaka, mwezi, siku, saa,
+                                        # dakika, sekunde, siku_ya_wiki (1 = Jumatatu),
+                                        # siku_ya_mwaka
+weka kuanza = kipima_muda()             # seconds on a clock that never goes back, for
+                                        # measuring durations (sasa() follows the wall clock)
 lala(1)                                 # sleep for 1 second (argument is seconds, not ms)
 
 weka sasa_namba = majira()             # Namba: raw seconds since epoch (not Wakati)
 ```
 
-> `majira()` returns `Namba` (raw float seconds). `sasa()` returns `Wakati` — a plain opaque
-> time value with **no methods of its own**; `sekunde(w)` and `umbiza(w)` are free functions
-> that take a `Wakati` argument (`w.sekunde()`/`w.umbiza()` do not exist and fail to compile:
-> `SEM039: aina 'Wakati' haina njia`). Use `sasa()` + the free functions above when you need
-> formatting; use `majira()` for simple elapsed-time arithmetic.
->
-> **Known bug:** `umbiza()`'s calendar-date formatting is inaccurate — it uses fixed 30-day
-> months and no leap-year handling, so the date portion can be off by more than two weeks
-> depending on the time of year (the time-of-day portion is correct). See
-> [implementation-status.md](../design/implementation-status.md).
+> `majira()` returns `Namba` (raw float seconds). `sasa()` returns `Wakati`; `w.sekunde()`
+> (or `sekunde(w)`) gives its seconds since the epoch. Dates follow the proleptic Gregorian
+> calendar (leap years included, times before 1970 too) in UTC; `umbiza_eneo` shows another
+> time zone by its offset in minutes — there is no time-zone database.
 
 **Maadili ya majira** — available ambiently:
 
@@ -202,6 +256,19 @@ jaribu andika_faili("out.txt", "maudhui\n")
 weka ipo = vipo("path/to/file")      # Ukweli
 weka ukubwa_w = ukubwa("file.txt")   # Namba (bytes)
 jaribu futa("temp.txt")
+
+jaribu unda_saraka("kumbukumbu/2026")      # makes missing parents too
+weka majina = jaribu orodha_saraka("kumbukumbu")   # Orodha<Neno>, sorted
+jaribu nakili("a.txt", "b.txt")             # Tokeo<Namba, Neno>: bytes copied
+jaribu badili_jina("b.txt", "c.txt")
+ni_saraka("kumbukumbu")                     # Ukweli (ni_faili for files)
+jaribu futa_saraka("kumbukumbu")            # and everything inside it
+
+njia_unganisha("data", "a.txt")             # "data/a.txt" (the platform's separator)
+njia_mzazi("/data/a.txt")                   # Chaguo: "/data"
+njia_jina("/data/a.txt")                    # Chaguo: "a.txt"
+njia_kiendelezi("/data/a.txt")              # Chaguo: "txt"
+jaribu njia_kamili("a.txt")                 # Tokeo: the absolute path, links resolved
 ```
 
 **Maadili ya faili** — available ambiently:
@@ -228,6 +295,46 @@ weka maudhui = jaribu (r.soma())
 `"ongeza"`. Kishikizo hufungwa kiotomatiki `w`/`r` yanapotoka nje ya wigo (hata bila `.funga()`
 au `tupa` wazi), si tu wakati zinapofungwa kwa mkono — tazama
 [faili-mkondo-design.md](../design/faili-mkondo-design.md).
+
+### ruwaza — Regular expressions
+
+```asili
+leta ruwaza
+
+weka sawa = jaribu ruwaza_inalingana("^\\d{3}-\\d{4}$", "555-1234")     # Ukweli
+weka neno = jaribu ruwaza_tafuta("[a-z]+", "123 habari")              # Chaguo<Neno>: "habari"
+weka zote = jaribu ruwaza_zote("\\d+", "a1 b22 c333")                  # ["1", "22", "333"]
+weka v = jaribu ruwaza_vikundi("(\\w+)@(\\w+)", "juma@mfano")          # Chaguo<Orodha<Neno>>:
+                                                  # ["juma@mfano", "juma", "mfano"]
+weka b = jaribu ruwaza_badilisha("(\\w+) (\\w+)", "habari dunia", "$2 $1")  # "dunia habari"
+weka sehemu = jaribu ruwaza_gawanya("\\s*,\\s*", "a , b,c")              # ["a", "b", "c"]
+```
+
+Every function takes the pattern first and returns a `Tokeo` whose `Kosa` is an invalid pattern
+(`ruwaza '(' si sahihi: ...`). The syntax is Perl-like and Unicode-aware (`\w` matches `é`;
+`(?i)` ignores case; `(?<jina>...)` names a group) without look-around or backreferences, so
+matching takes time linear in the text — no pattern can hang a program. In `ruwaza_vikundi`,
+group 0 is the whole match and a group that took no part is `""`; in `ruwaza_badilisha`, `$1`
+or `${jina}` is a group and `$$` a dollar sign. Each thread keeps the patterns it has compiled,
+so a pattern used in a loop is compiled once.
+
+### usimbaji — Encodings and hashes
+
+```asili
+leta usimbaji
+
+weka b = base64_simba("habari dunia")             # "aGFiYXJpIGR1bmlh"
+weka n = jaribu base64_fumbua(b)                  # Tokeo<Neno, Neno>
+weka h = hex_simba("Aé")                          # "41c3a9" (the UTF-8 bytes)
+weka s = hashi_sha256("abc")                      # 64 hex digits
+weka s5 = hashi_sha512("abc")                     # 128 hex digits
+weka mac = hmac_sha256("ufunguo", "ujumbe")      # HMAC-SHA256, hex
+weka id = kitambulisho()                          # random UUID (version 4)
+```
+
+Text is encoded as its UTF-8 bytes. `base64_fumbua` gives a `Kosa` for invalid base64 or bytes
+that are not UTF-8 text. `kitambulisho` draws on the same random numbers as `nasibu`, so after
+`nasibu_mbegu(n)` it repeats too.
 
 ### runtime
 

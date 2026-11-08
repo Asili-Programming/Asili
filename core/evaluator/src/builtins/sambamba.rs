@@ -28,11 +28,8 @@
 //! which has `rt.module` available, and calls `tenda()` below directly.
 
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-
-use asili_parser::Module;
 
 use super::BuiltinFn;
 use crate::value::{self, EvalError, Value};
@@ -44,13 +41,11 @@ fn handles() -> &'static Mutex<HashMap<u64, JoinHandle<Result<(), String>>>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// `tenda(kazi_jina, hoja...) -> Tokeo<Namba, Neno>` — spawns `kazi_jina` (a module-level `kazi`
-/// found in `module`) on a new OS thread with a `.clone()` of `module` (Module is plain owned
-/// data — Send — so this is a cheap, correct way to give the thread its own copy rather than
-/// trying to share the caller's borrowed Runtime). Returns a handle id on success. The spawned
-/// function's own return value is discarded (see module doc comment) — communicate results back
-/// via `njia`.
-pub(crate) fn tenda(module: &Module, args: &[Value]) -> Result<Value, EvalError> {
+/// `tenda(kazi_jina, hoja...) -> Tokeo<Namba, Neno>` — runs `kazi_jina` (a module-level `kazi`
+/// of `program`) on a new OS thread, on the same engine as the caller (bytecode and native code
+/// for a bytecode program). Returns a handle id on success. The spawned function's own return
+/// value is discarded (see module doc comment) — communicate results back via `njia`.
+pub(crate) fn tenda(program: &crate::spawn::Shared, args: &[Value]) -> Result<Value, EvalError> {
     let kazi_name = super::arg_str(args, 0);
     let raw_args = args.get(1..).unwrap_or(&[]);
     let call_args: Vec<value::SendValue> = match raw_args.iter().map(Value::try_into_send).collect()
@@ -62,21 +57,23 @@ pub(crate) fn tenda(module: &Module, args: &[Value]) -> Result<Value, EvalError>
             ));
         }
     };
-    if !module.functions.iter().any(|f| f.name == kazi_name) {
+    if !program.has_kazi(&kazi_name) {
         return Ok(Value::kosa(format!("tenda: kazi haijulikani: {kazi_name}")));
     }
-    let module_owned = module.clone();
+    let program = program.clone();
     let handle = std::thread::spawn(move || {
         let call_args: Vec<Value> = call_args
             .into_iter()
             .map(value::SendValue::into_value)
             .collect();
-        crate::run_function(&module_owned, &kazi_name, call_args)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        program.with_caller(|call| {
+            call(&kazi_name, call_args)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     });
     let id = NEXT_HANDLE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    handles().lock().unwrap().insert(id, handle);
+    crate::sync::lock(handles()).insert(id, handle);
     Ok(Value::sawa(Value::Namba(id as f64)))
 }
 
@@ -85,7 +82,12 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
         "subiri_tenda".to_string(),
         Box::new(|args: &[Value]| {
             let id = value::as_f64(args.first().unwrap_or(&Value::Hamna)).unwrap_or(0.0) as u64;
-            let handle = handles().lock().unwrap().remove(&id);
+            let handle = crate::sync::lock(handles()).remove(&id);
+            // About to block: show what was printed so far.
+            crate::platform::flush_stdout();
+            if let (Some(h), true) = (&handle, crate::kazi_sawia::tasks_active()) {
+                crate::kazi_sawia::wait_until(|| h.is_finished())?;
+            }
             match handle {
                 None => Ok(Value::kosa(format!(
                     "subiri_tenda: uzi haujulikani au tayari umesubiriwa: {id}"
@@ -100,13 +102,69 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
             }
         }),
     );
+    // `subiri` (the keyword) lowers to this.
+    m.insert(
+        "__subiri".to_string(),
+        Box::new(|args: &[Value]| match args.first() {
+            Some(Value::Ahadi(t)) => crate::kazi_sawia::subiri(t),
+            Some(other) => Ok(other.clone()),
+            None => Ok(Value::Tupu),
+        }),
+    );
+    m.insert(
+        "subiri_zote".to_string(),
+        Box::new(|args: &[Value]| {
+            let tasks = ahadi_list(args.first(), "subiri_zote")?;
+            let mut out = Vec::with_capacity(tasks.len());
+            for t in &tasks {
+                out.push(crate::kazi_sawia::subiri(t)?);
+            }
+            Ok(Value::list(out))
+        }),
+    );
+    m.insert(
+        "subiri_yoyote".to_string(),
+        Box::new(|args: &[Value]| {
+            let tasks = ahadi_list(args.first(), "subiri_yoyote")?;
+            if tasks.is_empty() {
+                return Err(EvalError::TypeErr("subiri_yoyote: orodha tupu".into()));
+            }
+            let (i, outcome) = crate::kazi_sawia::subiri_yoyote(&tasks)?;
+            Ok(Value::Jozi(
+                Box::new(Value::Namba(i as f64)),
+                Box::new(outcome?),
+            ))
+        }),
+    );
+    m.insert(
+        "muda_kikomo".to_string(),
+        Box::new(|args: &[Value]| {
+            let Some(Value::Ahadi(t)) = args.first() else {
+                return Err(EvalError::TypeErr("muda_kikomo inahitaji Ahadi".into()));
+            };
+            let secs = value::as_f64(args.get(1).unwrap_or(&Value::Hamna)).unwrap_or(0.0);
+            Ok(match crate::kazi_sawia::subiri_kwa_muda(t, secs)? {
+                Some(outcome) => Value::Chaguo(Some(Box::new(outcome?))),
+                None => Value::Chaguo(None),
+            })
+        }),
+    );
+    m.insert(
+        "ghairi".to_string(),
+        Box::new(|args: &[Value]| {
+            if let Some(Value::Ahadi(t)) = args.first() {
+                t.cancel();
+            }
+            Ok(Value::Tupu)
+        }),
+    );
     m.insert(
         "njia".to_string(),
         Box::new(|_args: &[Value]| {
-            let (tx, rx) = mpsc::channel::<value::SendValue>();
+            let (tx, rx) = flume::unbounded::<value::SendValue>();
             Ok(Value::Jozi(
-                Box::new(Value::NjiaTx(Arc::new(Mutex::new(tx)))),
-                Box::new(Value::NjiaRx(Arc::new(Mutex::new(rx)))),
+                Box::new(Value::NjiaTx(tx)),
+                Box::new(Value::NjiaRx(rx)),
             ))
         }),
     );
@@ -116,10 +174,10 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
             let kikomo = value::as_f64(args.first().unwrap_or(&Value::Hamna))
                 .unwrap_or(0.0)
                 .max(0.0) as usize;
-            let (tx, rx) = mpsc::sync_channel::<value::SendValue>(kikomo);
+            let (tx, rx) = flume::bounded::<value::SendValue>(kikomo);
             Ok(Value::Jozi(
-                Box::new(Value::NjiaTxBounded(Arc::new(Mutex::new(tx)))),
-                Box::new(Value::NjiaRxBounded(Arc::new(Mutex::new(rx)))),
+                Box::new(Value::NjiaTxBounded(tx)),
+                Box::new(Value::NjiaRxBounded(rx)),
             ))
         }),
     );
@@ -138,4 +196,25 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
             }
         }),
     );
+}
+
+/// The `Ahadi`s of an `Orodha<Ahadi<T>>` argument.
+fn ahadi_list(
+    v: Option<&Value>,
+    name: &str,
+) -> Result<Vec<std::rc::Rc<crate::kazi_sawia::Task>>, EvalError> {
+    let Some(Value::Orodha(items)) = v else {
+        return Err(EvalError::TypeErr(format!(
+            "{name} inahitaji Orodha<Ahadi>"
+        )));
+    };
+    items
+        .iter()
+        .map(|x| match x {
+            Value::Ahadi(t) => Ok(t.clone()),
+            _ => Err(EvalError::TypeErr(format!(
+                "{name}: kila kipengele lazima kiwe Ahadi"
+            ))),
+        })
+        .collect()
 }

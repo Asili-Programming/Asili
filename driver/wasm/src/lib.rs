@@ -1,10 +1,9 @@
-//! Asili Wasm driver — Phase II.
-//! Runs Asili source in a WebAssembly environment (browser via `wasm-browser`, or a standalone
-//! WASI binary via `wasm-wasi`). I/O builtins (chapisha, majira, vigezo, pata_env, etc.) route
-//! through `asili_evaluator`'s platform shim, which picks browser (console.log) vs WASI (real
-//! std io/fs) vs an unconfigured wasm32 no-op default based on which Cargo feature is active.
+//! Asili Wasm driver: runs Asili source in the browser (`wasm-browser`). Programs are lowered to
+//! bytecode and run as native code — a wasm module of their own the page instantiates beside
+//! this one (`asili_evaluator::nguvu::wasm`). I/O builtins (chapisha, majira, …) route through
+//! `asili_evaluator`'s platform shim (console.log / console.error in the browser).
 
-use asili_evaluator::{run_main, EvalError};
+use asili_evaluator::{compile_module_explained, run_bytecode};
 use asili_lexer::tokenize;
 use asili_parser::{merge_modules, parse_tokens, ImportPath, Module};
 use std::collections::HashMap;
@@ -15,8 +14,30 @@ use std::collections::HashMap;
 pub fn run_source(source: &str) -> Result<(), String> {
     let tokens = tokenize(source).map_err(|d| format!("lex: {:?}", d))?;
     let module = parse_tokens(&tokens).map_err(|d| format!("parse: {:?}", d))?;
-    run_main(&module, vec![]).map_err(|e: EvalError| e.to_string())?;
-    Ok(())
+    run_module(&module)
+}
+
+/// Run Asili source on the virtual board (`ubao`), with the scenario's scripted pin levels.
+/// `triples` is the scenario flattened: `saa, pini, hali` repeated, `hali` 0 or non-zero.
+/// Pin and clock events go to the page as they happen (`platform::write_event`).
+pub fn run_board_source(source: &str, triples: &[f64]) -> Result<(), String> {
+    let ingizo = triples
+        .chunks_exact(3)
+        .map(|c| asili_evaluator::ubao::Ingizo {
+            saa: c[0] as i64,
+            pini: c[1] as i64,
+            hali: c[2] != 0.0,
+        })
+        .collect();
+    asili_evaluator::ubao::anza(ingizo);
+    run_source(source)
+}
+
+/// Lower `module` to bytecode and run its `kuu` as native code (a wasm module the page
+/// instantiates beside this one; see `asili_evaluator::nguvu::wasm`).
+fn run_module(module: &Module) -> Result<(), String> {
+    let program = compile_module_explained(module)?;
+    run_bytecode(&program, vec![]).map_err(|e| e.to_string())
 }
 
 /// Run a multi-module Asili program from in-memory sources (no filesystem access, so this is the
@@ -63,8 +84,7 @@ pub fn run_bundle(entry_name: &str, modules: &HashMap<String, String>) -> Result
     }
 
     let merged = merge_modules(&entrypoint, &parsed);
-    run_main(&merged, vec![]).map_err(|e: EvalError| e.to_string())?;
-    Ok(())
+    run_module(&merged)
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
@@ -77,6 +97,12 @@ mod browser_entry {
     #[wasm_bindgen]
     pub fn run(source: &str) -> Result<(), JsValue> {
         run_source(source).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
+    #[wasm_bindgen(js_name = runBoard)]
+    pub fn run_board(source: &str, triples: &[f64]) -> Result<(), JsValue> {
+        super::run_board_source(source, triples).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Multi-module entry point. `modules` is a JS object/Map-like value convertible to

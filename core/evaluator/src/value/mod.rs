@@ -1,39 +1,57 @@
 //! Value model, errors, control flow, and numeric helpers.
 
+// Runtime code never panics on its own: an impossible state is an error the program sees
+// (and its safe state handles), not a crash (see docs/design/safety-critical-roadmap.md §3).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 mod json;
 mod numeric;
+mod text;
+pub use text::Text;
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub use bigdecimal::BigDecimal;
 pub use num_bigint::BigInt;
 
 pub(crate) use numeric::{
-    arg_f64, args_f64_2, as_char, as_f64, as_string, as_u64, assign_f64_op, big_numeric_binary_op,
-    binary_cmp_neno, binary_f64, binary_f64_cmp, format_namba, handle_loop_out, parse_number,
-    to_display_string,
+    arg_f64, args_f64_2, as_char, as_f64, as_string, as_u64, big_numeric_binary_op,
+    binary_cmp_neno, concat_text, format_namba, namba_text, parse_number, to_display_string,
 };
 
-/// Hashable key for Kamusi. Only Neno, Namba, Ukweli, Herufi are allowed as map keys.
-/// Namba uses f64::to_bits() for canonical hashing (NaN is supported).
+/// Hashable key for Kamusi. Only Neno, Namba, Ukweli, Herufi and Baiti are allowed as map keys.
+/// Namba uses f64::to_bits() for canonical hashing (NaN is supported). A `Neno` key shares its
+/// text with the value it came from, so looking a key up or listing keys allocates nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MapKey {
-    Neno(String),
+    Neno(Text),
     Namba(u64),
     Ukweli(bool),
     Herufi(char),
+    Baiti(Rc<[u8]>),
 }
 
 impl MapKey {
     pub fn to_value(&self) -> Value {
         match self {
-            MapKey::Neno(s) => Value::Neno(s.clone()),
+            MapKey::Neno(s) => Value::neno(s.clone()),
             MapKey::Namba(b) => Value::Namba(f64::from_bits(*b)),
             MapKey::Ukweli(b) => Value::Ukweli(*b),
             MapKey::Herufi(c) => Value::Herufi(*c),
+            MapKey::Baiti(b) => Value::Baiti(b.clone()),
         }
     }
 
@@ -43,9 +61,42 @@ impl MapKey {
             Value::Namba(n) => Ok(MapKey::Namba(n.to_bits())),
             Value::Ukweli(b) => Ok(MapKey::Ukweli(*b)),
             Value::Herufi(c) => Ok(MapKey::Herufi(*c)),
+            Value::Baiti(b) => Ok(MapKey::Baiti(b.clone())),
             _ => Err(EvalError::TypeErr(
-                "kamusi: ufunguo lazima uwe Neno, Namba, Ukweli au Herufi".into(),
+                "kamusi: ufunguo lazima uwe Neno, Namba, Ukweli, Herufi au Baiti".into(),
             )),
+        }
+    }
+
+    fn to_send(&self) -> SendKey {
+        match self {
+            MapKey::Neno(s) => SendKey::Neno(s.to_string()),
+            MapKey::Namba(b) => SendKey::Namba(*b),
+            MapKey::Ukweli(b) => SendKey::Ukweli(*b),
+            MapKey::Herufi(c) => SendKey::Herufi(*c),
+            MapKey::Baiti(b) => SendKey::Baiti(b.to_vec()),
+        }
+    }
+}
+
+/// [`MapKey`] owning its text, to cross into another thread inside a [`SendValue`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SendKey {
+    Neno(String),
+    Namba(u64),
+    Ukweli(bool),
+    Herufi(char),
+    Baiti(Vec<u8>),
+}
+
+impl SendKey {
+    fn into_key(self) -> MapKey {
+        match self {
+            SendKey::Neno(s) => MapKey::Neno(s.into()),
+            SendKey::Namba(b) => MapKey::Namba(b),
+            SendKey::Ukweli(b) => MapKey::Ukweli(b),
+            SendKey::Herufi(c) => MapKey::Herufi(c),
+            SendKey::Baiti(b) => MapKey::Baiti(b.into()),
         }
     }
 }
@@ -57,25 +108,47 @@ impl MapKey {
 //   - NambaKuu(BigInt) — arbitrary-precision integer (Namba_Kuu); needs the `num-bigint` crate
 //   - NambaSahihi(BigDecimal) — arbitrary-precision decimal (Namba_Sahihi)
 //   - FixedInt(i64, IntWidth) — Biti8/Biti32/Biti64/uBiti8/uBiti32/uBiti64 distinct from Namba
-// Adding these requires updating all match arms in eval/expr.rs and the bytecode VM.
+// Adding these requires updating all match arms in eval/expr.rs and the bytecode host (`host.rs`).
 // Faili/Mkondo/Kumbukumbu<T> (resource handles) landed below — see docs/design/
 // faili-mkondo-design.md.
+
+/// An identifier in a value (struct, field, enum and variant names): interned, so one pointer
+/// wide and compared by pointer.
+pub use asili_parser::Name;
+
+/// A `Kamusi`'s storage. `foldhash` is several times faster than std's SipHash on short keys and,
+/// like it, seeded per process, so maps built from untrusted keys (HTTP headers) stay resistant
+/// to collision flooding. Iteration order was never stable across runs, and still is not.
+pub type Kamusi = HashMap<MapKey, Value, foldhash::fast::RandomState>;
+/// A `Seti`'s storage (see [`Kamusi`]).
+pub type Seti = HashSet<MapKey, foldhash::fast::RandomState>;
 
 #[derive(Clone)]
 pub enum Value {
     Namba(f64),
-    Neno(String),
+    /// Text; never changed in place, so copies share it.
+    Neno(Text),
+    /// A `sawia` task (`kazi_sawia`): its outcome once it has finished. Bound to the thread
+    /// that started it.
+    Ahadi(Rc<crate::kazi_sawia::Task>),
+    /// Bytes: never changed in place, so copies share them.
+    Baiti(Rc<[u8]>),
     Ukweli(bool),
     Tupu,
     Hamna,
     Chaguo(Option<Box<Value>>),
     Tokeo(Result<Box<Value>, Box<Value>>),
-    Orodha(Vec<Value>),
-    Struct(String, Vec<(String, Value)>),
-    Enum(String, String, Option<Box<Value>>), // enum_name, variant_name, optional_data
+    /// Shared until written: copying a list is a reference-count bump, and a write copies the
+    /// items only while another copy still refers to them ([`Rc::make_mut`]).
+    Orodha(Rc<Vec<Value>>),
+    /// A `umbo` value: its name and fields in declaration order. `umbo` fields are never
+    /// assigned in place, so the fields are shared (`Rc`): copying a struct is a reference-count
+    /// bump, not a copy of its fields.
+    Struct(Name, Rc<[(Name, Value)]>),
+    Enum(Name, Name, Option<Box<Value>>), // enum_name, variant_name, optional_data
     Herufi(char),
     Jozi(Box<Value>, Box<Value>),
-    Kamusi(HashMap<MapKey, Value>),
+    Kamusi(Rc<Kamusi>),
     /// Time: seconds since Unix epoch (majira module).
     Wakati(f64),
     /// Raw memory address (syscall, kiungo).
@@ -99,17 +172,13 @@ pub enum Value {
     Faili(Rc<RefCell<FailiHandle>>),
     /// TCP stream handle. Same drop semantics as `Faili`.
     Mkondo(Rc<RefCell<MkondoHandle>>),
-    /// TCP listening socket (`mkondo_sikiliza`). Unlike `Mkondo`/`Faili`, this genuinely crosses
-    /// thread boundaries by design — `mkondo_tumikia`'s worker pool has every worker thread
-    /// calling `.accept()` on the same listener concurrently (safe: `TcpListener::accept` takes
-    /// `&self`, and the OS itself serializes concurrent accepts on one socket — no lock needed
-    /// on the hot path) — so this is `Arc<TcpListener>`, not `Rc`, the one justified exception
-    /// in the Faili/Mkondo family for the same reason `NjiaTx`/`NjiaRx`/`Fungo` are `Arc`
-    /// instead of `Rc`. No explicit `.funga()`: closing happens only via every `Arc` clone
-    /// (main handle + every worker thread's copy) dropping, which is what actually stopping a
-    /// server means under the "blocks forever" `mkondo_tumikia` model this plan adopted — an
-    /// explicit close while workers still hold clones would be a footgun, not a useful control.
-    MkondoSikilizaji(Arc<std::net::TcpListener>),
+    /// A listening socket (`mkondo_sikiliza`). Shared between threads (`Arc`): a server's
+    /// workers all accept from it, and `.simama()` from any thread stops them all.
+    MkondoSikilizaji(Arc<Sikilizaji>),
+    /// A UDP socket (`udp_fungua`); its time limit for `.pokea()`.
+    MkondoUdp(Rc<MkondoUdp>),
+    /// An open WebSocket (`ws_unganisha`, or a server's WebSocket handler).
+    MkondoWs(Rc<RefCell<WsHandle>>),
     /// A loaded TLS server certificate/key pair, ready to hand to `mkondo_tumikia`
     /// (`tls_sanidi`). `rustls::ServerConfig` is `Send + Sync` by design — every rustls consumer
     /// `Arc`-shares it across connections — so this fits the worker pool's existing
@@ -122,12 +191,12 @@ pub enum Value {
     Kumbukumbu(Box<Value>),
     /// Ordered-by-nothing set (`Seti<T>`); reuses the MapKey hashable-key type Kamusi already
     /// uses. Iteration order is HashSet's (unspecified), same tradeoff Kamusi already accepts.
-    Seti(HashSet<MapKey>),
+    Seti(Rc<Seti>),
     /// Arbitrary-precision integer (Namba_Kuu). No literal syntax — constructed only via
     /// `namba_kuu_kutoka(neno)` parsing a decimal-digit string, or infallibly cast from `Namba`.
-    NambaKuu(BigInt),
+    NambaKuu(Rc<BigInt>),
     /// Arbitrary-precision decimal (Namba_Sahihi). Same construction story as NambaKuu.
-    NambaSahihi(BigDecimal),
+    NambaSahihi(Rc<BigDecimal>),
     /// Channel sender half (njia). Deliberately `Arc<Mutex<_>>` over `SendValue`, not
     /// `Rc<RefCell<Value>>` like every other interior-mutable Value variant — a channel's
     /// entire purpose is crossing the thread boundary `tenda` spawns, so it's the one justified
@@ -136,19 +205,19 @@ pub enum Value {
     /// own `Sync` impl requires `T: Send`, and `Value` isn't unconditionally `Send` — the
     /// `Arc<Mutex<_>>` wrapper alone doesn't fix that, it just moves the requirement one level
     /// up), so the payload type itself has to be the already-restricted one.
-    NjiaTx(Arc<Mutex<std::sync::mpsc::Sender<SendValue>>>),
+    NjiaTx(flume::Sender<SendValue>),
     /// Channel receiver half (njia). Same `SendValue`-payload reasoning as `NjiaTx`.
-    NjiaRx(Arc<Mutex<std::sync::mpsc::Receiver<SendValue>>>),
+    NjiaRx(flume::Receiver<SendValue>),
     /// Bounded channel sender half (`njia_na_kikomo`) — `mpsc::SyncSender`, a distinct Rust type
     /// from `mpsc::Sender` (hence its own `Value` variant rather than an internal enum inside
     /// `NjiaTx`), whose `.send()` blocks once the bound is full instead of growing memory
     /// without limit the way the unbounded `njia()` channel does. This is an additive
     /// constructor alongside `njia()`, not a change to its existing behavior.
-    NjiaTxBounded(Arc<Mutex<std::sync::mpsc::SyncSender<SendValue>>>),
+    NjiaTxBounded(flume::Sender<SendValue>),
     /// Receiver half for a bounded channel. `mpsc::sync_channel` returns a plain
     /// `mpsc::Receiver` (identical to the unbounded case) — reuses `NjiaRx`'s exact payload
     /// type, so no separate receiver variant is needed, only a separate sender one.
-    NjiaRxBounded(Arc<Mutex<std::sync::mpsc::Receiver<SendValue>>>),
+    NjiaRxBounded(flume::Receiver<SendValue>),
     /// Mutex (fungo) — protects a shared value across tenda-spawned threads with **explicit**
     /// `.funga()`/`.fungua()` (lock/unlock), not a Rust-style scoped guard (Asili has no
     /// closures to scope a critical section with). Holds `SendValue` for the same reason
@@ -232,6 +301,7 @@ impl FungoCell {
 pub enum SendValue {
     Namba(f64),
     Neno(String),
+    Baiti(Vec<u8>),
     Ukweli(bool),
     Tupu,
     Hamna,
@@ -244,17 +314,18 @@ pub enum SendValue {
     Tokeo(Result<Box<SendValue>, Box<SendValue>>),
     Orodha(Vec<SendValue>),
     Jozi(Box<SendValue>, Box<SendValue>),
-    Kamusi(HashMap<MapKey, SendValue>),
-    Seti(HashSet<MapKey>),
+    Kamusi(HashMap<SendKey, SendValue>),
+    Seti(HashSet<SendKey>),
     Struct(String, Vec<(String, SendValue)>),
-    Enum(String, String, Option<Box<SendValue>>),
+    Enum(Name, Name, Option<Box<SendValue>>),
     /// `Value`'s `NjiaTx`/`NjiaRx`/`Fungo` already carry `SendValue` payloads (see their own
     /// doc comments on `Value`), so these clone the `Arc` handle directly — no conversion.
-    NjiaTx(Arc<Mutex<std::sync::mpsc::Sender<SendValue>>>),
-    NjiaRx(Arc<Mutex<std::sync::mpsc::Receiver<SendValue>>>),
-    NjiaTxBounded(Arc<Mutex<std::sync::mpsc::SyncSender<SendValue>>>),
-    NjiaRxBounded(Arc<Mutex<std::sync::mpsc::Receiver<SendValue>>>),
+    NjiaTx(flume::Sender<SendValue>),
+    NjiaRx(flume::Receiver<SendValue>),
+    NjiaTxBounded(flume::Sender<SendValue>),
+    NjiaRxBounded(flume::Receiver<SendValue>),
     Fungo(Arc<FungoCell>),
+    MkondoSikilizaji(Arc<Sikilizaji>),
 }
 
 impl Value {
@@ -263,10 +334,20 @@ impl Value {
         Value::Tokeo(Ok(Box::new(v)))
     }
 
+    /// A `Neno` holding `text`.
+    pub fn neno(text: impl Into<Text>) -> Value {
+        Value::Neno(text.into())
+    }
+
+    /// An `Orodha` holding `items`.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::Orodha(Rc::new(items))
+    }
+
     /// `KOSA(ujumbe)` — a failed `Tokeo` carrying a `Neno` message, the error shape every
     /// builtin uses.
     pub fn kosa(ujumbe: impl Into<String>) -> Value {
-        Value::Tokeo(Err(Box::new(Value::Neno(ujumbe.into()))))
+        Value::Tokeo(Err(Box::new(Value::neno(ujumbe.into()))))
     }
 
     /// `None` if `self` is (or transitively contains) a non-`Send` variant
@@ -274,15 +355,16 @@ impl Value {
     pub fn try_into_send(&self) -> Option<SendValue> {
         Some(match self {
             Value::Namba(n) => SendValue::Namba(*n),
-            Value::Neno(s) => SendValue::Neno(s.clone()),
+            Value::Neno(s) => SendValue::Neno(s.to_string()),
+            Value::Baiti(b) => SendValue::Baiti(b.to_vec()),
             Value::Ukweli(b) => SendValue::Ukweli(*b),
             Value::Tupu => SendValue::Tupu,
             Value::Hamna => SendValue::Hamna,
             Value::Herufi(c) => SendValue::Herufi(*c),
             Value::Wakati(s) => SendValue::Wakati(*s),
             Value::Anuani(a) => SendValue::Anuani(*a),
-            Value::NambaKuu(n) => SendValue::NambaKuu(n.clone()),
-            Value::NambaSahihi(n) => SendValue::NambaSahihi(n.clone()),
+            Value::NambaKuu(n) => SendValue::NambaKuu((*n.clone()).clone()),
+            Value::NambaSahihi(n) => SendValue::NambaSahihi((*n.clone()).clone()),
             Value::Chaguo(opt) => SendValue::Chaguo(match opt {
                 Some(v) => Some(Box::new(v.try_into_send()?)),
                 None => None,
@@ -302,32 +384,33 @@ impl Value {
             }
             Value::Kamusi(m) => {
                 let mut out = HashMap::with_capacity(m.len());
-                for (k, v) in m {
-                    out.insert(k.clone(), v.try_into_send()?);
+                for (k, v) in m.iter() {
+                    out.insert(k.to_send(), v.try_into_send()?);
                 }
                 SendValue::Kamusi(out)
             }
-            Value::Seti(s) => SendValue::Seti(s.clone()),
+            Value::Seti(s) => SendValue::Seti(s.iter().map(MapKey::to_send).collect()),
             Value::Struct(name, fields) => {
                 let mut out = Vec::with_capacity(fields.len());
-                for (fname, v) in fields {
-                    out.push((fname.clone(), v.try_into_send()?));
+                for (fname, v) in fields.iter() {
+                    out.push((fname.to_string(), v.try_into_send()?));
                 }
-                SendValue::Struct(name.clone(), out)
+                SendValue::Struct(name.to_string(), out)
             }
             Value::Enum(en, vn, data) => SendValue::Enum(
-                en.clone(),
-                vn.clone(),
+                *en,
+                *vn,
                 match data {
                     Some(v) => Some(Box::new(v.try_into_send()?)),
                     None => None,
                 },
             ),
-            Value::NjiaTx(tx) => SendValue::NjiaTx(Arc::clone(tx)),
-            Value::NjiaRx(rx) => SendValue::NjiaRx(Arc::clone(rx)),
-            Value::NjiaTxBounded(tx) => SendValue::NjiaTxBounded(Arc::clone(tx)),
-            Value::NjiaRxBounded(rx) => SendValue::NjiaRxBounded(Arc::clone(rx)),
+            Value::NjiaTx(tx) => SendValue::NjiaTx(tx.clone()),
+            Value::NjiaRx(rx) => SendValue::NjiaRx(rx.clone()),
+            Value::NjiaTxBounded(tx) => SendValue::NjiaTxBounded(tx.clone()),
+            Value::NjiaRxBounded(rx) => SendValue::NjiaRxBounded(rx.clone()),
             Value::Fungo(cell) => SendValue::Fungo(Arc::clone(cell)),
+            Value::MkondoSikilizaji(l) => SendValue::MkondoSikilizaji(Arc::clone(l)),
             // MkondoSikilizaji (Arc<TcpListener>) and TlsUsanidi (Arc<rustls::ServerConfig>) are
             // technically Send-safe on their own, but mkondo_tumikia's worker pool spawns and
             // manages its own threads directly rather than routing through tenda/SendValue —
@@ -336,10 +419,12 @@ impl Value {
             #[cfg(not(target_arch = "wasm32"))]
             Value::TlsUsanidi(_) => return None,
             Value::KashaGC(_)
+            | Value::Ahadi(_)
             | Value::KashaGCDhaifu(_)
             | Value::Faili(_)
             | Value::Mkondo(_)
-            | Value::MkondoSikilizaji(_)
+            | Value::MkondoUdp(_)
+            | Value::MkondoWs(_)
             | Value::Kumbukumbu(_) => return None,
         })
     }
@@ -349,35 +434,40 @@ impl SendValue {
     pub fn into_value(self) -> Value {
         match self {
             SendValue::Namba(n) => Value::Namba(n),
-            SendValue::Neno(s) => Value::Neno(s),
+            SendValue::Neno(s) => Value::neno(s),
+            SendValue::Baiti(b) => Value::Baiti(b.into()),
             SendValue::Ukweli(b) => Value::Ukweli(b),
             SendValue::Tupu => Value::Tupu,
             SendValue::Hamna => Value::Hamna,
             SendValue::Herufi(c) => Value::Herufi(c),
             SendValue::Wakati(s) => Value::Wakati(s),
             SendValue::Anuani(a) => Value::Anuani(a),
-            SendValue::NambaKuu(n) => Value::NambaKuu(n),
-            SendValue::NambaSahihi(n) => Value::NambaSahihi(n),
+            SendValue::NambaKuu(n) => Value::NambaKuu(std::rc::Rc::new(n)),
+            SendValue::NambaSahihi(n) => Value::NambaSahihi(std::rc::Rc::new(n)),
             SendValue::Chaguo(opt) => Value::Chaguo(opt.map(|v| Box::new(v.into_value()))),
             SendValue::Tokeo(res) => Value::Tokeo(match res {
                 Ok(v) => Ok(Box::new(v.into_value())),
                 Err(v) => Err(Box::new(v.into_value())),
             }),
             SendValue::Orodha(items) => {
-                Value::Orodha(items.into_iter().map(SendValue::into_value).collect())
+                Value::list(items.into_iter().map(SendValue::into_value).collect())
             }
             SendValue::Jozi(a, b) => {
                 Value::Jozi(Box::new(a.into_value()), Box::new(b.into_value()))
             }
-            SendValue::Kamusi(m) => {
-                Value::Kamusi(m.into_iter().map(|(k, v)| (k, v.into_value())).collect())
+            SendValue::Kamusi(m) => Value::Kamusi(Rc::new(
+                m.into_iter()
+                    .map(|(k, v)| (k.into_key(), v.into_value()))
+                    .collect(),
+            )),
+            SendValue::Seti(s) => {
+                Value::Seti(Rc::new(s.into_iter().map(SendKey::into_key).collect()))
             }
-            SendValue::Seti(s) => Value::Seti(s),
             SendValue::Struct(name, fields) => Value::Struct(
-                name,
+                name.into(),
                 fields
                     .into_iter()
-                    .map(|(n, v)| (n, v.into_value()))
+                    .map(|(n, v)| (n.into(), v.into_value()))
                     .collect(),
             ),
             SendValue::Enum(en, vn, data) => {
@@ -388,6 +478,7 @@ impl SendValue {
             SendValue::NjiaTxBounded(tx) => Value::NjiaTxBounded(tx),
             SendValue::NjiaRxBounded(rx) => Value::NjiaRxBounded(rx),
             SendValue::Fungo(cell) => Value::Fungo(cell),
+            SendValue::MkondoSikilizaji(l) => Value::MkondoSikilizaji(l),
         }
     }
 }
@@ -403,75 +494,65 @@ impl Drop for FailiHandle {
     }
 }
 
-/// The backing stream a `Mkondo` handle wraps — plain TCP, or a TLS session negotiated over TCP.
-/// Distinguishing these as an enum (rather than a second `Value`/`MkondoHandle` type for TLS)
-/// means `.soma()`/`.andika()`/`.funga()` (`eval/expr.rs`) stay completely unchanged: they call
-/// through `MkondoStream`'s own `Read`/`Write` impls below, which dispatch to whichever variant
-/// is active. `mkondo_unganisha`'s plaintext client path constructs `Wazi`; `mkondo_tumikia`'s
-/// TLS branch (when a `TlsUsanidi` is passed) constructs `Salama` after a successful handshake.
-///
-/// `Salama`'s payload is boxed — `rustls::StreamOwned` is large relative to a bare `TcpStream`,
-/// and boxing keeps the common (plaintext) case of `Value::Mkondo`'s `Rc<RefCell<MkondoHandle>>`
-/// from paying that size cost when TLS isn't in use at all.
-pub enum MkondoStream {
-    Wazi(std::net::TcpStream),
-    #[cfg(not(target_arch = "wasm32"))]
-    Salama(Box<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>>),
+/// A listening socket.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Sikilizaji = asili_mtandao::Listener;
+/// No sockets in the browser.
+#[cfg(target_arch = "wasm32")]
+pub type Sikilizaji = std::convert::Infallible;
+
+/// An open connection (`mkondo_unganisha`, `.kubali()`, a server's worker): its stream (`None`
+/// once closed), the bytes read ahead by `.soma_mstari()`, and the time limit of each read or
+/// write (`.weka_muda`). Closed by `.funga()` or when dropped (TLS ends with `close_notify`).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct MkondoHandle {
+    pub stream: Option<asili_mtandao::Stream>,
+    pub buffered: Vec<u8>,
+    pub timeout: Option<std::time::Duration>,
 }
 
-impl std::io::Read for MkondoStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            MkondoStream::Wazi(s) => s.read(buf),
-            #[cfg(not(target_arch = "wasm32"))]
-            MkondoStream::Salama(s) => s.read(buf),
+#[cfg(not(target_arch = "wasm32"))]
+impl MkondoHandle {
+    pub fn new(stream: asili_mtandao::Stream) -> Self {
+        MkondoHandle {
+            stream: Some(stream),
+            buffered: Vec::new(),
+            timeout: None,
         }
     }
 }
 
-impl std::io::Write for MkondoStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            MkondoStream::Wazi(s) => s.write(buf),
-            #[cfg(not(target_arch = "wasm32"))]
-            MkondoStream::Salama(s) => s.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            MkondoStream::Wazi(s) => s.flush(),
-            #[cfg(not(target_arch = "wasm32"))]
-            MkondoStream::Salama(s) => s.flush(),
-        }
-    }
-}
-
-impl Drop for MkondoStream {
-    fn drop(&mut self) {
-        // TLS requires a protocol-level `close_notify` before the underlying TCP socket closes
-        // — a bare TCP close (what happens for free on `Wazi`) is indistinguishable to the peer
-        // from a truncation attack, and rustls correctly treats it as an error
-        // ("peer closed connection without sending TLS close_notify") rather than a clean EOF.
-        // Without this, every `.funga()`/scope-exit/drop of a TLS `Mkondo` handle would make the
-        // *peer's* next read fail even though every application byte arrived correctly.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let MkondoStream::Salama(s) = self {
-            use std::io::Write as _;
-            s.conn.send_close_notify();
-            let _ = s.flush();
-        }
-    }
-}
-
-/// Owns an open TCP stream (plain or TLS); same drop discipline as `FailiHandle`.
-pub struct MkondoHandle(pub Option<MkondoStream>);
-
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for MkondoHandle {
     fn drop(&mut self) {
-        let _ = self.0.take();
+        if let Some(s) = self.stream.as_mut() {
+            s.close_now();
+        }
     }
 }
+
+/// No sockets in the browser.
+#[cfg(target_arch = "wasm32")]
+pub struct MkondoHandle(pub std::convert::Infallible);
+
+/// A UDP socket and the time limit of a `.pokea()`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct MkondoUdp {
+    pub udp: asili_mtandao::Udp,
+    pub timeout: std::cell::Cell<Option<std::time::Duration>>,
+}
+
+/// No sockets in the browser.
+#[cfg(target_arch = "wasm32")]
+pub struct MkondoUdp(pub std::convert::Infallible);
+
+/// A WebSocket (`None` once closed by `.funga()`).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct WsHandle(pub Option<asili_mtandao::ws::Ws>);
+
+/// No sockets in the browser.
+#[cfg(target_arch = "wasm32")]
+pub struct WsHandle(pub std::convert::Infallible);
 
 // Manual Debug impl (not #[derive]) so raw/REPL output uses Asili's own variant names —
 // `Tokeo`/`Chaguo` wrap Rust's `Result`/`Option`, whose derived Debug would otherwise print
@@ -482,6 +563,8 @@ impl std::fmt::Debug for Value {
         match self {
             Value::Namba(n) => f.debug_tuple("Namba").field(n).finish(),
             Value::Neno(s) => f.debug_tuple("Neno").field(s).finish(),
+            Value::Baiti(b) => f.write_str(&asili_parser::bytes_literal(b)),
+            Value::Ahadi(t) => write!(f, "Ahadi({t:?})"),
             Value::Ukweli(b) => f.debug_tuple("Ukweli").field(b).finish(),
             Value::Tupu => write!(f, "Tupu"),
             Value::Hamna => write!(f, "Hamna"),
@@ -520,13 +603,35 @@ impl std::fmt::Debug for Value {
                 let open = cell.borrow().0.is_some();
                 write!(f, "Faili({})", if open { "wazi" } else { "imefungwa" })
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Value::Mkondo(cell) => {
-                let open = cell.borrow().0.is_some();
+                let open = cell.borrow().stream.is_some();
                 write!(f, "Mkondo({})", if open { "wazi" } else { "imefungwa" })
             }
+            #[cfg(target_arch = "wasm32")]
+            Value::Mkondo(cell) => match cell.borrow().0 {},
+            #[cfg(not(target_arch = "wasm32"))]
             Value::MkondoSikilizaji(listener) => {
-                write!(f, "MkondoSikilizaji({:?})", listener.local_addr())
+                write!(f, "MkondoSikilizaji({})", listener.local_addr())
             }
+            #[cfg(target_arch = "wasm32")]
+            Value::MkondoSikilizaji(listener) => match **listener {},
+            #[cfg(not(target_arch = "wasm32"))]
+            Value::MkondoUdp(u) => write!(f, "MkondoUdp({})", u.udp.local_addr()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Value::MkondoWs(w) => write!(
+                f,
+                "MkondoWs({})",
+                if w.borrow().0.is_some() {
+                    "wazi"
+                } else {
+                    "imefungwa"
+                }
+            ),
+            #[cfg(target_arch = "wasm32")]
+            Value::MkondoWs(w) => match w.borrow().0 {},
+            #[cfg(target_arch = "wasm32")]
+            Value::MkondoUdp(u) => match u.0 {},
             #[cfg(not(target_arch = "wasm32"))]
             Value::TlsUsanidi(_) => write!(f, "TlsUsanidi"),
             Value::Kumbukumbu(v) => f.debug_tuple("Kumbukumbu").field(v).finish(),
@@ -557,6 +662,8 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Namba(a), Value::Namba(b)) => a == b,
             (Value::Neno(a), Value::Neno(b)) => a == b,
+            (Value::Baiti(a), Value::Baiti(b)) => a == b,
+            (Value::Ahadi(a), Value::Ahadi(b)) => Rc::ptr_eq(a, b),
             (Value::Ukweli(a), Value::Ukweli(b)) => a == b,
             (Value::Tupu, Value::Tupu) => true,
             (Value::Hamna, Value::Hamna) => true,
@@ -580,14 +687,16 @@ impl PartialEq for Value {
             (Value::Faili(a), Value::Faili(b)) => Rc::ptr_eq(a, b),
             (Value::Mkondo(a), Value::Mkondo(b)) => Rc::ptr_eq(a, b),
             (Value::MkondoSikilizaji(a), Value::MkondoSikilizaji(b)) => Arc::ptr_eq(a, b),
+            (Value::MkondoUdp(a), Value::MkondoUdp(b)) => Rc::ptr_eq(a, b),
+            (Value::MkondoWs(a), Value::MkondoWs(b)) => Rc::ptr_eq(a, b),
             (Value::Kumbukumbu(a), Value::Kumbukumbu(b)) => a == b,
             (Value::Seti(a), Value::Seti(b)) => a == b,
             (Value::NambaKuu(a), Value::NambaKuu(b)) => a == b,
             (Value::NambaSahihi(a), Value::NambaSahihi(b)) => a == b,
-            (Value::NjiaTx(a), Value::NjiaTx(b)) => Arc::ptr_eq(a, b),
-            (Value::NjiaRx(a), Value::NjiaRx(b)) => Arc::ptr_eq(a, b),
-            (Value::NjiaTxBounded(a), Value::NjiaTxBounded(b)) => Arc::ptr_eq(a, b),
-            (Value::NjiaRxBounded(a), Value::NjiaRxBounded(b)) => Arc::ptr_eq(a, b),
+            (Value::NjiaTx(a), Value::NjiaTx(b)) => a.same_channel(b),
+            (Value::NjiaRx(a), Value::NjiaRx(b)) => a.same_channel(b),
+            (Value::NjiaTxBounded(a), Value::NjiaTxBounded(b)) => a.same_channel(b),
+            (Value::NjiaRxBounded(a), Value::NjiaRxBounded(b)) => a.same_channel(b),
             (Value::Fungo(a), Value::Fungo(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -615,7 +724,7 @@ pub enum ErrorKind {
     Unavailable,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EvalError {
     Panic(String),
     UndefinedVar(String),
@@ -668,21 +777,6 @@ impl From<&EvalError> for ErrorKind {
             | EvalError::Unknown(_) => ErrorKind::Internal,
         }
     }
-}
-
-#[derive(Debug)]
-pub enum EvalOut {
-    Return(Value),
-    Break(Option<String>),
-    Continue(Option<String>),
-    Next,
-}
-
-#[derive(Debug)]
-pub(crate) enum LoopAction {
-    Continue,
-    Break,
-    Propagate(EvalOut),
 }
 
 #[cfg(test)]

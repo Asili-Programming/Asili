@@ -6,13 +6,233 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
 ### Added
+
+- **Virtual board (`ubao`)**: `ubao_andika(pini, hali)` and `ubao_soma(pini)` drive and read
+  pins, `ubao_subiri(ms)` moves the board's clock, `ubao_saa()` reads it. Pin calls need a
+  `#[wazi]` grant (`SEM121`). Pin reads come from a scripted scenario, so a run is reproducible;
+  every write, read and clock step is recorded as an event. Design:
+  `docs/design/peripheral-io-design.md`. The browser build (`asili-wasm`'s `runBoard`) sends each
+  event to the page on the console channel, tagged, so the playground can draw the board.
+- **WebSocket**: `ws_unganisha(anwani, chaguo?: ChaguoMkondo)` connects to `ws://` or `wss://` and
+  gives a `MkondoWs` with `.tuma(Neno)`, `.tuma_baiti(Baiti)`, `.pokea()` / `.pokea_neno()` (the
+  next message, `Hamna` once the peer closes) and `.funga()`. A server answers an upgrade request
+  with `JibuHttp { hali: 101, ws: "kazi" }`: `kazi` runs once per connection as a `sawia` task and
+  receives the `MkondoWs`. Pings are answered by the protocol layer.
+- **HTTP/3 (QUIC)**: `ChaguoSeva { h3: kweli }` also answers on UDP, on the listener's address
+  (the TLS configuration is needed); `ChaguoHttp { h3: kweli }` sends the request over HTTP/3
+  with the same redirects, retries and cookies as HTTP/1.1 and HTTP/2; connections are reused.
+  Both use `tls_sanidi` / `cheti_ca` as HTTPS does.
+- **`http_ombi` on hyper, with HTTP/2**: the client speaks HTTP/1.1 or HTTP/2 (chosen by ALPN),
+  keeps connections open per thread, and waits through the `sawia` runtime, so a task doing a
+  request lets the thread's other tasks run. Proxies (HTTP via CONNECT, SOCKS5, and
+  `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` including IPv4 ranges), private roots, mutual
+  TLS, redirects, retries, cookies, gzip/brotli, charsets, size limits and `hifadhi` behave as
+  before. The `ureq` dependency is gone from the evaluator (`pata-package` still uses it).
+
+- **HTTP server on hyper: HTTP/2, streaming, server-sent events, compression, limits,
+  graceful stop**: `mkondo_tumikia_http` now speaks HTTP/1.1 and HTTP/2 (ALPN over TLS, or
+  prior knowledge in the clear) and runs every request as a `sawia` task, so one worker thread
+  answers many requests at once; `mkondo_tumikia` runs each connection the same way.
+  `OmbiHttp` gains `sehemu` (decoded path), `hoja` (decoded query), `mwili_baiti`, `mteja` and
+  `toleo`; a `JibuHttp` can stream its body from a channel (`mwili_njia`) — with the new
+  `tukio_sse` for server-sent events — or send bytes (`mwili_baiti`), and `sababu` sets the
+  reason phrase. Text bodies are compressed (brotli, gzip) for clients that accept it. New
+  `ChaguoSeva` (5th argument): `kikomo_mwili` (request body limit, `413` beyond it), `muda`,
+  `bana`, `muda_kuzima`. Stopping the listener (`.simama()`) lets open connections finish,
+  then the call returns.
+
+- **UDP**: `udp_fungua(anwani)` gives a `MkondoUdp` with `.tuma_kwa(anwani, data)`,
+  `.pokea(kikomo?)` (the datagram as `Baiti` and its sender), `.unganisha(anwani)` and `.tuma`
+  (a default peer), `.anwani()`, `.weka_muda(sekunde)`, `.tangaza(kweli)` (broadcast) and
+  `.jiunge_kikundi(anwani)` (multicast). Waits in a `sawia` task let the thread's other tasks run.
+
+- **Sockets on one network layer (`asili-mtandao`, on tokio)**: `mkondo_unganisha` connects over
+  TCP, TLS (`ChaguoMkondo`: `tls`, `jina_seva`, `muda`, `cheti_ca`, client `cheti`/`ufunguo`,
+  `familia_ip`) or a Unix socket (`"unix:/njia"`); `Mkondo` gains `.soma_mstari()`,
+  `.soma_kamili(n)`, `.funga_kuandika()`, `.anwani_mbali()`, `.anwani_yangu()` and
+  `.weka_muda(sekunde)`; `mkondo_sikiliza` takes `ChaguoSikiliza` (`tumia_tena`, `foleni`) and
+  Unix addresses, binds port 0 to any free port, and its `MkondoSikilizaji` gains `.kubali()`,
+  `.anwani()` and `.simama()` — stopping ends `mkondo_tumikia`/`mkondo_tumikia_http`, which no
+  longer block forever. New `tafuta_anwani` (DNS). Inside a `sawia` task, a socket wait lets the
+  thread's other tasks run: one thread serves many connections at once. Connecting, listening and
+  TLS live in the new `core/mtandao` crate, one place for every network builtin.
+
+- **`sawia kazi` and `subiri`: tasks whose waits overlap**: calling a `sawia kazi` starts a task
+  and gives its `Ahadi<T>`; `subiri a` waits for its value (a `paparika` in the task comes out
+  of the `subiri`). While one task waits (`lala`, a `njia`, `subiri`), the thread's other tasks
+  run — 100 tasks that each sleep 0.2 s finish in about 0.2 s. `sambamba` gains `anzisha`
+  (start any function as a task), `subiri_zote`, `subiri_yoyote` (the first to finish, with its
+  position), `muda_kikomo` (wait at most n seconds) and `ghairi`; an `Ahadi` has
+  `.imekwisha()` and `.ghairi()`. Cancelling is cooperative: the task's current or next wait
+  returns an error. A call returns only when every task it started has finished. Each task has
+  its own stack (4 MiB, committed as used), driven by one event loop per thread; `njia`
+  channels now work from both tasks and threads. New checks: `SEM106` (`kazi kuu` cannot be
+  `sawia`), `SEM107` (`subiri` needs an `Ahadi`). `.asb` format 20.
+
+- **`Baiti`, a byte type**: `b"..."` literals (printable ASCII, other characters as UTF-8,
+  escapes `\n \t \r \0 \\ \"` and `\xNN`), `+`, comparison, `b[i]` (a `Namba` 0–255),
+  `kwa x katika b`, `linganisha` patterns and `Kamusi`/`Seti` keys; methods `urefu`, `kata`,
+  `tafuta`, `ina`, `anza_na`, `maliza_na`, `gawanya`, `geuza`, `kwa_neno` (strict UTF-8),
+  `kwa_orodha`, `hex`, `base64`, `hashi_sha256`, `hashi_sha512`, `soma_nambari` (big- or
+  little-endian unsigned); `Neno.baiti()`, `kama Baiti`/`kama Neno`; builtins `baiti`,
+  `baiti_ya_nambari`, `soma_baiti`/`andika_baiti`/`ongeza_baiti`, `base64_fumbua_baiti`,
+  `hex_fumbua`; `Faili`/`Mkondo` `.soma_baiti()` and `.andika` of bytes. JSON writes bytes as
+  base64. `.asb` format 19.
+- **Editor word lists generated**: the VS Code grammar's type and builtin-function patterns and
+  the playground's keyword and type lists are generated from the compiler's own lists
+  (`pata-core`'s `editor_word_lists` test), replacing stale hand-kept copies.
+
+- **Builtin signatures in one place, with names and descriptions**: `core/parser/src/builtins.rs`
+  now writes every builtin as an Asili signature (`name(p: T, q?: T, ...r: T) -> R`) with a
+  Swahili description, and builtin `umbo`s (`OmbiHttp`, `JibuHttp`, `ChaguoHttp`) that programs
+  use without declaring them (`?` fields may be left out of a literal). The analyzer checks
+  optional and variadic parameters from it (replacing a hard-coded list), the editor shows
+  parameter names and descriptions in hover, signature help and completion, and
+  `lib/std/*.asi` is generated from it (`ASILI_GOLDEN=write cargo test -p pata-core
+  stdlib_stubs`) instead of written by hand.
+
+- **HTTP client, regular expressions, encodings and hashes**: `mfumo` gains one HTTP client,
+  `http_ombi(njia, anwani, chaguo?: ChaguoHttp) -> Tokeo<JibuHttp, Neno>`: any method; headers,
+  query, text/base64/JSON/form/multipart/file bodies; Basic and Bearer auth; timeouts; redirects
+  (never HTTPS→HTTP, credentials dropped across origins); retries with `Retry-After`; HTTP and
+  SOCKS proxies; IPv4/IPv6; custom roots and client certificates (mutual TLS); an opt-in cookie
+  jar; a body limit; streaming to a file; base64 bodies; charset decoding; gzip and brotli;
+  keep-alive pools shared across threads. The response is the server's `JibuHttp`, with
+  `sababu`, `anwani`, `toleo`, `vichwa_vyote` and `muda` added. A new `ruwaza` module has
+  `ruwaza_inalingana`, `ruwaza_tafuta`, `ruwaza_zote`, `ruwaza_vikundi` (capture groups),
+  `ruwaza_badilisha` (`$1`/`${jina}` replacements) and `ruwaza_gawanya` — linear-time,
+  Unicode-aware, an invalid pattern a `Kosa`, compiled patterns cached per thread. A new
+  `usimbaji` module has `base64_simba`/`base64_fumbua`, `hex_simba`, `hashi_sha256`,
+  `hashi_sha512`, `hmac_sha256` and `kitambulisho` (random UUID v4, repeatable after
+  `nasibu_mbegu`).
+
+- **Random numbers, dates, directories, paths and programs**: `hisabati` gains `nasibu_kamili`
+  (whole numbers in a range), `nasibu_mbegu` (a seed: the same numbers every run),
+  `changanya` (shuffle) and `chagua_nasibu`; `majira` gains `kwa_iso` / `kutoka_iso`
+  (ISO 8601, with offsets), `umbiza_eneo` (another time zone by offset), `kutoka_tarehe`,
+  `tarehe` (calendar fields as a `Kamusi`) and `kipima_muda` (a monotonic clock); `faili`
+  gains `orodha_saraka`, `unda_saraka`, `futa_saraka`, `badili_jina`, `nakili`, `ni_saraka`,
+  `ni_faili` and the path functions `njia_unganisha`, `njia_mzazi`, `njia_jina`,
+  `njia_kiendelezi` and `njia_kamili`; `mfumo` gains `weka_env` and `endesha` (run a program:
+  its output, or an error with its exit code and stderr).
+
+- **Text, list, map and set methods**: `Neno` gains `safisha` (and `safisha_mwanzo`,
+  `safisha_mwisho`), `jaza_kushoto`/`jaza_kulia` (padding), `jaza` (`{}` templates), `herufi`,
+  `mistari`, `geuza`, `misimbo` and `kwa_namba` (a fallible parse, where `kama Namba` gives 0);
+  `Orodha` gains `panga`, `panga_kwa` (by a key function), `geuza`, `kata`, `ina`, `tafuta`,
+  `kubwa`, `ndogo`, `jumla`, `kipekee`, `kwanza`, `mwisho`, `tupu`, `ongeza_zote` and `futa_zote`;
+  `Kamusi` gains `ondoa`, `thamani`, `vipengele` and `futa_zote`; `Seti` gains `muungano`,
+  `makutano`, `tofauti` and `ni_sehemu_ya`. On an `Orodha<Namba>` the list methods run on the
+  list's compact numeric storage (a new `ListMethod` instruction) and list results stay typed:
+  integer lists sort by radix sort, integer sums that cannot pass 2^53 are added as machine
+  integers (bit-identical, about 5x faster than a native loop over a million elements), and
+  `ina`/`tafuta`/`kubwa`/`ndogo`/`kipekee` loop over the stored representation; a generic list
+  holding only numbers takes the same code, so both give the same answers. `.asb` format
+  version 16.
+- **String escapes**: `\r`, `\0` and `\u{…}` (a code point in hexadecimal) in text, and `\r` and
+  `\0` in character literals; `pata nadhifu` writes control characters back as escapes.
+
+- **Assurance documents** (`docs/assurance/`): the toolchain's safety requirements with IDs
+  (`requirements.md`), a requirement-to-test traceability matrix generated from `// Verifies:
+  REQ-…` comments on tests (`traceability.md`; `tests/traceability.rs` fails when a requirement
+  verified by test has none, a test names an unknown requirement, or the matrix is stale), a
+  risk register in ISO 14971 form, and tool-qualification and SOUP evidence with the toolchain's
+  limits — the language's contribution to an IEC 62304 file, not a certification. New tests for
+  the IR verifier and for device build errors.
+
+- **Cortex-M target for strict code** (`pata jenga --lengo cortex-m`): every `#[salama]`
+  function is compiled to Thumb-2 for ARMv7E-M with the `fpv5-d16` unit by `nguvu` itself — a
+  new encoder (`t32.rs`, every encoding checked against `llvm-mc`) and code generator
+  (`codegen_t32.rs`, the IR's 64-bit integers in register pairs, only callee-saved registers
+  allocated) — and written as `kilele/<jina>-cortex-m.o`, an ELF object a firmware links, with
+  `kilele/<jina>.h` declaring `int32_t asili_<kazi>(const hoja *, double *matokeo)` (0 on
+  success, non-zero when the call failed). `driver/kifaa` (`asili-kifaa`) is the `no_std` device
+  runtime: list access, `fmod`/`pow`, conversions; strict functions taking lists are inlined into
+  their callers on the device. `tests/kifaa.rs` (a new CI job) runs the `kidhibiti` example,
+  hand-written cases and random strict programs under `qemu-arm -cpu cortex-m7` and requires
+  every result to equal native code's bit for bit. See `docs/howto/07-build-for-cortex-m.md`.
+
+- **Compiler assurance**: an IR verifier (`nguvu/verify.rs`) checks every function after
+  lowering and after the optimizer (and after each pass in debug builds): registers and blocks
+  exist, operand classes match, nothing is read before it is written. A differential fuzzer
+  (`tests/fuzz.rs`) generates random numeric programs and requires optimized and unoptimized
+  native code (`nguvu::Options`) to agree bit for bit — 300 in `cargo test`, 2,000 in a CI
+  step, and 100 run as wasm against native code by `agree.sh`. Builds are checked to be
+  reproducible (byte-identical `.asb` and native image), and loading an `.asb` now verifies its
+  bytecode (`bytecode_verify.rs`) — a damaged file naming a register, jump target, function or
+  constant that does not exist is rejected before native code runs it.
+
+- **Failure discipline**: a program's `#[hali_salama]` `kazi` (no parameters, at most one) is its
+  safe state — it runs once, on a fresh host, whenever the program fails in a way it cannot
+  recover from: an error leaving `kuu`, a fault inside the runtime (a panic hook; shipped builds
+  abort on panic), the watchdog expiring, or the memory limit being passed. New `mfumo` builtins:
+  `mlinzi_anza(ms)` / `mlinzi_lisha()` arm and feed a watchdog (expiry enters the safe state and
+  exits with code 5); `kikomo_kumbukumbu(baiti)` limits the program's memory, counted by the
+  runner's allocator and reported as an error at native code's next host call. Runtime modules
+  deny `unwrap`/`expect`/`panic!`/`unreachable!` (a new CI clippy step): impossible states are
+  errors the program sees, and poisoned locks are recovered (`sync::lock`). Tests in
+  `pata/runner/tests/hali_salama.rs`. The `.asb` format is now version 15 (it records the safe
+  state).
+
+- **Strict code (`#[salama]`)**: a `kazi` marked `#[salama]` must keep to a subset whose
+  worst-case time and memory are known at build time — `Namba`/`Ukweli`/`Orodha<Namba>`
+  parameters, loops only `kwa i kutoka a hadi b` with build-time bounds and an unassigned
+  counter, no recursion, strict callees only, and no instruction that allocates or calls out.
+  Breaking a rule is a build error naming the function and line (`salama.rs`); `pata jenga`
+  prints each strict function's bound on steps per call and on frame memory. New example
+  `examples/kidhibiti` (a bounded controller step); the Sudoku benchmark now reports the worst
+  run beside the best (native 5.2 ms best, 5.8 ms worst over 20 runs; clang C 6.6 / 9.3 ms).
+  Strict code allocates nothing while it runs: list copies reuse the destination register's
+  storage (`NumList::clone_from`) and pooled frames keep their lists' storage, so a strict call
+  doing a thousand times the work allocates exactly what one doing it once does
+  (`tests/salama_memory.rs`, a counting allocator); `kumbukumbu` bounds the frame memory.
+
+- **WebAssembly backend (`nguvu::wasm`)**: in the browser build (the playground) programs now
+  run as native code too — `nguvu` compiles a program's optimized IR to one wasm module that the
+  page instantiates beside the build, sharing its memory and function table, so the host calls
+  each function through a function pointer exactly as it calls machine code elsewhere, and
+  generated code reaches the runtime table with `call_indirect`. Control flow is structured from
+  the dominator tree (Ramsey, "Beyond Relooper"). The Sudoku solver runs in 177 ms for the whole
+  Node process (it took about a second on the tree-walker), and `driver/wasm/tests/agree.sh`
+  (a new CI job) checks that every example prints exactly what native code prints. The pointer
+  fields native code reads (`Host`'s first three, a list's length) are 64-bit words on every
+  target. WASI builds have no way to load a module and cannot run programs.
+
+- **Tracing (Pata-Trace)**: a new `asili-trace` crate gives the compiler and runtime one API
+  (`emit`, `enter` spans, `phase` spans) and three outputs chosen at start-up with
+  `ASILI_FUATILIA` or `--fuatilia[=namna]` (`pata jenga`, `pata tenda`): `mti`, an indented tree
+  with Swahili labels and span durations; `json`, OpenTelemetry-shaped spans and events, one per
+  line; `binari:<faili>`, fixed 4-byte frames (event id, depth, source line) that
+  `pata fuatilia <faili>` decodes back into the tree. Traced: build phases and the parser's
+  blocks and recovery; `kazi` calls, bindings, builtin calls and errors (once, where they first
+  leave a `kazi`) on the tree-walker; calls, builtin calls and errors through native code's host.
+  Off by default, at one atomic load per hook: every benchmark is within noise. Design and
+  limits in `docs/design/tracing.md`.
+
+- **Separators**: `;` may separate statements (`weka a = 1; weka b = 2`), never required; a
+  trailing comma is allowed in every comma-separated list (list and map literals, call
+  arguments, parameters, `umbo` fields, `jenum` variants); `[thamani; idadi]` builds `idadi`
+  copies of `thamani` (`[0; 500]`, compiled to the same list-repeat instruction as
+  `orodha_rudia`). These lists share one parser routine (`comma_list`), and a dead second copy
+  of the list and map literal parsers is gone.
+
+- **Standalone executables**: `pata jenga --namna release` also writes `kilele/<jina>` (`.exe`
+  on Windows), the static runner with the program's bytecode and native image appended
+  (`asili_evaluator::bundle`; trailing data every executable loader ignores), so `./kilele/jina`
+  runs the program directly with no other files, no `pata`, and no external linker. The runner
+  checks itself for the payload at start-up (the Sudoku solver: 2.2 ms for the whole process,
+  the same as `tenda kilele/sudoku.asb`). `make install` now installs `tenda` beside `pata`,
+  where release builds find it (or set `ASILI_TENDA`).
 
 - **Cross-language Sudoku benchmark** (`examples/sudoku/bench/`): C, Rust and Python solvers
   using the exact MRV algorithm from `examples/sudoku/src/kuu.as`, plus `run.sh`, which builds
   everything and reports the best wall time per implementation after checking that every
   solver reports the same attempt count (90,665).
-- **Ahead-of-time native code** (`core/evaluator/src/aot.rs`): `pata jenga` lowers bytecode
+- **Ahead-of-time native code** (`core/evaluator/src/aot.rs`; the LLVM backend described here
+  has since been replaced by `nguvu`, above): `pata jenga` lowers bytecode
   artifacts to LLVM IR (no C source involved), optimizes and links it with `clang -O2` into
   `kilele/<name>.so` (`.dylib`/`.dll`), and `pata tenda`, `pata jenga --tenda` and the
   standalone runner load it when it was built from exactly the same bytecode (hash-checked);
@@ -24,6 +244,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   non-negative integers becomes an integer division, and list accesses whose index is proven
   in range drop their bounds check. The Inkala Sudoku solve runs in about 4.8 ms (gcc `-O2` C:
   4.4 ms; clang `-O2` C: 3.2 ms). `ASILI_AOT=0` disables it, `ASILI_CLANG` picks the compiler.
+- **In-house native backend `nguvu`** (`core/evaluator/src/nguvu/`), the only native tier:
+  compiles register bytecode straight to x86-64 or AArch64 machine code with no external compiler,
+  assembler or linker — lowering to a typed IR (same range analysis, speculation and
+  deoptimization protocol as before) with full unrolling of small constant-bound `kwa` loops;
+  then constant folding, an IR interval analysis (widening at loop heads, then narrowing) that
+  deletes guards and comparisons it proves, if-conversion of small branches to `cmov`/flag
+  arithmetic, bit-test fusion, summed single-bit tests as `popcnt` (only where the CPU has
+  it; images record the extensions they need), division by constants over proven small
+  ranges as multiply-and-shift (`p // 9` is `(p * 57) >> 9`), local value reuse, constant
+  hoisting, liveness-based dead-code elimination, and a priority register allocator with
+  copy coalescing. `pata jenga` writes the position-independent code to
+  `kilele/<name>.nguvu` (hash-, ABI-, architecture- and CPU-feature-checked); `pata tenda` and
+  the standalone runner map it (`ASILI_NGUVU=1` compiles in memory when it is missing,
+  `ASILI_NATIVE_TRACE=1` prints every deoptimization). Sudoku solve (process time minus an
+  empty run): nguvu ≈ 2.6 ms, clang `-O2` C ≈ 3.1 ms, gcc `-O2` C ≈ 4.7 ms; whole process on
+  the standalone runner 7.2 ms (clang C 6.5 ms, gcc C 8.1 ms — the difference is the
+  runner's start-up). `examples/sudoku/bench/run.sh` times the runner and both C compilers at
+  0.1 ms resolution.
+- **AArch64 native code**: `nguvu` also targets arm64 (`a64.rs` encoder, verified word for word
+  against GNU `as`; `codegen_a64.rs`, AAPCS64 with 23 allocatable integer and 29 float
+  registers, `cnt` for population counts, instruction-cache maintenance after mapping). The
+  register allocator and block scheduling are shared between targets; images record their
+  architecture. The engine differential tests pass on arm64 (CI runs them on
+  `ubuntu-24.04-arm`).
+- **`dist` build profile** (fat LTO, one codegen unit, `panic = "abort"`) for shipped binaries,
+  and non-PIE static builds for the musl targets (`.cargo/config.toml`). The standalone runner
+  built with `--profile dist --target x86_64-unknown-linux-musl` starts in ~0.7 ms (the
+  dynamically linked release build: ~2 ms), which makes the whole Sudoku run faster than
+  clang-compiled C: 6.0 ms vs 6.5 ms in `run.sh` (which now builds the runner that way and also
+  times statically linked C).
+- **Windows and macOS native code**: `nguvu` generates x86-64 code for the Microsoft x64
+  calling convention on Windows (positional argument registers, 32-byte shadow space,
+  `rsi`/`rdi`/`xmm6`–`xmm15` preserved in full, stack probes for frames over a page) and maps it
+  with `VirtualAlloc`/`VirtualProtect`; on macOS it maps code with `MAP_JIT` (toggling Apple
+  silicon's per-thread JIT write protection) and falls back to the plain mapping. Images record
+  the calling convention. Verified under wine for Windows; CI runs the evaluator tests on
+  Linux arm64, macOS 14 (Apple silicon) and Windows.
+- **Direct native calls**: a `kazi` whose parameters and result are all `Namba`/`Buliani` and
+  that uses no lists or generic values gets a second native entry that native callers reach
+  with a plain `call`/`bl` (arguments in a per-frame buffer, no interpreter frame). The call
+  depth limit (10,000, `undani mno`) and a stack-headroom check still apply — hitting either
+  falls back to the interpreter at that call — and a deoptimization inside a directly called
+  function resumes it in the interpreter with its registers. `fib(32)`: 1.7 s → 39 ms.
+- **Integer lists**: `Orodha<Namba>` storage (`numlist.rs`) keeps a list's elements as `i64`
+  words while every element converts exactly (no `-0.0`, NaN, ±∞ or fraction) and as `f64`
+  bits otherwise; reading is unchanged for programs. Native code keeps lists the analysis
+  proves integer-valued in integer words and reads them with plain loads — no
+  float/integer conversions in the Sudoku hot loop.
 - **Cross-tier differential tests** (`tests/native_tiers.rs`): every snippet must give
   bit-identical results on the VM interpreter and the AOT native code (signed zeros,
   NaN/infinities, values past 2^53, negative remainders, out-of-range shifts, out-of-bounds
@@ -50,8 +318,335 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-publishes diagnostics only for open documents that are, or transitively import, that file,
   and leaves other projects' documents alone (previously every open document was re-analyzed).
 
+- **`pata.toml`'s `asili` version is checked**: `pata` refuses to build a project whose
+  `[jumla] asili = "X.Y"` needs a newer language minor version, or a different major version,
+  than the toolchain implements (currently 1.1), with a Swahili error saying which; a malformed
+  value is reported too. `pata njozi` writes the toolchain's own version instead of a hardcoded
+  string.
+
+- **`pata jenga --namna release`**: a build profile that guarantees native code. The program must
+  compile to bytecode (otherwise the build fails naming the `kazi` and line the VM can't lower
+  yet) and `clang` must build the native library (otherwise the build fails instead of noting
+  it). `dev` stays the best-effort default; `--namna embedded` and unknown profiles are now
+  rejected instead of silently accepted. The Sudoku benchmark builds with `--namna release`.
+
 ### Changed
 
+- The VS Code extension and the browser playground moved out of this repository into their own:
+  [asili-vscode](https://github.com/Asili-Programming/asili-vscode) (was `extensions/vscode/`)
+  and [asili-playground](https://github.com/Asili-Programming/asili-playground) (was
+  `examples/playground/`), each building against an Asili checkout. `make install-ext` and the
+  TypeDoc part of the API docs went with the extension. `editor_word_lists` now checks the two
+  repositories' word lists through `ASILI_VSCODE_DIR` / `ASILI_PLAYGROUND_DIR`, and their CI runs
+  it.
+
+- The repository moved to the `Asili-Programming` organization:
+  <https://github.com/Asili-Programming/Asili>, with the wiki alongside it and the API
+  documentation at <https://asili-programming.github.io/Asili/>. Old `victorKariuki/Asili` links
+  redirect; the old GitHub Pages address does not.
+
+- The HTTP server writes header names in lowercase (`content-length`), as HTTP/2 requires;
+  header names are case-insensitive in HTTP/1.1.
+
+- `mkondo_tumikia`/`mkondo_tumikia_http` workers limit each read and write to 30 s through the
+  connection itself (as before, with the new layer); `.soma()` on a `Mkondo` now replaces invalid
+  UTF-8 instead of failing. A `MkondoSikilizaji` (and `TlsUsanidi`) is a shared handle: passing
+  it on (to `tenda` too) no longer moves it.
+
+- **`sawia` and `subiri` are keywords** (breaking): a variable or function with either name must
+  be renamed.
+
+- **One table of built-in method result types**: the analyzer's types for built-in methods and
+  the bytecode compiler's (for following method chains) were two separate lists; both now read
+  `asili_parser::builtins::method_return_type`.
+
+- **`pata jaribu` runs tests as native code**: each module is built once to bytecode and
+  native code (`NativeProgram`), and every test, `#[kabla]`/`#[baada]` fixture and timed test
+  runs on a fresh host. Line coverage comes from native code too: a coverage build marks each
+  statement (`Opcode::Line`, only under `CompileOptions::lines`, with inlining off), so the
+  tree-walker no longer tracks lines.
+
+- **The REPL runs native code**: `pata repl` keeps the session's variables as values
+  (`ReplSession`) and compiles each line into a function that takes them as parameters and
+  returns the line's value with every variable it leaves; a line that fails leaves them as they
+  were. An unknown name is reported in the semantic checker's words. The `(undani: N)` line is
+  gone with the tree-walker REPL (`run_block`, `run_block_in_env*`).
+
+- **The debugger runs native code**: `pata-dap` builds the program with statement marks that
+  also name the visible locals (`CompileOptions { lines, bindings }`), and the host reports each
+  statement to the debugger: breakpoints pause the native code, and the variables view shows the
+  locals visible at the paused line (innermost wins) and the predefined names. The tree-walker's
+  debugger hook is gone.
+
+- **Signal handlers under native code**: a signal registered with `sikiliza_ishara` now runs
+  its `kazi` in native code as well — the host checks for a pending signal whenever native code
+  calls into it (before each instruction it runs and each call it makes); before, only the
+  tree-walker dispatched them.
+
+- **Every construct lowers to bytecode**: pattern `weka (a, b) = e`, module constants computed
+  from expressions (`thabiti TAU = 2.0 * PI`, run once by an init function before the first
+  call), maps with computed keys, calls to a `kazi` whose name a local shadows, `tupa` of a binding
+  from an enclosing scope, and method calls whose receiver type is only known at run time (the
+  host dispatches to the program's own `umbo`/`jenum` methods, inherent before trait, with the
+  tree-walker's error messages) now compile to bytecode and native code. The only construct left
+  is `tupa` of an outer binding inside a loop. `.asb` bytecode version 14.
+
+- **Method calls classified by pointer**: bytecode method instructions carry the method's
+  interned `Name` (encoded as before), and the host decides whether a method is a pure or an
+  in-place one by comparing it against interned copies of the method tables instead of
+  comparing strings. Map loop −3.5%, string building −2.4% (instructions).
+
+- **Leaner calls between numeric functions**: a direct native entry now takes two arguments
+  (host, registers) instead of four, reads the runtime table and its stack limit from the host
+  only when it needs them, and returns its number in a float register with status 0 instead of
+  through memory. Slow paths that rejoin hot code are no longer mistaken for loops (which
+  aligned them with executed padding and over-weighted register choices after them), and
+  `a + b` / `a * b` compute straight into `b`'s register when it is the destination. Recursive
+  `fib(30)`: 178.7 → 132.9 million instructions, 13.4 → 11.0 ms; a list loop −8%. Native ABI 11.
+
+- **List pushes in place**: native code appends to a numeric list itself when the list has room
+  — one store, and the new length written into the list (`NumList` is `repr(C)`, length first) —
+  and calls the runtime only to grow it, which then hands over all of the new allocation as
+  room. Building a 1 M-element list and summing it: 119.6 → 37.8 million instructions. Native ABI
+  10.
+
+- **Direct calls for simple value instructions**: native code boxes numbers and booleans,
+  copies values and loads constants (`BoxNum`, `BoxBool`, `ValMov`, `ConstVal`) by calling one
+  small runtime function each, instead of a round trip through the host's general instruction
+  path. Map loop −9%, string building −6% (instructions). Native ABI 9 includes the new
+  entries.
+
+- **Linear string building**: a `Neno` is now a `Text` — one allocation (counts, length,
+  capacity, then the bytes), one pointer wide, shared by copies like before — that grows in
+  place when no other copy holds it. `s = s + t` appends in place on both engines
+  (`ops::assign_in_place`, one rule for both), so building a string in a loop is amortized
+  linear instead of copying the whole string at every step; a copy, a list entry or a map key
+  sharing the text is never changed. The strings workload: 830 → 427 million instructions,
+  71 → 60 ms (Python 64 ms).
+
+- **Inlining and structs in registers**: when bytecode is compiled, a call to a function whose
+  body is a single `rejesha` of a small expression (no calls, methods, indexing or `?`) is
+  replaced by that expression, guarded by a new `CheckDepth` instruction so the call-depth
+  error happens exactly where the call would have raised it. Then a `umbo` value that never
+  leaves its function — only built, copied and read field by field — is kept as one register per
+  field, and a field built from a number as a numeric register, so a loop that builds and reads
+  such structs is plain native numeric code. A loop updating a 2-field struct through a helper
+  function 1 M times: ~170 ms → 3 ms (1,805 → 9 million instructions). x86-64 functions now
+  save only the callee-saved registers they use. `.asb` bytecode format 13, native ABI 9.
+
+- **Smaller values**: a `Value` is 32 bytes instead of 56, so every copy, move and drop on
+  both engines is cheaper. Struct, field, enum and variant names in values are interned
+  `Name`s (one pointer, compared by pointer); `Kamusi`, `Seti`, `Namba_Kuu` and `Namba_Sahihi`
+  are shared behind an `Rc` — copying a map or set no longer copies its entries, and writing to
+  a copy copies them once, only while another copy still refers to them (as `Orodha` already
+  did). The host reuses one argument buffer for builtin and method calls, and a trace span costs
+  nothing while tracing is off. Tree-walker Sudoku: 11.53 → 9.95 billion instructions;
+  natively, a map-heavy loop −12%, a struct-heavy loop −11%, string building −6%.
+
+- **Mwalimu re-parses only what an edit touched**: the language server keeps each open
+  document's parse (`asili_parser::IncrementalParser`) and, on an edit, re-lexes and re-parses
+  only the top-level items whose text changed, reusing the rest; the result is always exactly a
+  full parse (anything it cannot prove safe — a half-typed item — is parsed whole). Linting
+  reuses that tree (`pata_lint::lint_module_with_config`) instead of parsing the document a
+  second time. A one-line edit in a 2,260-line file: ~2.3 → ~0.7 ms to parse.
+
+- **Faster, reproducible native builds**: nguvu lowers and compiles each function on its own
+  thread (up to one per core, threads taking the next function as they finish, the image laid
+  out in the same order as before). The range analysis joins block states in place instead of
+  allocating a merged copy per edge, and finds widening thresholds by binary search. Native
+  images were not reproducible — the backend iterated `HashMap`s seeded randomly per process,
+  so two builds of the same program could differ — and now use `FxHashMap` throughout, so the
+  same program always gives the same bytes. Images are identical to the sequential build for
+  every example. Sudoku: the native phase 32 → 22 ms, `pata jenga --namna release` ~50 → ~40
+  ms; a 27-function program 816 → ~200 ms on 4 cores.
+
+- **Interned names**: identifiers in the syntax tree (variables, parameters, `kwa` variables,
+  pattern bindings, `kazi` names) are `asili_parser::Name`s — a pointer to the one copy of the
+  text in a process-wide table, with its hash computed once. The tree-walker's scopes compare
+  names by pointer instead of by bytes, and its builtins are found by the precomputed hash
+  instead of SipHash over the text. Syntax trees serialize names as text, so `.asb` files are
+  unchanged. The Sudoku solver with `ASILI_AOT=0`: 13.53 → 11.53 billion instructions (−14.8%);
+  parsing the 60,000-line file also drops to ~17 ms, since repeated names are no longer copied.
+  `FxHasher` moved from the evaluator's `env.rs` to `asili_parser` beside `Name`.
+
+- **Token kinds**: every `Token` now carries a `kind` (`asili_lexer::TokenKind`: one variant per
+  keyword and punctuation, plus `Ident`, `Number`, `Str`, `Char`), and the parser compares kinds
+  instead of lexeme strings. `tk!("weka")` names a kind at compile time and rejects text that
+  is not a token. Operator precedence and prefix operators are `match`es on the kind; operands
+  borrow the lexeme instead of copying it. The lexer reuses one character buffer per file and
+  joins two-character operators without allocating. On a 60,000-line file: tokenizing 55 → 26
+  ms, parsing 36 → 19.6 ms. Syntax trees and parser errors are identical on the 874-file
+  corpus (snippets, examples, `lib/std`).
+
+- **Faster tree-walker**: the stack-space check runs every 16 nesting levels rather than at
+  each expression and block; the common expressions (numbers, names, indexing, arithmetic)
+  are handled before the rest, and all `Namba` arithmetic and comparison goes through one
+  function (`number_op`). Assignment updates a binding in place, and `Neno` comparisons no
+  longer allocate. The Sudoku solver with `ASILI_AOT=0` runs 13.6% fewer instructions (15.67 →
+  13.53 billion).
+
+- **Expressions live in one arena per module**: `Module::exprs` (`Exprs`) holds every
+  expression node contiguously, and a node refers to its children by `ExprId` (a `u32` index)
+  instead of `Box<Expr>`; statements hold the ids of their expressions. Walking, cloning,
+  serializing and dropping expressions is a pass over one array, however deep the nesting. The
+  parser's expression machine pushes finished nodes straight into the arena;
+  `merge_modules` copies imported functions' expressions across (`Exprs::import`, children
+  first, no recursion); `Exprs::descendants` is the one whole-expression walk (pata-lint's
+  unused-local check uses it instead of its own copy of the LSP's walk). Every syntax tree in
+  the 832-snippet corpus is identical to the boxed version once ids are inlined; the
+  tree-walker's speed is unchanged. `.asb` formats bumped (syntax tree 5, bytecode 12).
+
+- **Flat parser**: blocks, expressions and patterns are parsed by non-recursive state machines
+  (`core/parser/src/parse/{block,expr,pattern}.rs`) with explicit heap stacks — a precedence
+  (Pratt) operator/operand stack for expressions, a frame stack for blocks whose `}` runs the
+  frame's transition (`ikiwa` chains, loops, `linganisha` arms) — instead of ~15 mutually
+  recursive functions. Error recovery is one synchronize step: skip to the next `;` or the `}`
+  closing the current block (over balanced pairs and braces the failed statement opened), so
+  each broken block is reported once and parsing resumes. Every syntax tree in the repository's
+  832 snippets (files, test sources, doc examples) is identical to before; on broken input the
+  first error is unchanged and cascades are gone. Nesting stays capped at 1,000 (`PAR073`) as a
+  policy for the passes that still walk the tree recursively.
+
+- **Native code no longer guesses**: `nguvu` keeps a `Namba` register as `i64` only when the
+  range analysis proves it; the ±2^53 speculation guards, deoptimization (`STATUS_DEOPT`) and
+  resuming the VM part-way through a call are gone, along with `ASILI_NATIVE_TRACE`. Two new
+  proofs cover the counters that used to need a guess — `i * i <= n` bounds `i`, and loop
+  accumulators are capped by trip count × largest increment — and a direct native call that is
+  too deep or short of stack goes through the VM's call path (`RtFn::CallVm`) instead of
+  falling back. The analysis also stopped re-queuing blocks whose capped state had not changed,
+  which made it give up (all floats) on the sieve. Loop headers are aligned to 32 bytes.
+  Every benchmark is at parity or faster (sieve 20.7 → 18.7 ms; Sudoku 3.9 ms whole process vs
+  4.3 ms for clang `-O2` C, 90,665 attempts). Native image format 8.
+
+- **Threads and server handlers run on bytecode and native code**: `tenda`,
+  `mkondo_tumikia` and `mkondo_tumikia_http` used to run their `kazi` on the tree-walker, with
+  a copy of the syntax tree per thread and a fresh interpreter (builtin table included) per
+  connection. A bytecode program and its native code are now shared between threads
+  (`spawn::Shared`); each thread or server worker builds one VM and serves every call with it,
+  including when the spawning `kazi` is itself left to the tree-walker. Four threads computing
+  `fib(27)`: 296 → 4.4 ms; an HTTP handler computing `fib(18)`: 2.5 ms → 0.13 ms per request.
+  Programs calling these builtins are no longer left to the tree-walker for that reason, and a
+  program's own `kazi` named like one of them shadows it. `.asb` bytecode version 10 (struct and
+  field names are interned constants, so a program holds no thread-local data).
+- **No example leaves a `kazi` to the tree-walker any more**: calls to `tenda` and the server
+  loops compile (they are now in the builtin table, which each engine intercepts), and methods
+  of handle types (`Mkondo`, `Faili`, channels, `Fungo`) compile on receivers whose type is not
+  known where they are called. Each receiver kind's state-free methods are listed once
+  (`PURE_METHODS`); the separate by-name list that had drifted from it is gone.
+
+- **Program output is block-buffered when stdout is not a terminal** (the runner, `pata tenda`,
+  `pata jenga --tenda`): `chapisha` used to cost one `write` system call per line even into a
+  pipe or file; output now goes out in 32 KiB writes, as C's stdio does. It is flushed before
+  reading input, before writing to stderr (so the two stay in order in one log), before
+  blocking (`lala`, accepting a connection, reading a stream, `pokea`, `subiri_tenda`), on
+  `toka`, on a panic, and at the end of the run; on a terminal each line still appears as it is
+  printed. Printing 200,000 lines to a file: 70 → 22 ms.
+
+- **Leaner `nguvu` code**: arithmetic results and list elements computed before a branch are
+  reused in its arms (with loads after a store to the same element forwarded from the stored
+  register); calls no longer spill arguments that are already in their stack slots and
+  rematerialize constants instead of saving them; frames hold slots only for values that can
+  need one; memory operands use 8-bit or no displacements where they fit. Bubble sort of 3,000
+  elements: 6.1 → 5.6 ms (C: 5.1 ms). Division and remainder by any constant are a multiply
+  by a rounded reciprocal and a shift (exact for every integer the native tier holds, |a| ≤ 2^53)
+  instead of a hardware divide on x86-64, and for unsigned operands on AArch64: `(s + i * 7 +
+  i // 3) % 1000003` over 20 million `i` runs in 70 ms (was 124 ms; gcc `-O2` C: 84 ms). Images
+  are rebuilt (`IMAGE_VERSION` 6).
+- **`shughuli ya` methods compile to bytecode**: every method (inherent and trait) becomes a
+  bytecode function (`Umbo::njia`, `Umbo<Sifa>::njia`); a call whose receiver's `umbo` is known
+  where it is compiled (a typed parameter such as `self`, a typed local, or one built from a
+  `umbo` literal) is a direct call, resolved inherent-first as the tree-walker does, and the
+  tree-walker's own method calls reach compiled methods through the VM. Interpreted `kazi`
+  across the examples: 10 → 8.
+- **Cheaper `umbo` values**: a struct's name and field names are shared (`Rc<str>`) instead of
+  copied into every value, so copying a struct copies only its field values; calling a
+  `shughuli ya` method on the tree-walker no longer deep-copies the method's syntax tree. A
+  particle simulation over 100 `umbo` values × 2,000 steps: 4.9 s (tree-walker, before
+  structs lowered to bytecode) → 354 ms (bytecode) → 275 ms.
+- **`umbo` copies are a reference-count bump**: fields are never assigned in place, so a struct's
+  fields are shared (`Rc<[…]>`) instead of copied with it; a field declared `Namba` on a
+  receiver whose `umbo` is known where it is compiled loads straight into a numeric register
+  (`Opcode::FieldNum`, no boxed arithmetic afterwards), and field loads try the declared
+  position before searching by name. `tupa` on a binding of the innermost scope compiles to
+  bytecode (it releases the register's value). The particle simulation above: 275 → 106 ms.
+  `.asb` bytecode version 8.
+- **`Orodha` values are shared until written**: a generic list is `Rc<Vec<Value>>`; copying one
+  (`clona`, passing it, `kwa … katika`'s snapshot, boxing a register) is a reference-count
+  bump, and `ongeza`/`badilisha`/`ingiza`/`ondoa` copy the items only while another copy still
+  refers to them. The tree-walker's `kwa … katika` moves items out of an unshared list instead
+  of copying them.
+- **`Neno` values are shared**: text is never changed in place, so a `Neno` is an `Rc<str>` and
+  copying one (reading a list element, passing an argument, loading a string constant — now
+  materialized once per VM) is a reference-count bump. Concatenation and `kama Neno` write
+  their result straight into its single allocation; `urefu` checks for ASCII without `\r` in
+  one vectorizable pass. Iterating a 1,000-word list 5,000 times: 483 → 384 ms.
+- **Faster `kwa … katika` over generic lists**: each item is read by one instruction
+  (`IterItem`, index unboxed) straight into the loop variable, and typed receivers written with
+  spaces (`Orodha < Neno >`) now reach the typed fast paths (`w.urefu()` is `ValLen`, not a
+  by-name method call). The 1,000-word loop: 384 → 125 ms. `.asb` bytecode version 9.
+  `ASILI_BYTECODE_DUMP=1 pata jenga` prints each compiled `kazi`'s instructions.
+- **`Kamusi` and `Seti` hash with `foldhash`** instead of std's SipHash: several times faster on
+  short keys and, like SipHash, seeded per process, so maps of untrusted keys (HTTP headers)
+  stay resistant to collision flooding. `Neno` keys share their text with the value they came
+  from, so looking a key up, inserting one or listing `funguo` copies no text (only values sent
+  to another thread own theirs). Counting words in a `Kamusi`: 64 → 56 ms (instructions −8 %
+  from the keys alone).
+- **More receivers typed where they are compiled**: a list literal whose items share a type is an
+  `Orodha<T>` (`["a", "b"]` is `Orodha<Neno>`), indexing an `Orodha<T>` gives a `T`, and a call
+  of the program's own `kazi` has its declared return type even when a builtin shares its name;
+  `clona()` of a `Neno` or `Orodha` is a register copy rather than a by-name method call.
+- **Cheaper string building, part two**: `+` on two `Neno` values borrows both and allocates
+  the result once at its final size (operands are no longer copied first, and nothing
+  reallocates); whole numbers are formatted by a direct digit writer; `urefu` of ASCII text
+  without `\r` is its byte length; and the VM skips re-copying a string constant into a
+  register that still holds it. String building (200,000 × `"kipengele " + (i kama Neno)`):
+  29 → 20 ms.
+- **More of the language on the bytecode VM and native code**: `linganisha` (every pattern
+  kind, through one matcher shared with the tree-walker), `umbo` literals and field access,
+  `jenum` construction, map literals with literal keys, and the predefined names (`Ukomo`,
+  `Siyo_Namba`, `PI`, … — now one table for both engines) lower to bytecode. Across the
+  examples, `kazi` left to the tree-walker went from 44 to 10 (what remains: `tupa`,
+  `shughuli ya` method calls, and the builtins that start tree-walker threads).
+  `ASILI_BYTECODE_REPORT=1` lists the `kazi` a build leaves to the tree-walker. `.asb`
+  bytecode version 7.
+- **Mixed-mode execution**: a `kazi` the bytecode compiler cannot lower no longer sends the whole
+  program to the tree-walker. It becomes a stub (`Opcode::Interpreted`) that runs its body on
+  a reusable tree-walker (`BytecodeProgram` now carries the module's syntax tree for them),
+  and the tree-walker's calls to compiled `kazi` go back to the VM and native code. All 15
+  runnable examples now build to bytecode (2 did before) with unchanged output;
+  `pata jenga --namna release` still requires every `kazi` to lower. `.asb` bytecode version 6.
+- **`pata jenga` builds bytecode for every program that lowers to it**: the default (`dev`)
+  profile used to emit bytecode only when some `kazi` contained a loop, so recursive programs
+  ran on the tree-walker; now any program the bytecode compiler accepts gets the VM and native
+  code. `fib(25)` from a plain `pata jenga`: 189 → 2.1 ms.
+- **Faster tree-walker** (still what runs any program the bytecode compiler cannot lower):
+  calling a `kazi` no longer deep-copies its whole body (AST) on every call; variables live in
+  one flat vector of bindings per run instead of a hash map per block (no allocation to enter
+  a block, names up to 22 bytes stored inline, FxHash instead of SipHash for globals); integer
+  literals skip the general float parser. `fib(25)`: 189 → 67 ms.
+- **A leaner standalone runner**: the static (musl) `tenda` now carries its own memory
+  allocator (`asili_evaluator::alloc`: per-thread size-class free lists, no locks or atomics on
+  the fast path, 64 KiB chunks from the system allocator) and its own `memcpy`/`memmove`/
+  `memset`/`memcmp` (`pata/runner/mem`: overlapping unaligned loads for up to 64 bytes,
+  `rep movsb` beyond), replacing musl's, which locked on every allocation and copied short
+  strings a byte at a time. String building (200,000 × `"kipengele " + (i kama Neno)`):
+  99 → 29 ms, now faster than the glibc build (35 ms); Sudoku 3.8 → 3.6 ms.
+- **Lists as narrow as their numbers**: `Orodha<Namba>` storage keeps integers in 1, 2, 4 or
+  8 bytes — unsigned when no element is negative — and widens the whole list the first time a
+  value does not fit (a fraction, `-0.0`, NaN or ±∞ switches it to `f64`), so a list of flags
+  or digits takes one byte per element on every engine; reads return exactly what was stored.
+  Native code picks a width per list from the range analysis and reads and writes it with
+  narrow loads and stores (never 16-bit ones: a 16-bit store read back soon after measured
+  twice as slow), deoptimizing if a list turns out not to fit. Sieve of Eratosthenes to 5
+  million: 40 MB → one byte per flag, 69 → 23 ms (gcc C with `char` flags: 17 ms); the Sudoku
+  solve 4.1 → 3.4 ms; `ABI_VERSION` 7, `IMAGE_VERSION` 7.
+- **Faster strings on every engine**: `Neno + Neno` appends to the left operand instead of
+  copying both into a new string, whole numbers format as integers (`kama Neno`, printing and
+  string building; same text), `urefu` counts ASCII text without Unicode segmentation (CR LF
+  still counts as one), `kama` no longer allocates for the target type's name, and the VM calls
+  state-free methods on the receiver in place instead of copying it. The VM's `urefu` opcode
+  now shares the method's counting instead of its own copy. Building 200,000 strings of the form
+  `"kipengele " + (i kama Neno)` and summing their lengths: 233 → 92 ms.
 - **Indexing an `Orodha` returns the element**: `a[i]` is now the element itself and an
   out-of-range index stops the program with `paparika: fahirisi nje ya mipaka: i (urefu n)`,
   instead of yielding a `Tokeo` that every read had to unwrap with `?`. `a[i]?` and `jaribu a[i]`
@@ -103,8 +698,153 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Orodha.jiunge`/`kwa_neno` (and string building) now print NaN and infinities the same way as
   `kama Neno` does (`Siyo_Namba`, `Ukomo`, `-Ukomo`) instead of Rust's `NaN`/`inf`.
 
+### Removed
+
+- **The tree-walking evaluator**: every program runs as native code — machine code on x86-64
+  and AArch64, a wasm module in the browser — and nothing interprets a syntax tree any more
+  (`eval/expr.rs`, `eval/stmt.rs`, `runtime.rs`, `Env`, `TreeContext`, `Engine::Tree`,
+  `Shared::Tree`, `EvalOut`, `eval_expr`, `run_function_with_builtins`/`_with_telemetry`/
+  `_with_metrics`, `load_asb` for syntax-tree artifacts). `eval/` keeps only the shared value
+  semantics (`ops`, `methods`, `pattern`). `run_function` and `run_main` keep their signatures and
+  build native code. The differential tests compare native code with the tree-walker's recorded
+  results (`tests/golden/`). Running everything natively found a real bug, fixed here: the host
+  pooled finished frames without dropping their generic values, so a `Mkondo` or `Faili` a `kazi`
+  held stayed open until the frame was reused — now released when the call returns.
+
+- **WASI build** (`asili_wasi`, the `wasm-wasi` features): a WASI runtime cannot instantiate the
+  wasm module a program compiles to, so the browser build is the one wasm target.
+
+- **Syntax-tree artifacts and the native fallback**: `pata jenga` always writes bytecode (both
+  profiles fail on a program that does not lower, naming the `kazi` and line); a native platform
+  runs only native code — the image beside the artifact, or native code compiled at start-up —
+  and an old syntax-tree `.asb` asks to be rebuilt. `ASILI_AOT` is gone, and with it the
+  benchmark's tree-walker row; build caches read the module back from the syntax tree a bytecode
+  artifact carries. Native trace spans now carry the `kazi`'s source line. (wasm keeps the
+  tree-walker until `nguvu` has a WebAssembly backend.)
+
+- **Mixed mode**: a `kazi` the bytecode compiler cannot lower no longer runs on the
+  tree-walker beside native code (`Opcode::Interpreted`, the host's tree-walker contexts and the
+  tree-walker's hook back into native code are gone). A program lowers as a whole or not at all;
+  `ASILI_BYTECODE_REPORT` is gone with it (`pata jenga --namna release` names the blocking
+  `kazi` and line).
+
+- **The register VM**: bytecode no longer has an interpreter. Every bytecode program runs as
+  `nguvu` native code — the image `pata jenga` wrote, or compiled in memory at start-up when it
+  is missing or stale (`ASILI_NGUVU=1` is no longer needed) — with generic operations calling
+  back into its host (`host.rs`, split out of `bytecode.rs`: frames, `exec_slow`, builtins,
+  calls; the interpreter loop is deleted). Where no backend exists (wasm, other CPUs,
+  `ASILI_AOT=0`) the tree-walker runs the program: bytecode artifacts now always carry the
+  syntax tree (`.asb` bytecode version 11). Native speed is unchanged and every benchmark prints
+  the same output on both engines; the fallback is ~10× slower than the VM was (Sudoku 0.95 s
+  vs 0.09 s). `Engine::Interpreter` is now `Engine::Tree`; the Sudoku benchmark's `asili-vm` row
+  is `asili-mti`. `pata jenga` now says `kilele kitaendeshwa bila msimbo asilia` when native code
+  was not built.
+
 ### Fixed
 
+- Returning `Tokeo::Kosa(e)`, `Tokeo::Sawa(v)` or `Chaguo::Hamna` from a function declared
+  `-> Tokeo<T, E>` / `-> Chaguo<T>` was rejected (`SEM026`).
+
+- The HTTP server (`mkondo_tumikia_http`) sent a body in answer to `HEAD`, corrupting the next
+  response on a keep-alive connection, and an empty reason phrase for every status but 200, 400,
+  404, 500 and 501 (`HTTP/1.1 201 `). `OmbiHttp.vichwa` names are now lowercase, as the client's
+  already were (and as HTTP/2 requires).
+
+- `kwa_json` (and `http_ombi`'s `json`) writes a whole number as `3`, not `3.0`, which servers
+  reading an integer require.
+- `Chaguo::Kuna(x)` is a `Chaguo<T>` to the analyzer, so it can be passed where a builtin takes
+  one (`mkondo_tumikia`'s `tls`).
+
+- **`jaribu` propagates**: in a `kazi` returning `Tokeo`/`Chaguo`, `jaribu x` stopped the whole
+  program on an error instead of returning it to the caller as documented (and as `x?` does);
+  it now returns it. Where the function cannot return the error (`kuu() -> Tupu`), it still
+  stops the program. `.asb` format version 17.
+- **`.asi` stubs with generic parameters**: the stub reader split parameters at every comma, so
+  a parameter typed `Kamusi<Neno, Neno>` read as two.
+
+- **`umbiza` before 1970**: formatting a time before the epoch panicked (a negative duration)
+  and stopped the program; dates now follow the Gregorian calendar either side of 1970.
+
+- **Text positions count characters**: `Neno.kata` sliced by byte offset (cutting a multi-byte
+  character in half and producing `�`) and `Neno.tafuta` returned a byte offset, while `urefu`
+  and `herufi_kwa` count characters; both now count characters too.
+- **Escaped character literals**: `'\n'`, `'\t'`, `'\''` and `'\\'` left a stray `'` token after
+  them (the lexer advanced by the decoded character's width), breaking expressions such as
+  `(c == '\n')`.
+- **`Wakati` methods**: the analyzer rejected every method call on a `Wakati` value (`SEM039`), so
+  the documented `t.sekunde()` could not be used.
+
+- **Optimizer and compile-time bugs found by the fuzzer and verifier**: if-conversion committed
+  an arm's temporaries with a select reading a register never written on the other path (now
+  only registers live after the join are committed); nested constant loops each passed the
+  unroll budget alone and multiplied into hundreds of copies (a 40-line function took 3 s to
+  compile; nested loops now count at their unrolled size); register allocation re-sorted a
+  physical register's whole interval list on every assignment and range analysis carried every
+  dead register in every block state, both quadratic (a 4,000-statement function: 12 s → 0.8 s).
+  The bytecode compiler now grows its stack on deeply nested expressions instead of
+  overflowing it in debug builds.
+
+- **Values released at block exit in native code**: a generic local declared inside a block (an
+  `ikiwa` branch, a loop body) is dropped where the block ends, as the language defines, instead
+  of when its register is next written or the `kazi` returns — a file, connection or `Kasha_GC`
+  share it holds is released there. Types that cannot hold a resource (text, numbers, their
+  collections) are left alone, so numeric and text code pays nothing.
+
+- **Unknown built-in methods are compile errors**: a call to a method no built-in type has —
+  `a.panga()` on an `Orodha` — compiled and only failed when the program ran, with a misleading
+  message. The analyzer now reports `SEM040` ("njia 'panga' haipo kwa 'Orodha'"). The method
+  lists live once in `asili_parser::builtins` (`PURE_METHODS`, `MUTATING_METHODS`,
+  `CALLBACK_METHODS`); the analyzer checks against them and both engines dispatch on them, and a
+  test checks the engines implement every listed method.
+
+- **Stale build cache after a toolchain upgrade**: the `pata jenga` dev cache was keyed only by
+  the sources and the target, so after an artifact format change it loaded an old artifact and
+  failed with `kuipakia asb: asb decode: …`. The cache key now includes the artifact formats
+  and compiler version (`asili_evaluator::artifact_formats`), and an unreadable cached artifact
+  is rebuilt instead of reported.
+
+- **Parser crash at end of input**: source ending mid-expression (`weka x = g(`, `a.`, an
+  unclosed list or `linganisha` arm) indexed past the last token and panicked; it is now a
+  syntax error.
+
+- **Tree-walker call depth**: its `undani mno` limit counted every nested block and expression
+  (1,000, about 200 `kazi` calls deep), so deep recursion failed there long before native code's
+  10,000-call limit. It now counts calls only, at the same 10,000, through one shared call path
+  (`eval::call_body`, replacing five copies of the scope/bind/run/return sequence); nesting needs
+  no limit since the stack grows on demand.
+
+- **One syntax error per mistake**: after an item fails to parse, the parser resumes at the next
+  top-level item instead of reporting `PAR000` for every remaining token (a stray `+*` used to
+  produce 29 errors). `pata nadhifu` keeps `[0; 500]` on one line and no longer spaces `::`
+  (`Rangi::Kijani` stayed `Rangi :: Kijani`).
+
+- **Calls on the static runner no longer thrash stack segments**: musl's main thread reports
+  only its committed stack, so the VM's (and the tree-walker's) grow-on-demand check mapped and
+  unmapped a fresh stack segment around calls near that edge — 800,000 times for `fib(32)`
+  without native code (5–12 s, now 0.32 s). Programs now start on one large, lazily committed
+  segment.
+
+- **A program's own `kazi` now shadows an ambient builtin of the same name** on every engine,
+  as the analyzer and the language docs already assumed; `kazi jumla(…)` used to be ignored
+  at run time in favour of the builtin `jumla`.
+- **`umbo`/`jenum` names inside generic types resolve** in the analyzer: iterating an
+  `Orodha<Nukta>` binds a `Nukta`, so `n.x` checks (it was a false `SEM099`), and a field of a
+  value whose type is not known where it is used is no longer reported as `SEM099`.
+
+- **Import cycles name the modules involved**: `RES001` now reads e.g.
+  `mzunguko wa moduli: a → b → c → a` and points at the `leta` line that closes the loop (it
+  used to say only that a module imported itself, with no location). Module ordering after
+  resolution reports a cycle instead of panicking.
+- **`lib/std` interface stubs match the real builtins again**: 25 missing functions added
+  (`faili_fungua`, `tenda`/`njia`/`fungo`, the JSON, TCP and TLS functions in `mfumo`, `seti`,
+  `kumbukumbu_unda`, the `runtime` probes and more), the nonexistent `anza_mwendo`/`subiri_mwendo`
+  and three invalid `ni_namba?`-style lines removed, `sikiliza_ishara`/`rejesha_ishara` given
+  their real `Tokeo` return type, and a `kasha_gc.asi` added. A `pata-core` test now fails
+  whenever a stub and its builtin table disagree.
+- **Build restored after dependency updates**: `bincode` is pinned back to 1.3 (3.0.0 is an
+  empty release that only raises a compile error, and dependabot now ignores `bincode` 2+), and
+  the hosted-index client is ported to `ureq` 3's body API; package tarballs keep having no
+  download size cap.
 - **Sudoku example fixture**: the board literal had 82 cells (an extra `0` in the last row),
   so the example solved an easier, different puzzle — which is where the 0.6.0 "roughly 0.05
   seconds" bytecode figure came from. The fixture is the real 81-cell Arto Inkala puzzle again
@@ -131,6 +871,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ikiwa` expression, and the LSP now highlights names there too.
 - LSP folding ranges and signature help no longer treat `//` (floor division) as the start of
   a comment.
+- **`syscall` is gated**: the builtin is documented as usable only inside `wazi`, but nothing
+  enforced that. A call now needs its function marked `#[wazi]` (`SEM121`); a `#[wazi]`
+  function may call other `#[wazi]` functions, and may not also be `#[salama]` (`SEM122`). The
+  `wazi { ... }` block form is not in the language yet.
 
 ## [0.6.0] - 2026-09-21
 

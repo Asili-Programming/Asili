@@ -13,9 +13,10 @@ The repository follows a Linux-kernel–style modular layout. Each directory is 
 | **/core** | Kiini | Platform-agnostic lexer, parser, AST, evaluator, diagnostics (Mwalimu error reporting). |
 | **/driver** | Mfumo / Dereva | Hardware/OS abstraction. **Dereva** is the internal HAL/FFI layer; **mfumo** is the high-level System API (StdLib) built on it. |
 | **/pata** | Tooling | CLI, package manager, formatter (Nadhifu), linter, LSP (Mwalimu), Debug Adapter Protocol server. |
-| **/extensions/vscode** | Kiendelezi | VS Code extension: syntax highlighting, Mwalimu LSP client. Separate build/package tooling (`npm`/`esbuild`), not part of the Cargo workspace. |
 | **/lib** | Maktaba | Standard library (Msingi) and tests, docs (`.asdoc`). Stdlib has two layers: surface in `lib/std/` (`.as`/`.asi`); implementation as built-in modules (evaluator/CLI) that can resolve without disk. Third-party modules come from `[tegemezi]` in `pata.toml`. |
 | **/target** | Pato | Generated binaries and intermediate `.asb` bytecode. |
+
+The VS Code extension (Kiendelezi: syntax highlighting, Mwalimu LSP client) and the browser playground live in their own repositories, [asili-vscode](https://github.com/Asili-Programming/asili-vscode) and [asili-playground](https://github.com/Asili-Programming/asili-playground), built against an Asili checkout.
 
 **Subsystem maintainers (Msimamizi):** Kiini (Core), Dereva (Drivers/FFI), Pata (Tooling), Msingi (StdLib). Patches that cross subsystems require acks from the relevant maintainers.
 
@@ -29,7 +30,7 @@ The repository follows a Linux-kernel–style modular layout. Each directory is 
 | **.asi** | Asili interface (headers / Sifa declarations) | Author |
 | **pata.toml** | Project manifest (metadata, dependencies) | Author |
 | **pata.lock** | Lockfile for deterministic builds | Tool |
-| **.asb** | Asili bytecode (VM input) | Tool |
+| **.asb** | Asili bytecode (native backend input) | Tool |
 | **.asm** | Asili assembly (debug / `pata jenga --nguvu`) | Tool |
 | **.asdoc** | Documentation templates for `pata maelezo` | Author / Tool |
 
@@ -40,16 +41,26 @@ The repository follows a Linux-kernel–style modular layout. Each directory is 
 ### /core (Kiini)
 
 - **lexer/** — Tokenizes Swahili input from `.as` and `.asi` files.
-- **parser/** — Generates the AST; split into cursor (token stream), parse (statements/expressions), and semantic (types + analyzer). Integration tests live in `tests/`.
-- **evaluator/** — Executes `.asb` artifacts. Programs the bytecode compiler can lower run on a
-  typed register VM (`bytecode.rs`); `pata jenga` additionally compiles that bytecode ahead of
-  time to native code through LLVM IR and `clang` (`aot.rs`, a `<name>.so`/`.dylib`/`.dll` next
-  to the `.asb`), run instead of the interpreter when present; without `clang` the program runs
-  on the VM. `native.rs` holds the runtime ABI, the integer range analysis and deoptimization
-  back into the VM. Programs using constructs the VM does not lower keep the serialized-AST artifact and
-  the tree-walking evaluator. All engines share one implementation of operators, methods, casts
-  and iteration (`eval/ops.rs`, `eval/methods.rs`). Integration tests live in `tests/`.
+- **parser/** — Generates the AST; split into cursor (token stream), parse (module items, plus
+  flat non-recursive state machines for blocks, expressions and patterns with explicit heap
+  stacks and synchronize-style error recovery), and semantic (types + analyzer). Expressions
+  are stored in one contiguous arena per module (`Module::exprs`, children referenced by
+  `ExprId` index). Integration tests live in `tests/`.
+- **evaluator/** — Runs programs. Every program is lowered to bytecode (`bytecode.rs`) and runs
+  as native code from Asili's own backend (`nguvu/`, no external compiler): x86-64 or AArch64
+  machine code, which `pata jenga` writes ahead of time as `<name>.nguvu` next to the `.asb` (the
+  runner compiles it in memory when that is missing), or in the browser a wasm module the page
+  instantiates (`nguvu/wasm.rs`). There is no interpreter of any kind and no fallback: a
+  construct the bytecode compiler does not lower is a build error. Native code calls back into
+  its host (`host.rs`) for generic operations, which share one implementation of operators,
+  methods, casts, patterns and iteration (`eval/ops.rs`, `eval/methods.rs`, `eval/pattern.rs`).
+  `native.rs` holds the runtime ABI and the integer range analysis (proofs only: native code
+  never speculates or deoptimizes). Tests, the REPL and the debugger run native code too.
+  Integration tests live in `tests/`.
 - **diagnostics/** — The "Mwalimu" error reporting system (Context Map).
+- **trace/** — Pata-Trace: one tracing API (`emit`, `enter`, `phase`) for the compiler and
+  runtime, with readable-tree, OpenTelemetry-shaped JSON and 4-byte binary outputs, chosen at
+  start-up (`ASILI_FUATILIA`, `--fuatilia`). See `docs/design/tracing.md`.
 
 ### /driver (Mfumo)
 
@@ -67,7 +78,7 @@ The repository follows a Linux-kernel–style modular layout. Each directory is 
 
 ### /lib (Maktaba)
 
-- **std/** — Standard library surface (written in `.as` and `.asi`). These files are the in-language interface for the same modules the builtins implement (e.g. hisabati, mfumo, moduli).
+- **std/** — Standard library surface: one `.asi` per builtin module (hisabati, mfumo, …), its builtin `umbo`s, constants and functions written in Asili with their descriptions. Generated from the builtin table (`core/parser/src/builtins.rs`), never edited by hand.
 - **tests/** — Integration tests for the entire ecosystem.
 - **docs/** — Uses `.asdoc` templates to generate documentation via `pata maelezo`.
 

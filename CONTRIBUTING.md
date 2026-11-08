@@ -16,8 +16,8 @@ Contributions are welcome. This document outlines how to build, test, and submit
 ## API documentation
 
 Generated API reference (for reading the code, not for using the `pata` CLI or the Asili
-language — see the [wiki](https://github.com/victorKariuki/Asili/wiki) for that) is published at
-<https://victorkariuki.github.io/Asili/>, rebuilt automatically on every push to `main`
+language — see the [wiki](https://github.com/Asili-Programming/Asili/wiki) for that) is published at
+<https://asili-programming.github.io/Asili/>, rebuilt automatically on every push to `main`
 (`.github/workflows/docs.yml`).
 
 To build it locally:
@@ -27,18 +27,14 @@ To build it locally:
   unescaped `<T>`/`[...]` in a doc comment fails the build, not just warns — fix it rather than
   working around it (wrap generic syntax like `` `Kasha_GC<T>` `` in backticks, escape `#[attr]`
   and `<placeholder>` text the same way).
-- **VS Code extension (TypeDoc):** `cd extensions/vscode/docs-tooling && npm install && npm run
-  typedoc` — outputs to `docs-site/typedoc/` at the repo root. TypeDoc is isolated in its own
-  `docs-tooling/` package with its own pinned TypeScript (`^5.9`), separate from the extension's
-  own `devDependencies` (`^7.0`) — TypeDoc's peer-dependency range doesn't support the newer
-  compiler yet. Don't move TypeDoc into `extensions/vscode/package.json` directly without checking
-  that range first.
+The VS Code extension's own API reference is built and published from its repository,
+[asili-vscode](https://github.com/Asili-Programming/asili-vscode).
 
 ## Project structure
 
 - **core/** — Language core: `diagnostics` (shared error/diagnostic types), `lexer`, `parser`
-  (includes the semantic analyzer), `evaluator` (tree-walking interpreter, register VM and LLVM ahead-of-time native code sharing
-  one implementation of the semantics, plus built-ins). Add or
+  (includes the semantic analyzer), `evaluator` (the bytecode compiler, the in-house `nguvu` native backend and its host, one
+  implementation of the semantics, plus built-ins). Add or
   extend built-ins under `core/evaluator/src/builtins/`. `core/` never depends on `pata/` — a
   type `core/` needs to expose to `pata/` (e.g. the `DebugHook` trait `pata-dap` drives) is
   defined on the `core/` side and re-exported, not the other way around.
@@ -49,11 +45,17 @@ To build it locally:
   `runner` (`.asb` bytecode execution), `lsp` (Mwalimu language server), `dap` (Debug Adapter
   Protocol server), `config` (finding `pata.toml` and reading a tool's section of it, shared by
   `fmt`, `lint` and `lsp`).
-- **extensions/vscode/** — the VS Code extension (`asili` on the Marketplace once published).
-  `src/extension.ts` is the entry point; bundled with `esbuild` (see `esbuild.js`) rather than
-  shipping `node_modules` in the packaged `.vsix`. `make install-ext` from the repo root builds,
-  packages, and installs it in one step.
-- **lib/std/** — `.asi` interface stubs for the standard library; keep these in sync with built-in modules and `builtin_modules.rs`.
+- **lib/std/** — `.asi` interface stubs for the standard library, generated from `core/parser/src/builtins.rs` (`BUILTIN_MODULES`). Never edit them by hand: change the table, then run `ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs` (`cargo test -p pata-core` fails while they differ).
+- **driver/** — targets beside the native runner: `wasm` (the browser playground build) and
+  `kifaa` (`asili-kifaa`, the `no_std` runtime Cortex-M firmware links with strict code built by
+  `pata jenga --lengo cortex-m`).
+- **Separate repositories:** the VS Code extension ([asili-vscode](https://github.com/Asili-Programming/asili-vscode)) and the browser
+  playground ([asili-playground](https://github.com/Asili-Programming/asili-playground)). Each builds against an Asili checkout (`pata-lsp` for
+  the extension, `driver/wasm` for the playground), and each one's CI runs
+  `pata/core/tests/editor_word_lists.rs` from this repository against its word lists (the
+  TextMate grammar, the playground's highlighter) so they stay generated from the compiler's.
+- **docs/assurance/** — safety requirements, traceability, risk register and tool-qualification
+  evidence.
 - **docs/spec/** — Formal language specification. Spec changes should be reflected in [docs/spec/CHANGELOG.md](docs/spec/CHANGELOG.md).
 
 ## Code and style
@@ -74,14 +76,31 @@ To build it locally:
   `cargo run -p pata-cli -- jenga --tenda`
   
   to confirm it builds and runs.
-- **Engines agree** (any change to the evaluator, VM, native code or operator/method semantics):  
+- **Engines agree** (any change to the evaluator, native code or operator/method semantics):  
   `cargo test -p asili-evaluator --test engines_agree --test native_tiers`  
-  (the native-code checks need `clang`; they skip themselves without it)
-- **Performance** (same scope): `examples/sudoku/bench/run.sh` — Asili's native code should stay
-  within ~1.6× of the C solver and report 90,665 attempts. See
+  (on x86-64 or AArch64; changes to `nguvu` code generation should also be run for the other
+  architecture — CI runs arm64 natively, or locally under qemu as the `performance-guardrails`
+  skill describes)
+- **Performance** (same scope): `examples/sudoku/bench/run.sh` — Asili's native solve should stay
+  at or below clang `-O2` C and report 90,665 attempts. See
   [docs/design/performance.md](docs/design/performance.md).
 
+- **Optimizer fuzzing** (any change to `nguvu`'s lowering or optimizer):  
+  `ASILI_FUZZ_PROGRAMS=2000 cargo test --release -p asili-evaluator --test fuzz`
+- **Cortex-M** (any change to `nguvu/t32.rs`, `codegen_t32.rs`, `device.rs` or `driver/kifaa`):  
+  `cargo test -p asili-evaluator --test kifaa` — needs `clang`, `ld.lld`, `qemu-arm-static`
+  and `rustup target add thumbv7em-none-eabihf`; skipped with a note where they are missing.
+
 New behavior should be covered by tests where practical (parser, semantic, evaluator, or CLI tests as appropriate).
+
+**Safety requirements.** Behaviour listed in
+[docs/assurance/requirements.md](docs/assurance/requirements.md) is traced to the tests that
+verify it: a test names the requirements it verifies in a `// Verifies: REQ-…` comment above
+it, and `cargo test -p asili-evaluator --test traceability` fails when a requirement has no
+test or the generated matrix (`docs/assurance/traceability.md`) is stale — regenerate it with
+`ASILI_TRACE=write cargo test -p asili-evaluator --test traceability`. A change to such
+behaviour updates the requirement, its tests and, where the risks change,
+[docs/assurance/risk-register.md](docs/assurance/risk-register.md).
 
 ## Submitting changes
 

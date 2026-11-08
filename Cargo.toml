@@ -4,15 +4,28 @@ members = [
   "core/lexer",
   "core/parser",
   "core/evaluator",
+  "core/trace",
+  "core/mtandao",
   "pata/core",
   "pata/config",
   "pata/cli",
   "pata/fmt",
   "pata/package",
   "pata/runner",
+  "pata/runner/mem",
   "pata/lsp",
   "pata/lint",
   "pata/dap",
   "driver/wasm",
+  "driver/kifaa",
 ]
 resolver = "2"
+
+# Shipped binaries (`cargo build --profile dist`): whole-program optimization and no unwinding
+# machinery. Linked statically against musl (`--target x86_64-unknown-linux-musl`), the
+# standalone runner starts in ~0.7 ms — no dynamic loader, no shared-library relocations.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

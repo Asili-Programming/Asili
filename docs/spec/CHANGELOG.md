@@ -4,6 +4,80 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Standard library ([05-standard-library.md](05-standard-library.md)): the virtual board `ubao`
+  (`ubao_andika`, `ubao_soma`, `ubao_subiri`, `ubao_saa`); pin calls need a `#[wazi]` grant.
+- Project structure ([02-architecture-and-files.md](02-architecture-and-files.md)): the VS Code
+  extension (`/extensions/vscode`) and the browser playground moved to their own repositories,
+  `Asili-Programming/asili-vscode` and `Asili-Programming/asili-playground`.
+- Standard library ([05-standard-library.md](05-standard-library.md)): WebSocket (`ws_unganisha`,
+  `MkondoWs`, `JibuHttp.ws`) and HTTP/3 (`ChaguoSeva.h3`, `ChaguoHttp.h3`).
+- Standard library ([05-standard-library.md](05-standard-library.md)): `http_ombi` speaks HTTP/2
+  (by ALPN) as well as HTTP/1.1; its responses report `toleo` as `HTTP/1.1` or `HTTP/2`.
+- Standard library ([05-standard-library.md](05-standard-library.md)): the HTTP server speaks
+  HTTP/1.1 and HTTP/2 and runs each request (and each raw connection) as a `sawia` task;
+  `OmbiHttp` gains `sehemu`, `hoja`, `mwili_baiti`, `mteja` and `toleo`; `JibuHttp` gains
+  `mwili_baiti` and `mwili_njia` (a streamed body); new `ChaguoSeva` and `tukio_sse`; servers
+  return once their listener is stopped. Decision ([08-resolved-decisions.md](08-resolved-decisions.md)):
+  the listener concurrency model is worker threads running `sawia` tasks.
+- Standard library ([05-standard-library.md](05-standard-library.md)): UDP — `udp_fungua` and
+  `MkondoUdp` (datagrams, default peer, broadcast, multicast).
+- Standard library ([05-standard-library.md](05-standard-library.md)): sockets — `Mkondo`
+  connects over TCP, TLS or Unix sockets (`ChaguoMkondo`), with line, exact and bounded reads,
+  half-close, addresses and time limits; `MkondoSikilizaji` gains `.kubali()`, `.anwani()` and
+  `.simama()` (which ends `mkondo_tumikia`/`mkondo_tumikia_http`) and `ChaguoSikiliza`; new
+  `tafuta_anwani` (DNS). A listener is a shared handle.
+- Standard library ([05-standard-library.md](05-standard-library.md)): `sawia`/`subiri` are
+  defined — a `sawia kazi` call starts a task on the calling thread and gives an `Ahadi<T>`;
+  waits overlap; `sambamba` gains `anzisha`, `subiri_zote`, `subiri_yoyote`, `muda_kikomo` and
+  `ghairi`. `sawia` and `subiri` are now reserved keywords.
+- Types ([04-type-system.md](04-type-system.md)): `Baiti` (bytes, `b"..."`) and `Ahadi<T>`.
+- Standard library ([05-standard-library.md](05-standard-library.md)): HTTP client
+  (`http_ombi` with `ChaguoHttp` options and a `JibuHttp` response; builtin `umbo`s whose `?`
+  fields may be left out of a literal), new `ruwaza` (regular expressions) and `usimbaji`
+  (encodings, hashes, UUIDs) modules; `kwa_json` writes whole numbers without a fraction.
+- Architecture ([02-architecture-and-files.md](02-architecture-and-files.md)): `lib/std/*.asi`
+  is generated from the builtin table.
+- Syntax ([03-syntax.md](03-syntax.md)): `jaribu` in a function that cannot return the error
+  stops the program; elsewhere it propagates, as already specified.
+
+- Tooling ([06-tooling-and-ecosystem.md](06-tooling-and-ecosystem.md)): new attribute
+  `#[salama]` for strict, bounded code, checked at build time.
+
+- Execution ([02-architecture-and-files.md](02-architecture-and-files.md),
+  [07-execution-and-roadmap.md](07-execution-and-roadmap.md)): there is no interpreter — every
+  program runs as native code (machine code, or a wasm module in the browser), including tests,
+  the REPL and the debugger, and a construct the bytecode compiler can't lower is a build error.
+  No change to the language's meaning.
+
+- Architecture ([02-architecture-and-files.md](02-architecture-and-files.md)): new `core/trace`
+  crate (Pata-Trace) for compiler and runtime tracing. No change to the language.
+
+- Architecture ([02-architecture-and-files.md](02-architecture-and-files.md)): the parser is a set
+  of flat state machines (no recursion; one synchronize step for error recovery), and a module's
+  expressions live in one arena indexed by `ExprId`. No change to the language.
+
+- Execution ([02-architecture-and-files.md](02-architecture-and-files.md),
+  [07-execution-and-roadmap.md](07-execution-and-roadmap.md)): the register VM is gone. `.asb`
+  bytecode is the native backend's input and always carries the program's syntax tree; it runs
+  as native code (built by `pata jenga`, or compiled in memory at start-up), and the
+  tree-walking evaluator runs it where there is no backend. The call-depth limit is 10,000
+  `kazi` calls on every engine (the tree-walker no longer counts nested blocks and
+  expressions).
+
+- Syntax ([03-syntax.md](03-syntax.md)): `;` may separate statements (never required); a trailing
+  comma is allowed before the closing bracket of every comma-separated list (literals, calls,
+  parameters, `umbo` fields, `jenum` variants); `[thamani; idadi]` builds a list of `idadi`
+  copies of `thamani`.
+
+- Architecture and roadmap ([02-architecture-and-files.md](02-architecture-and-files.md),
+  [07-execution-and-roadmap.md](07-execution-and-roadmap.md)): native code comes from Asili's
+  own backend (`nguvu`, x86-64 and AArch64, a `<name>.nguvu` image beside the `.asb`) instead of
+  LLVM IR compiled by `clang`; Phase IV's "LLVM backend" is now "native backend".
+
+- Tooling ([06-tooling-and-ecosystem.md](06-tooling-and-ecosystem.md)): `[jumla] asili = "X.Y"` is
+  now enforced — a project needing a newer minor version, or a different major version, than the
+  toolchain implements fails with a clear error.
+
 - Standard library ([05-standard-library.md](05-standard-library.md)): `kasha_gc` is excluded
   from the ambient builtin exports and again requires `leta kasha_gc`; an explicit import may
   shadow an ambient name, and only two explicit imports of one name clash (`SEM090`/`SEM091`).

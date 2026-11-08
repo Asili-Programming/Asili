@@ -1,16 +1,28 @@
-//! Parsing: module, statements, expressions, patterns.
+//! Parsing: module items and simple statements here; blocks, expressions and patterns in the
+//! flat machines of [`block`], [`expr`] and [`pattern`]. Nothing in the parser recurses: nesting
+//! lives on explicit heap stacks, so source nesting never costs machine stack.
 
+mod block;
+mod expr;
+mod pattern;
+
+use crate::Name;
 use asili_diagnostics::Diagnostic;
 use std::mem;
 
 use crate::cursor::Parser;
 use crate::{
-    AssignOp, Attribute, BinaryOp, Block, Constant, EnumDecl, EnumVariant, Expr, ForMode, Function,
-    ImplDecl, Import, ImportPath, MatchArm, Module, Param, Pattern, Stmt, StructDecl, TraitDecl,
-    TraitMethodSig, TypeExpr, UnaryOp,
+    AssignOp, Attribute, BinaryOp, Constant, EnumDecl, EnumVariant, Expr, ExprId, Exprs, Function,
+    ImplDecl, Import, ImportPath, Module, Param, Stmt, StructDecl, TraitDecl, TraitMethodSig,
+    TypeExpr,
 };
+use asili_lexer::{tk, TokenKind};
 
-const MAX_RECURSION_DEPTH: usize = 1000;
+/// Deepest nesting of blocks and brackets a program may use (`PAR073`). The parser itself has no
+/// limit — its stacks live on the heap — and expressions are stored flat (`Exprs`), but the
+/// passes after it (the semantic analyzer, the bytecode compiler, the LSP) still walk the tree
+/// recursively, and nested blocks are serialized and dropped recursively.
+const MAX_NESTING: usize = 1000;
 
 /// Strip surrounding double quotes from string literal lexeme so the AST holds content only.
 fn strip_string_lexeme_quotes(lexeme: &str) -> String {
@@ -21,8 +33,25 @@ fn strip_string_lexeme_quotes(lexeme: &str) -> String {
     }
 }
 
+/// The bytes of a `b"..."` token (lexeme `BAITI:<hex>`).
+fn bytes_of_lexeme(lexeme: &str) -> Vec<u8> {
+    let hex = lexeme.strip_prefix("BAITI:").unwrap_or("");
+    (0..hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+        .collect()
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn parse_module(&mut self) -> Module {
+        let (mut module, _) = self.parse_items();
+        module.enums.extend(self.standard_enums());
+        module.traits.extend(self.standard_traits());
+        module
+    }
+
+    /// The source's own items, without the standard enums and traits every module gets, and
+    /// whether attributes (or a `#[jaribio]` mark) were left waiting for an item at the end.
+    pub(crate) fn parse_items(&mut self) -> (Module, bool) {
         let mut imports = Vec::new();
         let mut constants = Vec::new();
         let mut enums = Vec::new();
@@ -34,7 +63,7 @@ impl<'a> Parser<'a> {
         let mut pending_attrs: Vec<Attribute> = Vec::new();
 
         while !self.is_eof() {
-            if self.check("#") && self.check_n(1, "[") {
+            if self.check(tk!("#")) && self.check_n(1, tk!("[")) {
                 if let Some(attr) = self.parse_attribute() {
                     pending_test = attr.name == "jaribio";
                     pending_attrs.push(attr);
@@ -44,7 +73,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.match_tok("leta") {
+            if self.match_tok(tk!("leta")) {
                 let line = self.prev().line;
                 if let Some(path) = self.parse_import_path() {
                     imports.push(Import { path, line });
@@ -52,7 +81,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.match_tok("thabiti") {
+            if self.match_tok(tk!("thabiti")) {
                 let line = self.prev().line;
                 if let Some(const_decl) = self.parse_module_constant(line) {
                     constants.push(const_decl);
@@ -60,25 +89,29 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            let is_public = self.match_tok("umma");
-            if self.match_tok("kazi") {
-                if let Some(func) =
+            // `sawia` may come before or after `umma`.
+            let mut is_async = self.match_tok(tk!("sawia"));
+            let is_public = self.match_tok(tk!("umma"));
+            is_async |= self.match_tok(tk!("sawia"));
+            if self.match_tok(tk!("kazi")) {
+                if let Some(mut func) =
                     self.parse_function(is_public, pending_test, mem::take(&mut pending_attrs))
                 {
+                    func.is_async = is_async;
                     functions.push(func);
                 }
                 pending_test = false;
                 continue;
             }
 
-            if self.match_tok("jenum") {
+            if self.match_tok(tk!("jenum")) {
                 if let Some(decl) = self.parse_enum_decl(is_public, mem::take(&mut pending_attrs)) {
                     enums.push(decl);
                 }
                 continue;
             }
 
-            if self.match_tok("umbo") {
+            if self.match_tok(tk!("umbo")) {
                 if let Some(decl) = self.parse_struct_decl(is_public, mem::take(&mut pending_attrs))
                 {
                     structs.push(decl);
@@ -86,7 +119,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.match_tok("sifa") {
+            if self.match_tok(tk!("sifa")) {
                 if let Some(decl) = self.parse_trait_decl(is_public, mem::take(&mut pending_attrs))
                 {
                     traits.push(decl);
@@ -94,8 +127,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.match_tok("shughuli") {
-                if self.match_tok("ya") {
+            if self.match_tok(tk!("shughuli")) {
+                if self.match_tok(tk!("ya")) {
                     if let Some(decl) = self.parse_impl_decl(mem::take(&mut pending_attrs)) {
                         impls.push(decl);
                     }
@@ -106,14 +139,25 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            self.err_here("PAR000", "token isiyotegemewa kwenye kiwango cha juu");
+            if self.match_tok(tk!(";")) {
+                continue;
+            }
+            // Right after an item that failed to parse, its own error already points here.
+            let here = (self.peek().line, self.peek().column);
+            let reported = self
+                .errors
+                .last()
+                .and_then(|d| d.span.as_ref())
+                .is_some_and(|sp| (sp.line, sp.column) == here);
+            if !reported {
+                self.err_here("PAR000", "token isiyotegemewa kwenye kiwango cha juu");
+            }
             self.pos += 1;
+            self.skip_top_level();
         }
 
-        enums.extend(self.standard_enums());
-        traits.extend(self.standard_traits());
-
-        Module {
+        let module = Module {
+            exprs: std::mem::take(&mut self.exprs),
             imports,
             constants,
             enums,
@@ -121,12 +165,13 @@ impl<'a> Parser<'a> {
             structs,
             traits,
             impls,
-        }
+        };
+        (module, pending_test || !pending_attrs.is_empty())
     }
 
     fn parse_module_constant(&mut self, line: usize) -> Option<Constant> {
         let name_tok = self.consume_ident("PAR040", "thabiti inahitaji jina")?;
-        let name = name_tok.lexeme;
+        let name = name_tok.lexeme.clone();
         let column = name_tok.column;
         // Explicit type annotation is optional (`thabiti X = 1` vs `thabiti X: Namba = 1`), but
         // the leading ':' must actually be consumed when present — parse_type() has no special
@@ -134,14 +179,14 @@ impl<'a> Parser<'a> {
         // `match_tok`, a typed constant like `thabiti PI: Namba = 3.14` silently parsed its type
         // as the bogus string ": Namba" instead of "Namba", which no ValueType recognizes, so it
         // always resolved to ValueType::Unknown regardless of what was actually written.
-        let ty = if self.match_tok(":") {
+        let ty = if self.match_tok(tk!(":")) {
             self.parse_type()
         } else {
             TypeExpr {
                 name: String::new(),
             }
         };
-        self.consume("=", "PAR041", "thabiti inahitaji '='")?;
+        self.consume(tk!("="), "PAR041", "thabiti inahitaji '='")?;
         let value = self.parse_expression()?;
         Some(Constant {
             name,
@@ -155,17 +200,18 @@ impl<'a> Parser<'a> {
     fn parse_import_path(&mut self) -> Option<ImportPath> {
         let module = self
             .consume_ident("PAR059", "leta inahitaji jina la moduli")?
-            .lexeme;
-        if self.match_tok("::") && self.match_tok("{") {
+            .lexeme
+            .clone();
+        if self.match_tok(tk!("::")) && self.match_tok(tk!("{")) {
             let mut names = Vec::new();
             loop {
                 let t = self.consume_ident("PAR061", "leta ya kuchagua inahitaji jina")?;
-                names.push(t.lexeme);
-                if self.match_tok("}") {
+                names.push(t.lexeme.clone());
+                if self.match_tok(tk!("}")) {
                     break;
                 }
                 self.consume(
-                    ",",
+                    tk!(","),
                     "PAR062",
                     "leta ya kuchagua inahitaji ',' kati ya majina",
                 )?;
@@ -176,24 +222,24 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_attribute(&mut self) -> Option<Attribute> {
-        self.consume("#", "PAR080", "kiambatanisho inahitaji '#'")?;
-        self.consume("[", "PAR081", "kiambatanisho inahitaji '['")?;
+        self.consume(tk!("#"), "PAR080", "kiambatanisho inahitaji '#'")?;
+        self.consume(tk!("["), "PAR081", "kiambatanisho inahitaji '['")?;
         let name = self.consume_ident("PAR082", "kiambatanisho inahitaji jina")?;
         let mut args = None;
-        if self.match_tok("(") {
+        if self.match_tok(tk!("(")) {
             let mut raw = String::new();
-            while !self.is_eof() && !self.check(")") {
+            while !self.is_eof() && !self.check(tk!(")")) {
                 if !raw.is_empty() {
                     raw.push(' ');
                 }
                 raw.push_str(&self.advance().lexeme);
             }
-            self.consume(")", "PAR083", "kiambatanisho hoja inahitaji ')'")?;
+            self.consume(tk!(")"), "PAR083", "kiambatanisho hoja inahitaji ')'")?;
             args = Some(raw);
         }
-        self.consume("]", "PAR084", "kiambatanisho inahitaji ']'")?;
+        self.consume(tk!("]"), "PAR084", "kiambatanisho inahitaji ']'")?;
         Some(Attribute {
-            name: name.lexeme,
+            name: name.lexeme.clone(),
             args,
             line: name.line,
         })
@@ -201,19 +247,19 @@ impl<'a> Parser<'a> {
 
     fn parse_generic_names(&mut self) -> Vec<String> {
         let mut gens = Vec::new();
-        if !self.match_tok("<") {
+        if !self.match_tok(tk!("<")) {
             return gens;
         }
         loop {
             if let Some(id) = self.consume_ident("PAR085", "jumla inahitaji jina") {
-                gens.push(id.lexeme);
+                gens.push(id.lexeme.clone());
             }
-            if self.match_tok(",") {
+            if self.match_tok(tk!(",")) {
                 continue;
             }
             break;
         }
-        let _ = self.consume(">", "PAR086", "orodha ya jumla inahitaji '>'");
+        let _ = self.consume(tk!(">"), "PAR086", "orodha ya jumla inahitaji '>'");
         gens
     }
 
@@ -222,24 +268,24 @@ impl<'a> Parser<'a> {
         let line = name.line;
         let column = name.column;
         let generics = self.parse_generic_names();
-        let fields = if self.match_tok("{") {
+        let fields = if self.match_tok(tk!("{")) {
             let mut flds = Vec::new();
             loop {
-                if self.match_tok("}") {
+                if self.match_tok(tk!("}")) {
                     break;
                 }
                 let field_name = self.consume_ident("PAR902", "umbo inahitaji jina la uga")?;
-                let ty = if self.match_tok(":") {
+                let ty = if self.match_tok(tk!(":")) {
                     Some(self.parse_type())
                 } else {
                     None
                 };
-                flds.push((field_name.lexeme, ty));
-                if !self.match_tok(",") {
+                flds.push((field_name.lexeme.clone(), ty));
+                if !self.match_tok(tk!(",")) {
                     // Fields may be newline-separated instead of comma-separated (e.g.
                     // `umbo P { x: Namba\n y: Namba }`) — only treat it as the end of the
                     // field list if '}' actually follows; otherwise loop for the next field.
-                    if self.match_tok("}") {
+                    if self.match_tok(tk!("}")) {
                         break;
                     }
                     continue;
@@ -250,7 +296,7 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
         Some(StructDecl {
-            name: name.lexeme,
+            name: name.lexeme.clone(),
             generics,
             fields,
             line,
@@ -265,30 +311,30 @@ impl<'a> Parser<'a> {
         let line = name.line;
         let column = name.column;
         let generics = self.parse_generic_names();
-        let variants = if self.match_tok("{") {
+        let variants = if self.match_tok(tk!("{")) {
             let mut vars = Vec::new();
             loop {
-                if self.match_tok("}") {
+                if self.match_tok(tk!("}")) {
                     break;
                 }
                 let var_name = self.consume_ident("PAR905", "jenum inahitaji jina la kigezo")?;
                 let var_line = var_name.line;
                 let var_column = var_name.column;
-                let data = if self.match_tok("(") {
+                let data = if self.match_tok(tk!("(")) {
                     let ty = self.parse_type();
-                    self.consume(")", "PAR905", "kigezo inahitaji ')'")?;
+                    self.consume(tk!(")"), "PAR905", "kigezo inahitaji ')'")?;
                     Some(ty)
                 } else {
                     None
                 };
                 vars.push(EnumVariant {
-                    name: var_name.lexeme,
+                    name: var_name.lexeme.clone(),
                     data,
                     line: var_line,
                     column: var_column,
                 });
-                if !self.match_tok(",") {
-                    let _ = self.consume("}", "PAR905", "jenum inahitaji '}'");
+                if !self.match_tok(tk!(",")) {
+                    let _ = self.consume(tk!("}"), "PAR905", "jenum inahitaji '}'");
                     break;
                 }
             }
@@ -297,7 +343,7 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
         Some(EnumDecl {
-            name: name.lexeme,
+            name: name.lexeme.clone(),
             generics,
             variants,
             line,
@@ -313,7 +359,7 @@ impl<'a> Parser<'a> {
         let column = name.column;
         let methods = self.parse_trait_method_sigs();
         Some(TraitDecl {
-            name: name.lexeme,
+            name: name.lexeme.clone(),
             methods,
             line,
             column,
@@ -326,28 +372,32 @@ impl<'a> Parser<'a> {
     /// inside `{ }`. No `{ }` at all (e.g. a forward-declared/empty trait) yields no methods.
     fn parse_trait_method_sigs(&mut self) -> Vec<TraitMethodSig> {
         let mut methods = Vec::new();
-        if !self.match_tok("{") {
+        if !self.match_tok(tk!("{")) {
             return methods;
         }
-        while self.match_tok("kazi") {
+        while self.match_tok(tk!("kazi")) {
             let Some(name_tok) = self.consume_ident("PAR906", "njia ya sifa inahitaji jina") else {
                 break;
             };
             let line = name_tok.line;
             if self
-                .consume("(", "PAR907", "njia ya sifa inahitaji '('")
+                .consume(tk!("("), "PAR907", "njia ya sifa inahitaji '('")
                 .is_none()
             {
                 break;
             }
             let params = self.parse_params();
             if self
-                .consume(")", "PAR908", "njia ya sifa inahitaji ')' baada ya hoja")
+                .consume(
+                    tk!(")"),
+                    "PAR908",
+                    "njia ya sifa inahitaji ')' baada ya hoja",
+                )
                 .is_none()
             {
                 break;
             }
-            let return_type = if self.match_tok("->") {
+            let return_type = if self.match_tok(tk!("->")) {
                 self.parse_type()
             } else {
                 TypeExpr {
@@ -355,16 +405,16 @@ impl<'a> Parser<'a> {
                 }
             };
             methods.push(TraitMethodSig {
-                name: name_tok.lexeme,
+                name: name_tok.lexeme.clone(),
                 params,
                 return_type,
                 line,
             });
-            if self.check("}") {
+            if self.check(tk!("}")) {
                 break;
             }
         }
-        let _ = self.match_tok("}");
+        let _ = self.match_tok(tk!("}"));
         methods
     }
 
@@ -373,7 +423,7 @@ impl<'a> Parser<'a> {
         let line = first.line;
         let mut trait_name = None;
         let target = first.lexeme.clone();
-        if self.match_tok("kwa") {
+        if self.match_tok(tk!("kwa")) {
             // "shughuli ya Target kwa Trait { }" — kwa keyword syntax. `first` (before `kwa`)
             // is the type being implemented on (already defaulted into `target` above); the
             // identifier after `kwa` is the trait name. Was previously swapped (trait_name set
@@ -383,17 +433,17 @@ impl<'a> Parser<'a> {
             // "known bug" note.
             if let Some(t) = self.consume_ident("PAR905", "shughuli ya kwa inahitaji jina la sifa")
             {
-                trait_name = Some(t.lexeme);
+                trait_name = Some(t.lexeme.clone());
             }
-        } else if self.match_tok(":") {
+        } else if self.match_tok(tk!(":")) {
             // "shughuli ya Target: Trait { }" — colon syntax
             if let Some(t) = self.consume_ident("PAR905", "shughuli ya : inahitaji jina la sifa") {
-                trait_name = Some(t.lexeme);
+                trait_name = Some(t.lexeme.clone());
             }
         }
         let mut body = Vec::new();
-        if self.match_tok("{") {
-            while self.match_tok("kazi") {
+        if self.match_tok(tk!("{")) {
+            while self.match_tok(tk!("kazi")) {
                 if let Some(f) = self.parse_function(false, false, vec![]) {
                     if f.name == "kuu" {
                         self.errors.push(
@@ -405,11 +455,11 @@ impl<'a> Parser<'a> {
                         body.push(f);
                     }
                 }
-                if self.match_tok("}") {
+                if self.match_tok(tk!("}")) {
                     break;
                 }
             }
-            let _ = self.match_tok("}");
+            let _ = self.match_tok(tk!("}"));
         }
         Some(ImplDecl {
             target,
@@ -428,25 +478,27 @@ impl<'a> Parser<'a> {
     ) -> Option<Function> {
         let name_tok = self.consume_ident("PAR001", "kazi haina jina")?;
         let line = name_tok.line;
+        let _span = asili_trace::enter(&name_tok.lexeme, line as u32);
         let column = name_tok.column;
-        self.consume("(", "PAR002", "kazi inahitaji '('")?;
+        self.consume(tk!("("), "PAR002", "kazi inahitaji '('")?;
         let params = self.parse_params();
-        self.consume(")", "PAR003", "kazi inahitaji ')' baada ya params")?;
+        self.consume(tk!(")"), "PAR003", "kazi inahitaji ')' baada ya params")?;
         self.consume(
-            "->",
+            tk!("->"),
             "PAR004",
             "kazi inahitaji aina ya kurudisha baada ya '->'",
         )?;
         let return_type = self.parse_type();
-        let body = self.parse_block()?;
+        let body = self.parse_body()?;
 
         Some(Function {
-            name: name_tok.lexeme.clone(),
+            name: Name::new(&name_tok.lexeme),
             params,
             return_type,
             body,
             is_test,
             is_public,
+            is_async: false,
             line,
             column,
             attrs,
@@ -455,24 +507,27 @@ impl<'a> Parser<'a> {
 
     fn parse_params(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
-        if self.check(")") {
+        if self.check(tk!(")")) {
             return params;
         }
 
         while let Some(name) = self.consume_ident("PAR010", "hoja inahitaji jina") {
-            if self.consume(":", "PAR011", "hoja inahitaji ':'").is_none() {
+            if self
+                .consume(tk!(":"), "PAR011", "hoja inahitaji ':'")
+                .is_none()
+            {
                 break;
             }
             let ty = self.parse_type();
             params.push(Param {
-                name: name.lexeme,
+                name: Name::new(&name.lexeme),
                 ty,
                 line: name.line,
                 column: name.column,
             });
 
-            if self.match_tok(",") {
-                if self.check(")") {
+            if self.match_tok(tk!(",")) {
+                if self.check(tk!(")")) {
                     break;
                 }
                 continue;
@@ -488,8 +543,20 @@ impl<'a> Parser<'a> {
         let mut depth = 0usize;
         let mut last_line: Option<usize> = None;
         while !self.is_eof() {
-            let l = self.peek().lexeme.as_str();
-            if depth == 0 && [",", ")", "{", "}", "=", "->", "kama"].contains(&l) {
+            let t = self.peek();
+            let l = t.lexeme.as_str();
+            if depth == 0
+                && matches!(
+                    t.kind,
+                    TokenKind::Comma
+                        | TokenKind::RParen
+                        | TokenKind::LBrace
+                        | TokenKind::RBrace
+                        | TokenKind::Assign
+                        | TokenKind::Arrow
+                        | TokenKind::KwKama
+                )
+            {
                 break;
             }
             // A type name never legitimately spans a line break at depth 0 (outside `<...>`) in
@@ -520,7 +587,7 @@ impl<'a> Parser<'a> {
             name.push_str(l);
             last_line = Some(self.peek().line);
             self.pos += 1;
-            if depth == 0 && self.check("{") {
+            if depth == 0 && self.check(tk!("{")) {
                 break;
             }
         }
@@ -529,51 +596,19 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_block(&mut self) -> Option<Block> {
-        self.depth += 1;
-        if self.depth > MAX_RECURSION_DEPTH {
-            let mut d = Diagnostic::new("PAR073", "undani mno").with_stage("uchanganuzi");
-            if !self.is_eof() {
-                d = d.with_span(self.peek().line, self.peek().column);
-            }
-            self.errors.push(d);
-            self.depth -= 1;
-            return None;
-        }
-        let result = stacker::maybe_grow(32 * 1024, 1024 * 1024, || self.parse_block_inner());
-        self.depth -= 1;
-        result
-    }
-
-    fn parse_block_inner(&mut self) -> Option<Block> {
-        self.consume("{", "PAR020", "kizuizi inahitaji '{'")?;
-        let mut statements = Vec::new();
-        while !self.is_eof() && !self.check("}") {
-            if self.check("weka") || self.check("thabiti") {
-                statements.extend(self.parse_let_group()?);
-            } else if let Some(stmt) = self.parse_stmt() {
-                statements.push(stmt);
-            } else {
-                self.pos += 1;
-            }
-        }
-        self.consume("}", "PAR021", "kizuizi inahitaji '}'")?;
-        Some(Block { statements })
-    }
-
     /// A declaration may introduce several bindings: `weka a = 1, b = 2`.
     /// Each binding is lowered to the ordinary single-binding AST form.
     fn parse_let_group(&mut self) -> Option<Vec<Stmt>> {
-        let mutable = self.match_tok("weka");
+        let mutable = self.match_tok(tk!("weka"));
         if !mutable {
-            self.consume("thabiti", "PAR040", "weka/thabiti inahitaji jina")?;
+            self.consume(tk!("thabiti"), "PAR040", "weka/thabiti inahitaji jina")?;
         }
         let mut statements = Vec::new();
         loop {
-            let stmt = if self.check("(") {
+            let stmt = if self.check(tk!("(")) {
                 let line = self.peek().line;
                 let pattern = self.parse_pattern()?;
-                self.consume("=", "PAR040", "muundo wa weka unahitaji '='")?;
+                self.consume(tk!("="), "PAR040", "muundo wa weka unahitaji '='")?;
                 let value = self.parse_expression()?;
                 Stmt::LetPattern {
                     mutable,
@@ -585,52 +620,29 @@ impl<'a> Parser<'a> {
                 self.parse_let_stmt(mutable)?
             };
             statements.push(stmt);
-            if !self.match_tok(",") {
+            if !self.match_tok(tk!(",")) {
                 break;
             }
         }
         Some(statements)
     }
 
-    fn parse_stmt(&mut self) -> Option<Stmt> {
-        let loop_label = if self.match_tok("lebo") {
-            let id = self
-                .consume_ident("PAR042", "lebo inahitaji jina")
-                .map(|t| t.lexeme.trim_start_matches('\'').to_string());
-            let _ = self.consume(":", "PAR043", "lebo inahitaji ':'");
-            id
-        } else {
-            None
-        };
-        if self.match_tok("weka") || self.match_tok("thabiti") {
-            let mutable = self.prev().lexeme != "thabiti";
-            return self.parse_let_stmt(mutable);
-        }
-        if self.match_tok("ikiwa") {
-            return self.parse_if_stmt();
-        }
-        if self.match_tok("kwa") {
-            return self.parse_for_stmt(loop_label);
-        }
-        if self.match_tok("wakati") {
-            return self.parse_while_stmt(loop_label);
-        }
-        if self.match_tok("linganisha") {
-            return self.parse_match_stmt();
-        }
-        if self.match_tok("vunja") {
+    /// A statement with no block of its own (the block machine handles `ikiwa`, `kwa`, `wakati`,
+    /// `linganisha` and `weka` groups).
+    fn parse_simple_stmt(&mut self) -> Option<Stmt> {
+        if self.match_tok(tk!("vunja")) {
             let line = self.prev().line;
             let label = self.parse_optional_label("PAR049", "vunja lebo inahitaji jina");
             return Some(Stmt::Break { label, line });
         }
-        if self.match_tok("endelea") {
+        if self.match_tok(tk!("endelea")) {
             let line = self.prev().line;
             let label = self.parse_optional_label("PAR044", "endelea lebo inahitaji jina");
             return Some(Stmt::Continue { label, line });
         }
-        if self.match_tok("rejesha") {
+        if self.match_tok(tk!("rejesha")) {
             let line = self.prev().line;
-            if self.check("}") {
+            if self.check(tk!("}")) {
                 return Some(Stmt::Return { value: None, line });
             }
             let value = self.parse_expression()?;
@@ -639,45 +651,45 @@ impl<'a> Parser<'a> {
                 line,
             });
         }
-        if self.match_tok("tupa") {
+        if self.match_tok(tk!("tupa")) {
             let line = self.prev().line;
             let ident = self.consume_ident("PAR030", "tupa inahitaji jina")?;
             return Some(Stmt::Drop {
-                name: ident.lexeme,
+                name: Name::new(&ident.lexeme),
                 line,
             });
         }
 
         // Index-assign: name[expr] = val  →  Stmt::Expr( name.ingiza(expr, val) )
-        if self.check_ident() && self.check_n(1, "[") {
+        if self.check_ident() && self.check_n(1, tk!("[")) {
             // Scan forward past matching brackets to check for '=' after ']'
             let mut depth = 1usize;
             let mut j = self.pos + 2;
             while j < self.tokens.len() && depth > 0 {
-                match self.tokens[j].lexeme.as_str() {
-                    "[" => depth += 1,
-                    "]" => depth -= 1,
+                match self.tokens[j].kind {
+                    TokenKind::LBracket => depth += 1,
+                    TokenKind::RBracket => depth -= 1,
                     _ => {}
                 }
                 if depth > 0 {
                     j += 1;
                 }
             }
-            let after = self.tokens.get(j + 1).map(|t| t.lexeme.as_str());
-            if let (0, Some(op_tok)) = (depth, after.filter(|t| compound_op(t).is_some())) {
+            let after = self.tokens.get(j + 1).map(|t| t.kind);
+            if let (0, Some(op_tok)) = (depth, after.filter(|&k| compound_op(k).is_some())) {
                 // `name[i] op= v`  →  `name.ingiza(i, name[i] op v)`.
                 let (op_base, op) = compound_op(op_tok).expect("checked above");
-                let name = self.advance().lexeme.clone();
+                let name = Name::new(&self.advance().lexeme);
                 let line = self.prev().line;
                 let column = self.prev().column;
                 self.advance(); // consume [
                 let idx = self.parse_expression()?;
-                self.consume("]", "PAR091", "fahirisi inahitaji ']'")?;
+                self.consume(tk!("]"), "PAR091", "fahirisi inahitaji ']'")?;
                 let op_line = self.peek().line;
                 let op_column = self.peek().column;
                 let op_lexeme = self.advance().lexeme.clone();
                 // The index is evaluated twice (read and write), so it must not call anything.
-                if expr_has_call(&idx) {
+                if expr_has_call(&self.exprs, idx) {
                     self.errors.push(
                         Diagnostic::new(
                             "PAR096",
@@ -689,49 +701,46 @@ impl<'a> Parser<'a> {
                     return None;
                 }
                 let val = self.parse_expression()?;
-                let target = || Expr::Ident {
-                    name: name.clone(),
-                    line,
-                    column,
-                };
-                let current = Expr::Index {
-                    base: Box::new(target()),
-                    index: Box::new(idx.clone()),
-                    line,
-                };
-                return Some(Stmt::Expr {
-                    expr: Expr::MethodCall {
-                        receiver: Box::new(target()),
-                        method_name: "ingiza".to_string(),
-                        args: vec![idx, build_binary(op_base, op, current, val, line)],
-                        line,
-                    },
+                let target = Expr::Ident { name, line, column };
+                let base = self.exprs.add(target.clone());
+                // The index is pure (checked above), so the read and the write share its node.
+                let current = self.exprs.add(Expr::Index {
+                    base,
+                    index: idx,
                     line,
                 });
+                let receiver = self.exprs.add(target);
+                let value = build_binary(&mut self.exprs, op_base, op, current, val, line);
+                let expr = self.exprs.add(Expr::MethodCall {
+                    receiver,
+                    method_name: "ingiza".to_string(),
+                    args: vec![idx, value],
+                    line,
+                });
+                return Some(Stmt::Expr { expr, line });
             }
-            if depth == 0 && after == Some("=") {
-                let name = self.advance().lexeme.clone();
+            if depth == 0 && after == Some(TokenKind::Assign) {
+                let name = Name::new(&self.advance().lexeme);
                 let line = self.prev().line;
                 let column = self.prev().column;
                 self.advance(); // consume [
                 let idx = self.parse_expression()?;
-                self.consume("]", "PAR091", "fahirisi inahitaji ']'")?;
+                self.consume(tk!("]"), "PAR091", "fahirisi inahitaji ']'")?;
                 self.advance(); // consume =
                 let val = self.parse_expression()?;
-                return Some(Stmt::Expr {
-                    expr: Expr::MethodCall {
-                        receiver: Box::new(Expr::Ident { name, line, column }),
-                        method_name: "ingiza".to_string(),
-                        args: vec![idx, val],
-                        line,
-                    },
+                let receiver = self.exprs.add(Expr::Ident { name, line, column });
+                let expr = self.exprs.add(Expr::MethodCall {
+                    receiver,
+                    method_name: "ingiza".to_string(),
+                    args: vec![idx, val],
                     line,
                 });
+                return Some(Stmt::Expr { expr, line });
             }
         }
 
-        if self.check_ident() && self.check_n(1, "=") {
-            let name = self.advance().lexeme.clone();
+        if self.check_ident() && self.check_n(1, tk!("=")) {
+            let name = Name::new(&self.advance().lexeme);
             let line = self.prev().line;
             let column = self.prev().column;
             self.advance();
@@ -747,33 +756,45 @@ impl<'a> Parser<'a> {
 
         // `x %= e`, `x //= e`, `x &= e`, `x |= e`, `x ^= e`  →  `x = x op e`.
         if self.check_ident()
-            && ["%=", "//=", "&=", "|=", "^="]
-                .contains(&self.peek_n(1).map(|t| t.lexeme.as_str()).unwrap_or(""))
+            && self.peek_n(1).is_some_and(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::PercentEq
+                        | TokenKind::SlashSlashEq
+                        | TokenKind::AmpEq
+                        | TokenKind::PipeEq
+                        | TokenKind::CaretEq
+                )
+            })
         {
-            let name = self.advance().lexeme.clone();
+            let name = Name::new(&self.advance().lexeme);
             let line = self.prev().line;
             let column = self.prev().column;
-            let (op_base, op) = compound_op(&self.advance().lexeme.clone()).expect("listed above");
+            let (op_base, op) = compound_op(self.advance().kind).expect("listed above");
             let rhs = self.parse_expression()?;
-            let current = Expr::Ident {
-                name: name.clone(),
+            let current = self.exprs.add(Expr::Ident {
+                name: Name::new(&name),
                 line,
                 column,
-            };
+            });
             return Some(Stmt::Assign {
                 name,
                 op: AssignOp::Assign,
-                value: build_binary(op_base, op, current, rhs, line),
+                value: build_binary(&mut self.exprs, op_base, op, current, rhs, line),
                 line,
                 column,
             });
         }
 
         if self.check_ident()
-            && ["+=", "-=", "*=", "/="]
-                .contains(&self.peek_n(1).map(|t| t.lexeme.as_str()).unwrap_or(""))
+            && self.peek_n(1).is_some_and(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::PlusEq | TokenKind::MinusEq | TokenKind::StarEq | TokenKind::SlashEq
+                )
+            })
         {
-            let name = self.advance().lexeme.clone();
+            let name = Name::new(&self.advance().lexeme);
             let line = self.prev().line;
             let column = self.prev().column;
             let op_tok = self.advance().lexeme.clone();
@@ -798,52 +819,17 @@ impl<'a> Parser<'a> {
         Some(Stmt::Expr { expr, line })
     }
 
-    fn parse_for_stmt(&mut self, label: Option<String>) -> Option<Stmt> {
-        let line = self.prev().line;
-        let var_tok = self.consume_ident("PAR054", "kwa inahitaji jina")?;
-        let var = var_tok.lexeme;
-        let var_column = var_tok.column;
-        if self.match_tok("katika") {
-            let expr = self.parse_expression()?;
-            let body = self.parse_block()?;
-            return Some(Stmt::For {
-                label,
-                var,
-                var_column,
-                mode: ForMode::InExpr(expr),
-                body,
-                line,
-            });
-        }
-        if self.match_tok("kutoka") {
-            let start = self.parse_expression()?;
-            self.consume("hadi", "PAR055", "kwa kutoka inahitaji 'hadi'")?;
-            let end = self.parse_expression()?;
-            let body = self.parse_block()?;
-            return Some(Stmt::For {
-                label,
-                var,
-                var_column,
-                mode: ForMode::Range { start, end },
-                body,
-                line,
-            });
-        }
-        self.err_here("PAR056", "kwa inahitaji 'katika' au 'kutoka ... hadi ...'");
-        None
-    }
-
     fn parse_let_stmt(&mut self, mutable: bool) -> Option<Stmt> {
         let name = self.consume_ident("PAR040", "weka/thabiti inahitaji jina")?;
         let mut ty = None;
-        if self.match_tok(":") {
+        if self.match_tok(tk!(":")) {
             ty = Some(self.parse_type());
         }
-        self.consume("=", "PAR041", "weka/thabiti inahitaji '='")?;
+        self.consume(tk!("="), "PAR041", "weka/thabiti inahitaji '='")?;
         let value = self.parse_expression()?;
         Some(Stmt::Let {
             mutable,
-            name: name.lexeme,
+            name: Name::new(&name.lexeme),
             ty,
             value,
             line: name.line,
@@ -851,719 +837,23 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_if_stmt(&mut self) -> Option<Stmt> {
-        let line = self.prev().line;
-        let cond = self.parse_expression()?;
-        let then_block = self.parse_block()?;
-
-        let mut else_if = Vec::new();
-        while self.match_tok("au_ikiwa") {
-            let c = self.parse_expression()?;
-            let b = self.parse_block()?;
-            else_if.push((c, b));
-        }
-
-        let else_block = if self.match_tok("vinginevyo") {
-            Some(self.parse_block()?)
-        } else {
-            None
-        };
-
-        Some(Stmt::If {
-            cond,
-            then_block,
-            else_if,
-            else_block,
-            line,
-        })
-    }
-
-    fn parse_while_stmt(&mut self, label: Option<String>) -> Option<Stmt> {
-        let line = self.prev().line;
-        let cond = if self.match_tok("milele") {
-            Expr::Bool(true)
-        } else {
-            self.parse_expression()?
-        };
-        let body = self.parse_block()?;
-        Some(Stmt::While {
-            label,
-            cond,
-            body,
-            line,
-        })
-    }
-
-    fn parse_match_stmt(&mut self) -> Option<Stmt> {
-        let line = self.prev().line;
-        let expr = self.parse_expression()?;
-        self.consume("{", "PAR050", "linganisha inahitaji '{'")?;
-        let mut arms = Vec::new();
-        while !self.is_eof() && !self.check("}") {
-            let pat = self.parse_pattern()?;
-            self.consume("=>", "PAR051", "mkono wa linganisha unahitaji '=>'")?;
-            let body = self.parse_block()?;
-            arms.push(MatchArm {
-                pattern: pat,
-                body,
-                line: self.prev().line,
-            });
-            self.match_tok(",");
-        }
-        self.consume("}", "PAR052", "linganisha inahitaji '}'")?;
-        Some(Stmt::Match { expr, arms, line })
-    }
-
-    fn parse_pattern(&mut self) -> Option<Pattern> {
-        if self.match_tok("(") {
-            let p1 = self.parse_pattern()?;
-            if self.match_tok(",") {
-                let p2 = self.parse_pattern()?;
-                self.consume(")", "PAR053", "muundo wa jozi unahitaji ')'")?;
-                return Some(Pattern::Jozi(Box::new(p1), Box::new(p2)));
-            }
-            self.consume(")", "PAR053", "muundo unahitaji ')'")?;
-            return Some(p1);
-        }
-        if self.match_tok("_") {
-            return Some(Pattern::Wildcard);
-        }
-        if self.peek().lexeme.starts_with('"') {
-            let t = self.advance();
-            return Some(Pattern::Literal(Expr::String(strip_string_lexeme_quotes(
-                &t.lexeme,
-            ))));
-        }
-        if self.peek().lexeme.starts_with("CHAR:") {
-            let t = self.advance();
-            let ch = t
-                .lexeme
-                .strip_prefix("CHAR:")
-                .and_then(|s| s.chars().next())
-                .unwrap_or('\0');
-            return Some(Pattern::Literal(Expr::Char(ch)));
-        }
-        if self
-            .peek()
-            .lexeme
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.')
-        {
-            let t = self.advance();
-            return Some(Pattern::Literal(Expr::Number(t.lexeme.clone())));
-        }
-        if self.match_tok("Hamna") {
-            return Some(Pattern::Literal(Expr::Hamna));
-        }
-        if self.match_tok("kweli") {
-            return Some(Pattern::Literal(Expr::Bool(true)));
-        }
-        if self.match_tok("si_kweli") {
-            return Some(Pattern::Literal(Expr::Bool(false)));
-        }
-        if self.check_ident() {
-            let t = self.advance();
-            let name = t.lexeme.clone();
-            let line = t.line;
-            let column = t.column;
-            if self.match_tok("::") {
-                let variant_tok =
-                    self.consume_ident("PAR085", "jenum pattern inahitaji jina la kigezo")?;
-                let variant_name = variant_tok.lexeme.clone();
-                let variant_line = variant_tok.line;
-                let variant_column = variant_tok.column;
-                let data = if self.match_tok("(") {
-                    let sub = self.parse_pattern()?;
-                    self.consume(")", "PAR086", "jenum pattern inahitaji ')'")?;
-                    Some(Box::new(sub))
-                } else {
-                    None
-                };
-                return Some(Pattern::Enum {
-                    enum_name: name,
-                    variant_name,
-                    data,
-                    variant_line,
-                    variant_column,
-                });
-            }
-            if self.match_tok("{") {
-                let mut fields = Vec::new();
-                loop {
-                    if self.match_tok("}") {
-                        break;
-                    }
-                    let fname =
-                        self.consume_ident("PAR053", "umbo pattern inahitaji jina la uga")?;
-                    self.consume(":", "PAR053", "umbo pattern inahitaji ':'")?;
-                    let sub = self.parse_pattern()?;
-                    fields.push((fname.lexeme, sub));
-                    if !self.match_tok(",") {
-                        self.consume("}", "PAR053", "umbo pattern inahitaji '}'")?;
-                        break;
-                    }
-                }
-                return Some(Pattern::Struct {
-                    struct_name: name,
-                    line,
-                    column,
-                    fields,
-                });
-            }
-            return Some(Pattern::Ident { name, line, column });
-        }
-        self.err_here(
-            "PAR053",
-            "muundo wa linganisha haueleweki — inahitaji thamani, jina, jozi, jenum, au umbo",
-        );
-        None
-    }
-
-    fn parse_expression(&mut self) -> Option<Expr> {
-        self.depth += 1;
-        if self.depth > MAX_RECURSION_DEPTH {
-            if !self.is_eof() {
-                self.errors.push(
-                    Diagnostic::new("PAR073", "undani mno")
-                        .with_stage("uchanganuzi")
-                        .with_span(self.peek().line, self.peek().column),
-                );
-            }
-            self.depth -= 1;
-            return None;
-        }
-        let result = stacker::maybe_grow(32 * 1024, 1024 * 1024, || self.parse_or());
-        self.depth -= 1;
-        result
-    }
-
-    /// Left-associative binary level: parse `left`, then repeatedly match (token, op) and `next` for right.
-    fn parse_binary_left<F>(
-        &mut self,
-        mut left: Expr,
-        pairs: &[(&str, BinaryOp)],
-        next: F,
-    ) -> Option<Expr>
-    where
-        F: Fn(&mut Self) -> Option<Expr>,
-    {
-        loop {
-            let mut matched = false;
-            for (tok, op) in pairs {
-                if self.match_tok(tok) {
-                    matched = true;
-                    let line = self.prev().line;
-                    let right = next(self)?;
-                    left = build_binary(tok, op.clone(), left, right, line);
-                    break;
-                }
-            }
-            if !matched {
-                break;
-            }
-        }
-        Some(left)
-    }
-
-    fn parse_or(&mut self) -> Option<Expr> {
-        let left = self.parse_and()?;
-        self.parse_binary_left(left, &[("au", BinaryOp::Or), ("||", BinaryOp::Or)], |p| {
-            p.parse_and()
-        })
-    }
-
-    fn parse_and(&mut self) -> Option<Expr> {
-        let left = self.parse_equality()?;
-        self.parse_binary_left(left, &[("na", BinaryOp::And), ("&&", BinaryOp::And)], |p| {
-            p.parse_equality()
-        })
-    }
-
-    fn parse_bitwise_or(&mut self) -> Option<Expr> {
-        let left = self.parse_bitwise_xor()?;
-        self.parse_binary_left(
-            left,
-            &[("au_biti", BinaryOp::BitOr), ("|", BinaryOp::BitOr)],
-            |p| p.parse_bitwise_xor(),
-        )
-    }
-
-    fn parse_bitwise_xor(&mut self) -> Option<Expr> {
-        let left = self.parse_bitwise_and()?;
-        self.parse_binary_left(
-            left,
-            &[("xor_biti", BinaryOp::BitXor), ("^", BinaryOp::BitXor)],
-            |p| p.parse_bitwise_and(),
-        )
-    }
-
-    // Bitwise operators bind tighter than comparisons (as in Rust and Python), so
-    // `mask & bit == 0` means `(mask & bit) == 0`.
-    fn parse_bitwise_and(&mut self) -> Option<Expr> {
-        let left = self.parse_shift()?;
-        self.parse_binary_left(
-            left,
-            &[("na_biti", BinaryOp::BitAnd), ("&", BinaryOp::BitAnd)],
-            |p| p.parse_shift(),
-        )
-    }
-
-    fn parse_equality(&mut self) -> Option<Expr> {
-        let left = self.parse_comparison()?;
-        self.parse_binary_left(left, &[("==", BinaryOp::Eq), ("!=", BinaryOp::Ne)], |p| {
-            p.parse_comparison()
-        })
-    }
-
-    fn parse_comparison(&mut self) -> Option<Expr> {
-        let left = self.parse_bitwise_or()?;
-        self.parse_binary_left(
-            left,
-            &[
-                (">=", BinaryOp::Ge),
-                ("<=", BinaryOp::Le),
-                (">", BinaryOp::Gt),
-                ("<", BinaryOp::Lt),
-            ],
-            |p| p.parse_bitwise_or(),
-        )
-    }
-
-    fn parse_shift(&mut self) -> Option<Expr> {
-        let left = self.parse_term()?;
-        self.parse_binary_left(
-            left,
-            &[
-                ("sogeza_kushoto", BinaryOp::Shl),
-                ("sogeza_kulia", BinaryOp::Shr),
-                ("<<", BinaryOp::Shl),
-                (">>", BinaryOp::Shr),
-            ],
-            |p| p.parse_term(),
-        )
-    }
-
-    fn parse_term(&mut self) -> Option<Expr> {
-        let left = self.parse_factor()?;
-        self.parse_binary_left(left, &[("+", BinaryOp::Add), ("-", BinaryOp::Sub)], |p| {
-            p.parse_factor()
-        })
-    }
-
-    fn parse_factor(&mut self) -> Option<Expr> {
-        let left = self.parse_power()?;
-        self.parse_binary_left(
-            left,
-            &[
-                ("*", BinaryOp::Mul),
-                ("/", BinaryOp::Div),
-                ("%", BinaryOp::Rem),
-                ("//", BinaryOp::Div),
-            ],
-            |p| p.parse_power(),
-        )
-    }
-
-    fn parse_power(&mut self) -> Option<Expr> {
-        let left = self.parse_cast()?;
-        self.parse_binary_left(left, &[("**", BinaryOp::Pow)], |p| p.parse_cast())
-    }
-
-    fn parse_cast(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_unary()?;
-        while self.match_tok("kama") {
-            let line = self.prev().line;
-            let ty = self.parse_type();
-            expr = Expr::Cast {
-                expr: Box::new(expr),
-                ty,
-                line,
-            };
-        }
-        Some(expr)
-    }
-
-    fn parse_unary(&mut self) -> Option<Expr> {
-        const UNARY_OPS: &[(&str, UnaryOp)] = &[
-            ("-", UnaryOp::Neg),
-            ("siyo", UnaryOp::Not),
-            ("!", UnaryOp::Not),
-            ("siyo_biti", UnaryOp::BitNot),
-            ("azima", UnaryOp::BorrowImm),
-            ("azima_tenda", UnaryOp::BorrowMut),
-            ("jaribu", UnaryOp::Jaribu),
-        ];
-        for (tok, op) in UNARY_OPS {
-            if self.match_tok(tok) {
-                let line = self.prev().line;
-                let right = self.parse_unary()?;
-                return Some(Expr::Unary {
-                    op: op.clone(),
-                    expr: Box::new(right),
-                    line,
-                });
-            }
-        }
-        self.parse_postfix()
-    }
-
-    /// Parse comma-separated expressions until ")", then consume ")". Call after consuming "(".
-    fn parse_paren_args(&mut self, close_code: &'static str, close_msg: &str) -> Option<Vec<Expr>> {
-        let mut args = Vec::new();
-        while !self.check(")") {
-            args.push(self.parse_expression()?);
-            if !self.match_tok(",") {
-                break;
-            }
-        }
-        self.consume(")", close_code, close_msg)?;
-        Some(args)
-    }
-
-    fn parse_postfix(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_primary()?;
-        loop {
-            if self.match_tok("(") {
-                let args = self.parse_paren_args("PAR060", "mwito wa kazi unahitaji ')'")?;
-                let line = self.prev().line;
-                expr = Expr::Call {
-                    callee: Box::new(expr),
-                    args,
-                    line,
-                };
-                continue;
-            }
-            if self.match_tok(".") {
-                let name_tok = self.consume_ident("PAR063", "uga au njia unahitaji jina")?;
-                let name = name_tok.lexeme;
-                let line = name_tok.line;
-                let field_column = name_tok.column;
-                if self.match_tok("(") {
-                    let args = self.parse_paren_args("PAR065", "mwito wa njia unahitaji ')'")?;
-                    expr = Expr::MethodCall {
-                        receiver: Box::new(expr),
-                        method_name: name,
-                        args,
-                        line,
-                    };
-                } else {
-                    expr = Expr::FieldAccess {
-                        receiver: Box::new(expr),
-                        field: name,
-                        line,
-                        field_line: line,
-                        field_column,
-                    };
-                }
-                continue;
-            }
-            if self.match_tok("[") {
-                let idx = self.parse_expression()?;
-                self.consume("]", "PAR079", "fahirisi inahitaji ']'")?;
-                let line = self.prev().line;
-                expr = Expr::Index {
-                    base: Box::new(expr),
-                    index: Box::new(idx),
-                    line,
-                };
-                continue;
-            }
-            if self.match_tok("?") {
-                let line = self.prev().line;
-                expr = Expr::Propagate {
-                    expr: Box::new(expr),
-                    line,
-                };
-                continue;
-            }
-            if self.match_tok("::") {
-                if let Expr::Ident {
-                    name: enum_name, ..
-                } = expr
-                {
-                    let variant_tok =
-                        self.consume_ident("PAR080", "jenum kigezo inahitaji jina")?;
-                    let variant_name = variant_tok.lexeme;
-                    let line = variant_tok.line;
-                    let column = variant_tok.column;
-                    let data = if self.match_tok("(") {
-                        let d = self.parse_expression()?;
-                        self.consume(")", "PAR081", "jenum kigezo data inahitaji ')'")?;
-                        Some(Box::new(d))
-                    } else {
-                        None
-                    };
-                    expr = Expr::EnumConstruct {
-                        enum_name,
-                        variant_name,
-                        data,
-                        line,
-                        column,
-                    };
-                } else {
-                    self.err_here("PAR082", ":: inahitaji jina la jenum");
-                    return None;
-                }
-                continue;
-            }
-            break;
-        }
-        Some(expr)
-    }
-
-    fn parse_primary(&mut self) -> Option<Expr> {
-        if self.match_tok("ikiwa") {
-            return self.parse_if_expr();
-        }
-        if self.match_tok("(") {
-            let expr = self.parse_expression()?;
-            self.consume(")", "PAR070", "kikundi kinahitaji ')'")?;
-            return Some(Expr::Group(Box::new(expr)));
-        }
-
-        if self.match_tok("kweli") {
-            return Some(Expr::Bool(true));
-        }
-        if self.match_tok("si_kweli") {
-            return Some(Expr::Bool(false));
-        }
-        if self.match_tok("Hamna") {
-            return Some(Expr::Hamna);
-        }
-
-        if self.match_tok("[") {
-            let mut elements = Vec::new();
-            if !self.match_tok("]") {
-                loop {
-                    elements.push(self.parse_expression()?);
-                    if !self.match_tok(",") {
-                        break;
-                    }
-                }
-                self.consume("]", "PAR079", "orodha inahitaji ']'")?;
-            }
-            return Some(Expr::List {
-                elements,
-                line: self.prev().line,
-            });
-        }
-
-        if self.match_tok("{") {
-            let mut entries = Vec::new();
-            if !self.match_tok("}") {
-                loop {
-                    let key = self.parse_expression()?;
-                    self.consume(":", "PAR053", "kamusi inahitaji ':'")?;
-                    let val = self.parse_expression()?;
-                    entries.push((key, val));
-                    if !self.match_tok(",") {
-                        break;
-                    }
-                }
-                self.consume("}", "PAR053", "kamusi inahitaji '}'")?;
-            }
-            return Some(Expr::Map {
-                entries,
-                line: self.prev().line,
-            });
-        }
-
-        if self.peek().lexeme.starts_with("CHAR:") {
-            let t = self.advance();
-            let ch = t
-                .lexeme
-                .strip_prefix("CHAR:")
-                .and_then(|s| s.chars().next())
-                .unwrap_or('\0');
-            return Some(Expr::Char(ch));
-        }
-
-        if self.peek().lexeme.starts_with('"') {
-            let t = self.advance();
-            return Some(Expr::String(strip_string_lexeme_quotes(&t.lexeme)));
-        }
-
-        let next_lex = self.peek().lexeme.clone();
-        let next_line = self.peek().line;
-        let next_col = self.peek().column;
-
-        if (next_lex.starts_with("0x") || next_lex.starts_with("0X")) && next_lex.len() > 2 {
-            self.advance();
-            self.errors.push(
-                Diagnostic::new(
-                    "PAR072",
-                    "heksadesimali (0x) haitumiki — tumia namba za desimali pekee",
-                )
-                .with_stage("uchanganuzi")
-                .with_span(next_line, next_col),
-            );
-            return None;
-        }
-        if (next_lex.starts_with("0b") || next_lex.starts_with("0B")) && next_lex.len() > 2 {
-            self.advance();
-            self.errors.push(
-                Diagnostic::new(
-                    "PAR072",
-                    "binari (0b) haitumiki — tumia namba za desimali pekee",
-                )
-                .with_stage("uchanganuzi")
-                .with_span(next_line, next_col),
-            );
-            return None;
-        }
-
-        if next_lex.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            let t = self.advance();
-            let line = t.line;
-            let column = t.column;
-            let lexeme = t.lexeme.clone();
-            if lexeme.trim().parse::<f64>().is_err() {
-                self.errors.push(
-                    Diagnostic::new(
-                        "PAR072",
-                        format!("namba batili: \"{lexeme}\" si muundo sahihi wa desimali"),
-                    )
-                    .with_stage("uchanganuzi")
-                    .with_span(line, column),
-                );
-                return None;
-            }
-            return Some(Expr::Number(lexeme));
-        }
-
-        // [] list literal → Expr::List
-        if self.match_tok("[") {
-            let line = self.prev().line;
-            let mut elements = Vec::new();
-            while !self.check("]") && !self.is_eof() {
-                elements.push(self.parse_expression()?);
-                if !self.match_tok(",") {
-                    break;
-                }
-            }
-            self.consume("]", "PAR090", "orodha literal inahitaji ']'")?;
-            return Some(Expr::List { elements, line });
-        }
-
-        // {} / { k: v, ... } map literal → Expr::Map
-        if self.check("{") {
-            let first_inside = self.tokens.get(self.pos + 1).map(|u| u.lexeme.as_str());
-            let second_inside = self.tokens.get(self.pos + 2).map(|u| u.lexeme.as_str());
-            let is_empty_map = first_inside == Some("}");
-            let is_map_lit = !is_empty_map && second_inside == Some(":");
-            if is_empty_map || is_map_lit {
-                let line = self.peek().line;
-                self.advance(); // consume {
-                let mut entries: Vec<(Expr, Expr)> = Vec::new();
-                loop {
-                    if self.check("}") || self.is_eof() {
-                        break;
-                    }
-                    let k = self.parse_expression()?;
-                    self.consume(
-                        ":",
-                        "PAR092",
-                        "kamusi literal inahitaji ':' kati ya ufunguo na thamani",
-                    )?;
-                    let v = self.parse_expression()?;
-                    entries.push((k, v));
-                    if !self.match_tok(",") {
-                        break;
-                    }
-                }
-                self.consume("}", "PAR093", "kamusi literal inahitaji '}'")?;
-                return Some(Expr::Map { entries, line });
-            }
-        }
-
-        if self.check_ident() {
-            let t = self.advance();
-            let name = t.lexeme.clone();
-            let line = t.line;
-            let column = t.column;
-            // Only parse struct literal when "{ field : expr" appears; "pattern =>" is linganisha arms.
-            if self.check("{") {
-                let first_inside = self.tokens.get(self.pos + 1).map(|u| u.lexeme.as_str());
-                let second_inside = self.tokens.get(self.pos + 2).map(|u| u.lexeme.as_str());
-                let is_struct_lit = second_inside == Some(":") || first_inside == Some("}");
-                if is_struct_lit && self.match_tok("{") {
-                    let (fields, field_positions) = self.parse_struct_literal_fields()?;
-                    return Some(Expr::StructLiteral {
-                        struct_name: name,
-                        fields,
-                        field_positions,
-                        line,
-                    });
-                }
-            }
-            return Some(Expr::Ident { name, line, column });
-        }
-
-        self.err_here("PAR071", "usemi usiokubalika");
-        None
-    }
-
-    fn parse_if_expr(&mut self) -> Option<Expr> {
-        let line = self.prev().line;
-        let cond = self.parse_expression()?;
-        self.consume("{", "PAR094", "ikiwa ya thamani inahitaji '{'")?;
-        let then_expr = self.parse_expression()?;
-        self.consume("}", "PAR095", "ikiwa ya thamani inahitaji '}'")?;
-
-        let mut else_if = Vec::new();
-        while self.match_tok("au_ikiwa") {
-            let c = self.parse_expression()?;
-            self.consume("{", "PAR094", "au_ikiwa ya thamani inahitaji '{'")?;
-            let value = self.parse_expression()?;
-            self.consume("}", "PAR095", "au_ikiwa ya thamani inahitaji '}'")?;
-            else_if.push((c, value));
-        }
-        let else_expr = if self.match_tok("vinginevyo") {
-            self.consume("{", "PAR094", "vinginevyo ya thamani inahitaji '{'")?;
-            let value = self.parse_expression()?;
-            self.consume("}", "PAR095", "vinginevyo ya thamani inahitaji '}'")?;
-            Some(Box::new(value))
-        } else {
-            None
-        };
-        Some(Expr::If {
-            cond: Box::new(cond),
-            then_expr: Box::new(then_expr),
-            else_if,
-            else_expr,
-            line,
-        })
-    }
-
-    fn parse_struct_literal_fields(
-        &mut self,
-    ) -> Option<(Vec<(String, Expr)>, Vec<(usize, usize)>)> {
-        let mut fields = Vec::new();
-        let mut field_positions = Vec::new();
-        loop {
-            if self.match_tok("}") {
-                break;
-            }
-            let fname = self.consume_ident("PAR074", "umbo literal inahitaji jina la uga")?;
-            self.consume(
-                ":",
-                "PAR075",
-                "umbo literal inahitaji ':' baada ya jina la uga",
-            )?;
-            let expr = self.parse_expression()?;
-            field_positions.push((fname.line, fname.column));
-            fields.push((fname.lexeme, expr));
-            if !self.match_tok(",") {
-                let _ = self.consume("}", "PAR076", "umbo literal inahitaji '}'");
-                break;
-            }
-        }
-        Some((fields, field_positions))
-    }
-
+    /// Skip to the next thing that can start a top-level item, after an error, so one mistake
+    /// is reported once rather than once per remaining token.
     fn skip_top_level(&mut self) {
         while !self.is_eof() {
-            if self.check("kazi") || self.check("umma") || self.check("leta") {
+            let t = self.peek();
+            let item = matches!(
+                t.kind,
+                TokenKind::KwKazi
+                    | TokenKind::KwUmma
+                    | TokenKind::KwLeta
+                    | TokenKind::KwUmbo
+                    | TokenKind::KwJenum
+                    | TokenKind::KwSifa
+                    | TokenKind::KwShughuli
+            ) || (t.column == 1
+                && matches!(t.kind, TokenKind::KwThabiti | TokenKind::Hash));
+            if item {
                 break;
             }
             self.pos += 1;
@@ -1636,7 +926,7 @@ impl<'a> Parser<'a> {
                 methods: vec![TraitMethodSig {
                     name: "soma".to_string(),
                     params: vec![Param {
-                        name: "self".to_string(),
+                        name: Name::new("self"),
                         ty: TypeExpr {
                             name: "Self".to_string(),
                         },
@@ -1659,7 +949,7 @@ impl<'a> Parser<'a> {
                     name: "andika".to_string(),
                     params: vec![
                         Param {
-                            name: "self".to_string(),
+                            name: Name::new("self"),
                             ty: TypeExpr {
                                 name: "Self".to_string(),
                             },
@@ -1667,7 +957,7 @@ impl<'a> Parser<'a> {
                             column: 0,
                         },
                         Param {
-                            name: "data".to_string(),
+                            name: Name::new("data"),
                             ty: TypeExpr {
                                 name: "Neno".to_string(),
                             },
@@ -1690,57 +980,71 @@ impl<'a> Parser<'a> {
 }
 
 /// The operator token and binary operator of a compound-assignment token (`+=` → `+`, ...).
-fn compound_op(token: &str) -> Option<(&'static str, BinaryOp)> {
+fn compound_op(token: TokenKind) -> Option<(TokenKind, BinaryOp)> {
     Some(match token {
-        "+=" => ("+", BinaryOp::Add),
-        "-=" => ("-", BinaryOp::Sub),
-        "*=" => ("*", BinaryOp::Mul),
-        "/=" => ("/", BinaryOp::Div),
-        "//=" => ("//", BinaryOp::Div),
-        "%=" => ("%", BinaryOp::Rem),
-        "&=" => ("&", BinaryOp::BitAnd),
-        "|=" => ("|", BinaryOp::BitOr),
-        "^=" => ("^", BinaryOp::BitXor),
+        TokenKind::PlusEq => (tk!("+"), BinaryOp::Add),
+        TokenKind::MinusEq => (tk!("-"), BinaryOp::Sub),
+        TokenKind::StarEq => (tk!("*"), BinaryOp::Mul),
+        TokenKind::SlashEq => (tk!("/"), BinaryOp::Div),
+        TokenKind::SlashSlashEq => (tk!("//"), BinaryOp::Div),
+        TokenKind::PercentEq => (tk!("%"), BinaryOp::Rem),
+        TokenKind::AmpEq => (tk!("&"), BinaryOp::BitAnd),
+        TokenKind::PipeEq => (tk!("|"), BinaryOp::BitOr),
+        TokenKind::CaretEq => (tk!("^"), BinaryOp::BitXor),
         _ => return None,
     })
 }
 
-/// `left <tok> right`. Every binary expression, including compound assignments, is built here:
-/// floor division `a // b` is `sakafu(a / b)`, so it shares `sakafu`'s semantics (and the native
-/// backend's integer-division lowering) instead of being a second implementation.
-fn build_binary(tok: &str, op: BinaryOp, left: Expr, right: Expr, line: usize) -> Expr {
-    let quotient = Expr::Binary {
-        left: Box::new(left),
+/// `left <tok> right`, added to `exprs`. Every binary expression, including compound
+/// assignments, is built here: floor division `a // b` is `sakafu(a / b)`, so it shares
+/// `sakafu`'s semantics (and the native backend's integer-division lowering) instead of being a
+/// second implementation.
+fn build_binary(
+    exprs: &mut Exprs,
+    tok: TokenKind,
+    op: BinaryOp,
+    left: ExprId,
+    right: ExprId,
+    line: usize,
+) -> ExprId {
+    let quotient = exprs.add(Expr::Binary {
+        left,
         op,
-        right: Box::new(right),
+        right,
         line,
-    };
-    if tok != "//" {
+    });
+    if tok != TokenKind::SlashSlash {
         return quotient;
     }
-    Expr::Call {
-        callee: Box::new(Expr::Ident {
-            name: "sakafu".to_string(),
-            line,
-            column: 0,
-        }),
+    let callee = exprs.add(Expr::Ident {
+        name: Name::new("sakafu"),
+        line,
+        column: 0,
+    });
+    exprs.add(Expr::Call {
+        callee,
         args: vec![quotient],
         line,
-    }
+    })
 }
 
-/// Whether evaluating `expr` could call a `kazi`, builtin or method.
-fn expr_has_call(expr: &Expr) -> bool {
-    match expr {
-        // Pure numeric builtins may be evaluated twice without any observable difference
-        // (builtins take precedence over a same-named `kazi`).
-        Expr::Call { callee, args, .. }
-            if matches!(&**callee, Expr::Ident { name, .. }
-                if matches!(name.as_str(), "sakafu" | "dari" | "abs" | "mzizi")) =>
-        {
-            args.iter().any(expr_has_call)
+/// Whether evaluating `expr` could call a `kazi`, builtin or method (an explicit worklist, no
+/// recursion).
+fn expr_has_call(exprs: &Exprs, expr: ExprId) -> bool {
+    let mut work = vec![expr];
+    while let Some(e) = work.pop() {
+        match &exprs[e] {
+            // Pure numeric builtins may be evaluated twice without any observable difference
+            // (builtins take precedence over a same-named `kazi`).
+            Expr::Call { callee, args, .. }
+                if matches!(&exprs[*callee], Expr::Ident { name, .. }
+                    if matches!(name.as_str(), "sakafu" | "dari" | "abs" | "mzizi")) =>
+            {
+                work.extend(args);
+            }
+            Expr::Call { .. } | Expr::MethodCall { .. } => return true,
+            other => work.extend(other.children()),
         }
-        Expr::Call { .. } | Expr::MethodCall { .. } => true,
-        other => other.children().into_iter().any(expr_has_call),
     }
+    false
 }

@@ -1,0 +1,311 @@
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
+
+use asili_mtandao::http::seva::{serve, Handler, Jibu, JibuMwili, Ombi, ServerOptions};
+use asili_mtandao::{bind, BindOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+fn handler() -> Handler {
+    Rc::new(|o: Ombi| {
+        Box::pin(async move {
+            match o.path.as_str() {
+                "/mkondo" => {
+                    let chunks = futures_stream(vec![b"moja ".to_vec(), b"mbili".to_vec()]);
+                    Jibu {
+                        status: 200,
+                        reason: None,
+                        headers: vec![],
+                        body: JibuMwili::Stream(chunks),
+
+                        websocket: None,
+                    }
+                }
+                "/kubwa" => Jibu {
+                    status: 200,
+                    reason: None,
+                    headers: vec![("content-type".into(), "text/plain".into())],
+                    body: JibuMwili::Full(b"a".repeat(5000)),
+
+                    websocket: None,
+                },
+                _ => Jibu {
+                    status: 201,
+                    reason: Some("Imeundwa".into()),
+                    headers: vec![("x-njia".into(), o.method.clone())],
+                    body: JibuMwili::Full(
+                        format!(
+                            "{} {} {:?} {} {}",
+                            o.path,
+                            o.target,
+                            o.query,
+                            o.version,
+                            String::from_utf8_lossy(&o.body)
+                        )
+                        .into_bytes(),
+                    ),
+
+                    websocket: None,
+                },
+            }
+        })
+    })
+}
+
+fn futures_stream(items: Vec<Vec<u8>>) -> asili_mtandao::http::seva::Chunks {
+    struct It(std::vec::IntoIter<Vec<u8>>);
+    impl futures_core::Stream for It {
+        type Item = Vec<u8>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Vec<u8>>> {
+            std::task::Poll::Ready(self.0.next())
+        }
+    }
+    Box::pin(It(items.into_iter()))
+}
+
+/// One HTTP/1.1 exchange on a fresh connection: the whole response as text.
+async fn exchange(addr: &str, request: &str) -> String {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(request.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn http1_requests_streams_compression_limits_and_stop() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let l = Arc::new(bind("127.0.0.1:0", &BindOptions::default()).unwrap());
+        let addr = l.local_addr();
+        let opts = ServerOptions {
+            body_limit: 64,
+            ..Default::default()
+        };
+        let server = tokio::task::spawn_local(serve(l.local().unwrap(), opts, handler()));
+
+        let r = exchange(
+            &addr,
+            "POST /a%20b?x=1&y=n%C3%A9 HTTP/1.1\r\nhost: h\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhabari",
+        )
+        .await;
+        assert!(r.starts_with("HTTP/1.1 201 Imeundwa\r\n"), "{r}");
+        assert!(r.contains("x-njia: POST"), "{r}");
+        assert!(r.contains("date: "), "{r}");
+        assert!(
+            r.ends_with(r#"/a b /a%20b?x=1&y=n%C3%A9 [("x", "1"), ("y", "né")] HTTP/1.1 habar"#),
+            "{r}"
+        );
+
+        let r = exchange(&addr, "HEAD / HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n").await;
+        assert!(r.contains("content-length: 16"), "{r}");
+        assert!(r.ends_with("\r\n\r\n"), "HEAD has no body: {r}");
+
+        let r = exchange(&addr, "GET /mkondo HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n").await;
+        assert!(r.contains("transfer-encoding: chunked"), "{r}");
+        assert!(r.contains("moja ") && r.contains("mbili"), "{r}");
+
+        let r = exchange(
+            &addr,
+            "GET /kubwa HTTP/1.1\r\nhost: h\r\naccept-encoding: gzip\r\nconnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(r.contains("content-encoding: gzip") && r.len() < 1000, "{r}");
+
+        let big = "x".repeat(100);
+        let r = exchange(
+            &addr,
+            &format!("POST / HTTP/1.1\r\nhost: h\r\ncontent-length: 100\r\nconnection: close\r\n\r\n{big}"),
+        )
+        .await;
+        assert!(r.starts_with("HTTP/1.1 413"), "{r}");
+
+        // Two pipelined requests on one connection.
+        let r = exchange(
+            &addr,
+            "GET /1 HTTP/1.1\r\nhost: h\r\n\r\nGET /2 HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(r.matches("HTTP/1.1 201").count(), 2, "{r}");
+
+        l.stop();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("serve ends once stopped")
+            .unwrap();
+    });
+}
+
+#[test]
+fn http2_with_prior_knowledge() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let l = Arc::new(bind("127.0.0.1:0", &BindOptions::default()).unwrap());
+        let addr = l.local_addr();
+        tokio::task::spawn_local(serve(
+            l.local().unwrap(),
+            ServerOptions::default(),
+            handler(),
+        ));
+
+        let io = hyper_util::rt::TokioIo::new(TcpStream::connect(&addr).await.unwrap());
+        let (mut send, conn) =
+            hyper::client::conn::http2::handshake(hyper_util::rt::TokioExecutor::new(), io)
+                .await
+                .unwrap();
+        tokio::task::spawn_local(conn);
+        let req = hyper::Request::get(format!("http://{addr}/h2?a=b"))
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        let resp = send.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), 201);
+        assert_eq!(resp.version(), hyper::Version::HTTP_2);
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], br#"/h2 /h2?a=b [("a", "b")] HTTP/2 "#);
+        l.stop();
+    });
+}
+
+/// The client against the server over TLS: HTTP/2 is chosen by ALPN, bodies are decoded and
+/// limited, and connections are reused.
+#[test]
+fn client_negotiates_h2_decodes_and_limits() {
+    use asili_mtandao::http::mteja::{send, Body, Request, Transport};
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let dir = std::env::temp_dir();
+    let (cert, key) = (
+        dir.join(format!("mteja-cert-{}.pem", std::process::id())),
+        dir.join(format!("mteja-key-{}.pem", std::process::id())),
+    );
+    std::fs::write(&cert, ck.cert.pem()).unwrap();
+    std::fs::write(&key, ck.key_pair.serialize_pem()).unwrap();
+    let (cert, key) = (cert.display().to_string(), key.display().to_string());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let l = Arc::new(bind("127.0.0.1:0", &BindOptions::default()).unwrap());
+        let port = l.local_addr().rsplit(':').next().unwrap().to_string();
+        let opts = ServerOptions {
+            tls: Some(asili_mtandao::tls::server_config(&cert, &key, &[]).unwrap()),
+            ..Default::default()
+        };
+        tokio::task::spawn_local(serve(l.local().unwrap(), opts, handler()));
+        let t = Transport {
+            proxy: Some(String::new()),
+            ca_file: Some(cert.clone()),
+            ..Default::default()
+        };
+        let url = url::Url::parse(&format!("https://localhost:{port}/kubwa")).unwrap();
+        let req = Request {
+            method: "GET",
+            url: &url,
+            headers: &[],
+            body: &Body::Empty,
+        };
+        for _ in 0..2 {
+            let r = send(&t, &req).await.unwrap();
+            assert_eq!((r.status, r.version), (200, "HTTP/2"));
+            assert_eq!(
+                r.headers
+                    .iter()
+                    .find(|(k, _)| k == "content-encoding")
+                    .map(|(_, v)| v.as_str()),
+                Some("br")
+            );
+            let mut got = Vec::new();
+            r.read_body(1 << 20, &mut |c| {
+                got.extend_from_slice(c);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(got, b"a".repeat(5000));
+        }
+        let r = send(&t, &req).await.unwrap();
+        let err = r.read_body(100, &mut |_| Ok(())).await.unwrap_err();
+        assert!(err.contains("kikomo cha baiti 100"), "{err}");
+    });
+}
+
+/// A WebSocket: the handler upgrades `/ws` and echoes messages back, in order, until closed.
+#[test]
+fn websocket_upgrade_echo_and_close() {
+    use asili_mtandao::ws::{self, Message};
+    let echo: Handler = Rc::new(|o: Ombi| {
+        Box::pin(async move {
+            if o.path != "/ws" {
+                return Jibu::text(404, "hakuna");
+            }
+            Jibu {
+                status: 101,
+                reason: None,
+                headers: vec![],
+                body: JibuMwili::Full(vec![]),
+                websocket: Some(Box::new(|mut conn| {
+                    Box::pin(async move {
+                        while let Ok(Some(m)) = ws::recv(&mut conn, None).await {
+                            if ws::send(&mut conn, m).await.is_err() {
+                                break;
+                            }
+                        }
+                        ws::close(&mut conn).await;
+                    })
+                })),
+            }
+        })
+    });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let l = Arc::new(bind("127.0.0.1:0", &BindOptions::default()).unwrap());
+        let addr = l.local_addr();
+        tokio::task::spawn_local(serve(l.local().unwrap(), ServerOptions::default(), echo));
+        let mut c = ws::connect(&format!("ws://{addr}/ws"), &Default::default())
+            .await
+            .unwrap();
+        ws::send(&mut c, Message::Text("habari".into()))
+            .await
+            .unwrap();
+        ws::send(&mut c, Message::Binary(vec![0, 255].into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ws::recv(&mut c, None).await.unwrap(),
+            Some(Message::Text("habari".into()))
+        );
+        assert_eq!(
+            ws::recv(&mut c, None).await.unwrap(),
+            Some(Message::Binary(vec![0, 255].into()))
+        );
+        ws::close(&mut c).await;
+        assert_eq!(ws::recv(&mut c, None).await.unwrap(), None);
+        // A plain request to the same handler is refused as a WebSocket request.
+        let mut s = TcpStream::connect(&addr).await.unwrap();
+        s.write_all(b"GET /ws HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+        l.stop();
+    });
+}

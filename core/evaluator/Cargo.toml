@@ -1,14 +1,15 @@
 [package]
 name = "asili-evaluator"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
+asili-trace = { path = "../trace" }
 asili-diagnostics = { path = "../diagnostics" }
 rand = "0.10"
 asili-parser = { path = "../parser" }
 bincode = "1.3"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 httparse = "1.10"
 unicode-segmentation = "1.11"
@@ -19,18 +20,39 @@ bigdecimal = "0.4"
 num-traits = "0.2"
 parking_lot = "0.12"
 lock_api = "0.4"
+foldhash = "0.2"
+# `ruwaza` (regular expressions) and `usimbaji` (hashes and base64): pure Rust, on every target.
+regex = "1"
+# `njia` channels: blocking and async receive (a `sawia` task waits without blocking its thread).
+flume = "0.11"
+sha2 = "0.11"
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4"
+libc = "0.2"
 
 # TLS is a native-listener-only capability (mkondo_sikiliza/mkondo_tumikia are already fully
 # gated out on wasm32 — no raw sockets in a browser), so rustls (and its crypto backend, which
 # doesn't cross-compile cleanly to wasm32-unknown-unknown) is scoped to non-wasm32 targets only.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `sawia`/`subiri` (src/kazi_sawia.rs): each task a coroutine with its own stack (corosensei),
+# driven by one single-threaded tokio runtime per thread, which also does the waiting (timers,
+# channels, sockets).
+corosensei = "0.3"
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "net", "io-util"] }
+# Sockets, TLS and DNS for every network builtin.
+asili-mtandao = { path = "../mtandao" }
+# A channel as a streamed HTTP body.
+futures-core = "0.3"
 rustls = "0.23"
 rustls-pemfile = "2"
-# Loads the LLVM-compiled native library `pata jenga` builds next to an `.asb` (src/aot.rs).
-libloading = "0.8"
+# The HTTP client (`http_ombi`): `builtins/http_mteja.rs` follows redirects, retries and keeps
+# cookies (so they stay opt-in); `url` resolves `Location`, `cookie_store` keeps the jar,
+# `encoding_rs` decodes a body in its declared charset.
+url = "2"
+cookie_store = { version = "0.22", default-features = false, features = ["preserve_order"] }
+encoding_rs = "0.8"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `rand` 0.10 pulls in getrandom 0.4, which needs this explicitly enabled to build for
@@ -45,12 +67,10 @@ rustls-pki-types = "1"
 
 [features]
 # Browser wasm32 target: route I/O builtins (chapisha, onyo, makosa) to `console.log`/`console.error`
-# via wasm-bindgen instead of the default silent no-op. Mutually meaningful only on wasm32; a
+# via wasm-bindgen instead of the default silent no-op, and load native code (a wasm module) through
+# the page. Mutually meaningful only on wasm32; a
 # no-op on other targets since the platform module gates on target_arch too.
 wasm-browser = ["dep:wasm-bindgen"]
-# WASI wasm32 target (wasm32-wasip1/wasm32-wasi): std's io/fs already work correctly under WASI,
-# so this feature just stops special-casing wasm32 — no extra crate dependency needed.
-wasm-wasi = []
 
 [lib]
 path = "src/lib.rs"

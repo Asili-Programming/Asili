@@ -1,19 +1,65 @@
-//! Operator semantics shared by the tree-walking evaluator and the bytecode VM.
+//! Operator semantics on generic values, called by native code's host.
 //!
-//! Both engines evaluate operands their own way (the VM also keeps fast paths for typed
-//! registers), but every operation on generic `Value`s goes through these functions so the two
-//! can never disagree.
+//! Native code compiles operations on typed (numeric) registers itself, with the same results;
+//! every operation on generic `Value`s goes through these functions.
 
 use asili_parser::{BinaryOp, UnaryOp};
 use std::cmp::Ordering;
 
-use crate::value::{
-    self, big_numeric_binary_op, binary_cmp_neno, binary_f64, binary_f64_cmp, EvalError, Value,
-};
+use crate::value::{self, big_numeric_binary_op, binary_cmp_neno, EvalError, Value};
+
+/// `a op b` on two numbers: the one definition of arithmetic and comparison on `Namba` values
+/// (`None` for operators that are not arithmetic or comparison).
+#[inline]
+fn number_op(op: &BinaryOp, a: f64, b: f64) -> Option<Value> {
+    Some(match op {
+        BinaryOp::Add => Value::Namba(a + b),
+        BinaryOp::Sub => Value::Namba(a - b),
+        BinaryOp::Mul => Value::Namba(a * b),
+        BinaryOp::Div => Value::Namba(a / b),
+        BinaryOp::Rem => Value::Namba(a % b),
+        BinaryOp::Pow => Value::Namba(a.powf(b)),
+        BinaryOp::Gt => Value::Ukweli(a > b),
+        BinaryOp::Lt => Value::Ukweli(a < b),
+        BinaryOp::Ge => Value::Ukweli(a >= b),
+        BinaryOp::Le => Value::Ukweli(a <= b),
+        BinaryOp::Eq => Value::Ukweli(a == b),
+        BinaryOp::Ne => Value::Ukweli(a != b),
+        _ => return None,
+    })
+}
+
+/// `l op r` with both sides read as numbers (`Namba`, `Wakati`, `Anuani`), else the operator's
+/// type error.
+fn numeric(op: &BinaryOp, l: &Value, r: &Value, op_name: &str) -> Result<Value, EvalError> {
+    let err = || EvalError::TypeErr(format!("{op_name} inahitaji Namba"));
+    let a = value::as_f64(l).ok_or_else(err)?;
+    let b = value::as_f64(r).ok_or_else(err)?;
+    number_op(op, a, b).ok_or_else(err)
+}
 
 /// `l op r` for already-evaluated operands. `na`/`au` short-circuiting is the caller's job
 /// (it decides whether `r` is evaluated at all); given both values, they are checked here.
-pub(crate) fn binary_value(op: &BinaryOp, l: Value, r: Value) -> Result<Value, EvalError> {
+/// `target = target <op> r` in place, when that gives the same value [`binary_value`] would:
+/// appending text to a `Neno` no other copy shares (amortized, instead of copying the whole
+/// string). `false` when it does not apply — then compute `binary_value` as usual.
+pub(crate) fn assign_in_place(op: &BinaryOp, target: &mut Value, r: &Value) -> bool {
+    match (op, target, r) {
+        (BinaryOp::Add, Value::Neno(s), Value::Neno(t)) if s.is_unique() => {
+            s.push_str(t);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn binary_value(op: &BinaryOp, l: &Value, r: &Value) -> Result<Value, EvalError> {
+    // The common case first: two plain numbers.
+    if let (Value::Namba(a), Value::Namba(b)) = (l, r) {
+        if let Some(v) = number_op(op, *a, *b) {
+            return Ok(v);
+        }
+    }
     // Namba_Kuu/Namba_Sahihi arithmetic short-circuits before the plain-f64 path below —
     // a Namba operand mixed with either widens (infallibly) to match, matching the cast
     // direction documented for these types (Namba -> Namba_Kuu/Namba_Sahihi is
@@ -25,36 +71,41 @@ pub(crate) fn binary_value(op: &BinaryOp, l: Value, r: Value) -> Result<Value, E
             return Ok(result);
         }
     }
-    match op {
-        BinaryOp::Add => match (value::as_string(&l), value::as_string(&r)) {
-            (Some(s1), Some(s2)) => Ok(Value::Neno(format!("{s1}{s2}"))),
-            _ => binary_f64(&l, &r, "+", |a, b| a + b),
-        },
-        BinaryOp::Sub => binary_f64(&l, &r, "-", |a, b| a - b),
-        BinaryOp::Mul => binary_f64(&l, &r, "*", |a, b| a * b),
-        BinaryOp::Div => {
-            let a =
-                value::as_f64(&l).ok_or_else(|| EvalError::TypeErr("/ inahitaji Namba".into()))?;
-            let b =
-                value::as_f64(&r).ok_or_else(|| EvalError::TypeErr("/ inahitaji Namba".into()))?;
-            Ok(Value::Namba(a / b))
+    // Bytes compare byte by byte, as text does.
+    if let (Value::Baiti(a), Value::Baiti(b)) = (l, r) {
+        let o = a.cmp(b);
+        match op {
+            BinaryOp::Gt => return Ok(Value::Ukweli(o == Ordering::Greater)),
+            BinaryOp::Lt => return Ok(Value::Ukweli(o == Ordering::Less)),
+            BinaryOp::Ge => return Ok(Value::Ukweli(o != Ordering::Less)),
+            BinaryOp::Le => return Ok(Value::Ukweli(o != Ordering::Greater)),
+            _ => {}
         }
-        BinaryOp::Rem => binary_f64(&l, &r, "%", |a, b| a % b),
-        BinaryOp::Pow => binary_f64(&l, &r, "**", |a, b| a.powf(b)),
+    }
+    match op {
+        BinaryOp::Add => match (l, r) {
+            // One allocation of exactly the result's size; neither operand is copied first.
+            (Value::Neno(s1), Value::Neno(s2)) => Ok(Value::Neno(value::concat_text(s1, s2))),
+            (Value::Baiti(a), Value::Baiti(b)) => {
+                Ok(Value::Baiti([&a[..], &b[..]].concat().into()))
+            }
+            (l, r) => numeric(op, l, r, "+"),
+        },
+        BinaryOp::Sub => numeric(op, l, r, "-"),
+        BinaryOp::Mul => numeric(op, l, r, "*"),
+        BinaryOp::Div => numeric(op, l, r, "/"),
+        BinaryOp::Rem => numeric(op, l, r, "%"),
+        BinaryOp::Pow => numeric(op, l, r, "**"),
         BinaryOp::Eq => Ok(Value::Ukweli(l == r)),
         BinaryOp::Ne => Ok(Value::Ukweli(l != r)),
-        BinaryOp::Gt => binary_cmp_neno(&l, &r, |o| o == Ordering::Greater)
-            .map(Ok)
-            .unwrap_or_else(|| binary_f64_cmp(&l, &r, ">", |a, b| a > b)),
-        BinaryOp::Lt => binary_cmp_neno(&l, &r, |o| o == Ordering::Less)
-            .map(Ok)
-            .unwrap_or_else(|| binary_f64_cmp(&l, &r, "<", |a, b| a < b)),
-        BinaryOp::Ge => binary_cmp_neno(&l, &r, |o| o != Ordering::Less)
-            .map(Ok)
-            .unwrap_or_else(|| binary_f64_cmp(&l, &r, ">=", |a, b| a >= b)),
-        BinaryOp::Le => binary_cmp_neno(&l, &r, |o| o != Ordering::Greater)
-            .map(Ok)
-            .unwrap_or_else(|| binary_f64_cmp(&l, &r, "<=", |a, b| a <= b)),
+        BinaryOp::Gt => binary_cmp_neno(l, r, |o| o == Ordering::Greater)
+            .map_or_else(|| numeric(op, l, r, ">"), Ok),
+        BinaryOp::Lt => binary_cmp_neno(l, r, |o| o == Ordering::Less)
+            .map_or_else(|| numeric(op, l, r, "<"), Ok),
+        BinaryOp::Ge => binary_cmp_neno(l, r, |o| o != Ordering::Less)
+            .map_or_else(|| numeric(op, l, r, ">="), Ok),
+        BinaryOp::Le => binary_cmp_neno(l, r, |o| o != Ordering::Greater)
+            .map_or_else(|| numeric(op, l, r, "<="), Ok),
         BinaryOp::And => {
             let a = match &l {
                 Value::Ukweli(x) => *x,
@@ -151,6 +202,10 @@ pub(crate) fn unary_value(op: &UnaryOp, v: Value) -> Result<Value, EvalError> {
             Ok(Value::Ukweli(!b))
         }
         UnaryOp::Jaribu => jaribu(&v),
+        UnaryOp::Subiri => match v {
+            Value::Ahadi(t) => crate::kazi_sawia::subiri(&t),
+            other => Ok(other),
+        },
         UnaryOp::BitNot => {
             let n = value::as_f64(&v)
                 .ok_or_else(|| EvalError::TypeErr("siyo_biti inahitaji Namba".into()))?;

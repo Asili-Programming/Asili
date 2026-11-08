@@ -1,16 +1,9 @@
-//! ASB (Asili bytecode) serialized format: header + payload for run-from-.asb.
-//
-// HACK: The "ASB" format currently serializes the parsed AST (Module) via bincode, not real bytecode.
-// Running an .asb file re-interprets the AST through the tree-walk evaluator, not a VM.
-// This means .asb files carry the full AST, not a compact instruction stream, and "compilation"
-// provides no performance benefit over re-parsing source.
-// TODO(Phase II): Replace with a real bytecode format: lower AST -> TIR -> BytecodeProgram,
-// serialize BytecodeProgram, and execute with run_bytecode() instead of run_main().
+//! The `.asb` artifact: a text header, then the program's bytecode (`BytecodeProgram`) and the
+//! syntax tree it carries, serialized with bincode.
 
-use asili_parser::Module;
 use std::fmt;
 
-const ASB_HEADER_PREFIX: &str = "ASB-STUB\nversion=4\nformat=serialized\n";
+const ASB_HEADER_PREFIX: &str = "ASB-STUB\nversion=5\nformat=serialized\n";
 const PAYLOAD_MARKER: &[u8] = b"\nPAYLOAD\n";
 
 /// Parse format from .asb header (e.g. "serialized" or "bytecode"). Returns None if header missing.
@@ -50,22 +43,18 @@ impl fmt::Display for AsbLoadError {
 
 impl std::error::Error for AsbLoadError {}
 
-/// Emit .asb as bytes: UTF-8 header (with module_hash) then PAYLOAD marker then bincode-serialized Module.
-pub fn emit_asb_bytes(module: &Module, source: &str) -> Vec<u8> {
-    let payload = bincode::serialize(module).expect("Module serialization");
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    source.hash(&mut h);
-    let hash = h.finish();
-    let header = format!("{ASB_HEADER_PREFIX}module_hash={hash:016x}\nPAYLOAD\n");
-    let mut out = header.into_bytes();
-    out.extend_from_slice(&payload);
-    out
-}
-
-/// Version of the bytecode payload (the register-VM instruction set). Artifacts built by an
+/// Version of the bytecode payload (its instruction set, and the syntax tree it carries). Artifacts built by an
 /// older `pata jenga` carry a different `version=` and must be rebuilt.
-const BYTECODE_VERSION: &str = "5";
+const BYTECODE_VERSION: &str = "21";
+
+/// Every artifact format this build reads and writes, for build caches: a cached artifact made
+/// under different formats (an older or newer toolchain) must be rebuilt, not loaded.
+pub fn artifact_formats() -> String {
+    format!(
+        "{ASB_HEADER_PREFIX}bytecode={BYTECODE_VERSION};compiler={}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 /// Emit a real bytecode artifact.  The header remains intentionally simple and textual so older
 /// runners can reject it cleanly, while the payload is the same deterministic bincode envelope
@@ -83,13 +72,6 @@ pub fn emit_bytecode_bytes(program: &crate::bytecode::BytecodeProgram, source: &
     out.extend_from_slice(&payload);
     out
 }
-
-/// Load a Module from .asb bytes. Expects format=serialized and a PAYLOAD section.
-pub fn load_asb(bytes: &[u8]) -> Result<Module, AsbLoadError> {
-    let payload = payload_slice(bytes)?;
-    bincode::deserialize(payload).map_err(|e| AsbLoadError::Decode(e.to_string()))
-}
-
 fn payload_slice(bytes: &[u8]) -> Result<&[u8], AsbLoadError> {
     let pos = bytes
         .windows(PAYLOAD_MARKER.len())
@@ -113,5 +95,12 @@ pub fn load_asb_bytecode(bytes: &[u8]) -> Result<crate::bytecode::BytecodeProgra
                 .to_string(),
         ));
     }
-    bincode::deserialize(payload).map_err(|e| AsbLoadError::Decode(e.to_string()))
+    let program: crate::bytecode::BytecodeProgram =
+        bincode::deserialize(payload).map_err(|e| AsbLoadError::Decode(e.to_string()))?;
+    crate::bytecode_verify::verify(&program).map_err(|e| {
+        AsbLoadError::InvalidFormat(format!(
+            "kilele kimeharibika ({e}); jenga upya kwa `pata jenga`"
+        ))
+    })?;
+    Ok(program)
 }

@@ -5,9 +5,7 @@ use crate::pipeline::project::{
 };
 use crate::pipeline::sharti::filter_module_for_target;
 use asili_diagnostics::Diagnostic;
-use asili_evaluator::{
-    emit_asb, execute_tests_with_timeout, load_asb, parse_format, validate_module, TestResult,
-};
+use asili_evaluator::{emit_asb, execute_tests_with_timeout, validate_module, TestResult};
 use asili_lexer::tokenize;
 use asili_parser::{
     discover_tests, parse_tokens, semantic_check_with_env_and_modules, Function, Module, Target,
@@ -33,6 +31,7 @@ pub fn cache_key(name: &str, source: &str, target: &str) -> String {
     hasher.update(name.as_bytes());
     hasher.update(source.as_bytes());
     hasher.update(target.as_bytes());
+    hasher.update(asili_evaluator::artifact_formats().as_bytes());
     let result = hasher.finalize();
     format!(
         "{:016x}",
@@ -80,8 +79,12 @@ pub fn project_input_hash(
     entry_path.display().to_string().hash(&mut h);
     entry_content.hash(&mut h);
     target.0.hash(&mut h);
+    asili_evaluator::artifact_formats().hash(&mut h);
     let mut pairs: Vec<(String, String)> = Vec::new();
-    for name in dependency_order(&program.resolved) {
+    // Any fixed order works for a fingerprint; sorted names don't depend on import structure.
+    let mut names: Vec<&String> = program.resolved.keys().collect();
+    names.sort();
+    for name in names {
         let content = if let Some((path, _)) = find_module_file(name.as_str(), root, dependencies) {
             fs::read_to_string(&path).unwrap_or_default()
         } else {
@@ -162,9 +165,11 @@ pub fn compile_project(root: &Path, cli_target: Option<&str>) -> Result<CompileO
                         1,
                     )
                 })?;
-                if parse_format(&bytes).as_deref() != Some("bytecode") {
-                    let module = load_asb(&bytes)
-                        .map_err(|e| CliError::new(format!("kuipakia asb: {e}"), 1))?;
+                // An artifact this build cannot read is rebuilt, not an error.
+                let cached = asili_evaluator::load_asb_bytecode(&bytes)
+                    .ok()
+                    .and_then(|program| program.ast);
+                if let Some(module) = cached {
                     return Ok(CompileOutput {
                         module,
                         source,
@@ -210,10 +215,14 @@ fn parse_and_resolve(
     registry: &mut InterfaceRegistry,
     target: &Target,
 ) -> Result<(Module, ResolvedProgram), CliError> {
-    let tokens = tokenize(source).map_err(|errors| diag_err("leksika", errors))?;
-    let mut entrypoint = parse_tokens(&tokens).map_err(|errors| diag_err("uchanganuzi", errors))?;
+    let mut entrypoint = {
+        let _phase = asili_trace::phase("uchanganuzi");
+        let tokens = tokenize(source).map_err(|errors| diag_err("leksika", errors))?;
+        parse_tokens(&tokens).map_err(|errors| diag_err("uchanganuzi", errors))?
+    };
     filter_module_for_target(&mut entrypoint, target)
         .map_err(|errors| diag_err("sharti", errors))?;
+    let _phase = asili_trace::phase("utatuzi");
     let mut program = resolve_all(&entrypoint, root, dependencies, registry)
         .map_err(|errors| diag_err("utatuzi", errors))?;
     for res in program.resolved.values_mut() {
@@ -233,6 +242,7 @@ fn check_program(
     prelude: &StdlibEnv,
     require_main: bool,
 ) -> Result<(), CliError> {
+    let _phase = asili_trace::phase("semantiki");
     let dup_errors = check_duplicate_imports(entrypoint, &program.resolved, prelude);
     if !dup_errors.is_empty() {
         return Err(diag_err("semantiki", dup_errors));
@@ -240,7 +250,8 @@ fn check_program(
     // Modules the resolver already confirmed exist (project-local files, path/vendored
     // dependencies) are allowed `leta` targets alongside the builtin-module whitelist.
     let resolved_modules: HashSet<String> = program.resolved.keys().cloned().collect();
-    for name in dependency_order(&program.resolved) {
+    let order = dependency_order(&program.resolved).map_err(|d| diag_err("utatuzi", vec![d]))?;
+    for name in order {
         let res = &program.resolved[&name];
         let (ext_fns, ext_consts) = merge_for_semantic(&res.module, &program.resolved, prelude);
         semantic_check_with_env_and_modules(
@@ -316,35 +327,146 @@ pub fn compile_single_file(
     })
 }
 
-/// Ahead-of-time compile a bytecode artifact to native code (LLVM, via `clang`) next to it.
-/// Never fails the build: without a compiler the artifact simply runs on the VM.
-fn build_native_library(asb: &[u8], target: &Path, name: &str) {
-    use asili_evaluator::aot::{build_library, library_file_name, AotError};
-    let stale = target.join(library_file_name(name));
-    if parse_format(asb).as_deref() != Some("bytecode") {
-        let _ = fs::remove_file(&stale);
-        return;
+/// `pata jenga --namna`: how hard the build tries for native code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuildProfile {
+    /// The program's bytecode, and its native image where this platform has a backend (the
+    /// runner otherwise builds native code when it starts).
+    #[default]
+    Dev,
+    /// What ships: the native image must be built (or the build fails saying why), and a
+    /// standalone executable is written beside it.
+    Release,
+}
+
+impl BuildProfile {
+    pub fn parse(name: &str) -> Result<Self, CliError> {
+        match name {
+            "dev" => Ok(BuildProfile::Dev),
+            "release" => Ok(BuildProfile::Release),
+            "embedded" => Err(CliError::new("namna 'embedded' haijatekelezwa bado", 2)),
+            other => Err(CliError::new(
+                format!("namna '{other}' haijulikani (tumia dev au release)"),
+                2,
+            )),
+        }
     }
-    let Ok(program) = asili_evaluator::load_asb_bytecode(asb) else {
-        return;
+}
+
+/// Ahead-of-time compile a bytecode artifact to native machine code next to it
+/// (`<name>.nguvu`, built in-house with no external tools). In `Dev` an image that cannot be
+/// built is left to the runner to build at start-up; `Release` fails instead.
+/// The device build (`--lengo cortex-m`): the strict functions as `<name>-cortex-m.o`, an ELF
+/// object for Cortex-M a firmware links, and their C declarations in `<name>.h`.
+fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliError> {
+    let program =
+        asili_evaluator::compile_module_explained(module).map_err(|e| CliError::new(e, 1))?;
+    let strict: Vec<usize> = module
+        .functions
+        .iter()
+        .filter(|f| asili_evaluator::salama::is_strict(f))
+        .filter_map(|f| program.functions.iter().position(|g| g.name == f.name))
+        .collect();
+    if strict.is_empty() {
+        return Err(CliError::new(
+            "hakuna kazi salama ya kujenga kwa Cortex-M (weka #[salama] juu ya kazi)",
+            1,
+        ));
+    }
+    let built = asili_evaluator::nguvu::device::build(&program, &strict, name)
+        .map_err(|e| CliError::new(e, 1))?;
+    let write = |file: String, bytes: &[u8]| -> Result<PathBuf, CliError> {
+        let path = target.join(file);
+        fs::write(&path, bytes).map_err(|e| {
+            CliError::new(format!("imeshindwa kuandika {}: {e}", path.display()), 1)
+        })?;
+        Ok(path)
     };
-    match build_library(&program, target, name) {
-        Ok(path) => println!("msimbo asilia: {}", path.display()),
-        Err(AotError::Unavailable(why)) => {
-            let _ = fs::remove_file(&stale);
-            println!("msimbo asilia haukujengwa ({why}); kilele kitaendeshwa na VM");
-        }
-        Err(AotError::Failed(why)) => {
-            let _ = fs::remove_file(&stale);
-            eprintln!("onyo: msimbo asilia haukujengwa: {why}");
-        }
+    let object = write(format!("{name}-cortex-m.o"), &built.object)?;
+    let header = write(format!("{name}.h"), built.header.as_bytes())?;
+    println!(
+        "kifaa (Cortex-M): {} na {} — kazi: {}",
+        object.display(),
+        header.display(),
+        built.exports.join(", ")
+    );
+    Ok(())
+}
+
+/// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): the static
+/// runner `tenda` with the artifact and its native image appended
+/// (`asili_evaluator::bundle`), which runs directly. The runner comes from `ASILI_TENDA` or sits
+/// beside `pata`; without one the build only notes that the executable was skipped.
+fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliError> {
+    let exe = format!("tenda{}", std::env::consts::EXE_SUFFIX);
+    let runner = std::env::var_os("ASILI_TENDA")
+        .map(PathBuf::from)
+        .or_else(|| Some(std::env::current_exe().ok()?.parent()?.join(&exe)))
+        .filter(|p| p.is_file());
+    let Some(runner) = runner else {
+        println!(
+            "programu huru haikujengwa: `{exe}` haipatikani kando ya pata (au weka ASILI_TENDA)"
+        );
+        return Ok(());
+    };
+    let runner = fs::read(&runner)
+        .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", runner.display()), 1))?;
+    let image = fs::read(target.join(asili_evaluator::nguvu::image_file_name(name))).ok();
+    let path = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    fs::write(
+        &path,
+        asili_evaluator::bundle::assemble(&runner, asb, image.as_deref()),
+    )
+    .map_err(|e| CliError::new(format!("imeshindwa kuandika {}: {e}", path.display()), 1))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
     }
+    println!("programu huru: {}", path.display());
+    Ok(())
+}
+
+fn build_native_library(
+    asb: &[u8],
+    target: &Path,
+    name: &str,
+    profile: BuildProfile,
+) -> Result<(), CliError> {
+    use asili_evaluator::nguvu;
+    let stale = target.join(nguvu::image_file_name(name));
+    // Libraries from the retired LLVM backend would only confuse; nothing loads them now.
+    let _ = fs::remove_file(target.join(format!("{name}.{}", std::env::consts::DLL_EXTENSION)));
+    let _ = fs::remove_file(target.join(format!("{name}.ll")));
+    let program = asili_evaluator::load_asb_bytecode(asb)
+        .map_err(|e| CliError::new(format!("kuipakia bytecode: {e}"), 1))?;
+    let failure = if !nguvu::supported() {
+        "mfumo huu bado hauungwi mkono".to_string()
+    } else {
+        match nguvu::write_image(&program, target, name) {
+            Ok(path) => {
+                println!("msimbo asilia: {}", path.display());
+                return Ok(());
+            }
+            Err(why) => why,
+        }
+    };
+    let _ = fs::remove_file(&stale);
+    if profile == BuildProfile::Release {
+        return Err(CliError::new(
+            format!("--namna release inahitaji msimbo asilia, lakini haukujengwa: {failure}"),
+            1,
+        ));
+    }
+    println!("picha ya msimbo asilia haikujengwa ({failure})");
+    Ok(())
 }
 
 pub fn emit_build_artifacts(
     root: &Path,
     compiled: &CompileOutput,
     out_dir: Option<&Path>,
+    profile: BuildProfile,
 ) -> Result<PathBuf, CliError> {
     let target = out_dir
         .map(|p| p.to_path_buf())
@@ -352,7 +474,18 @@ pub fn emit_build_artifacts(
     fs::create_dir_all(&target)
         .map_err(|e| CliError::new(format!("imeshindwa kuunda {}: {e}", target.display()), 1))?;
 
-    let asb = emit_asb(&compiled.module, &compiled.source);
+    let bytecode_phase = asili_trace::phase("bytecode");
+    let asb = emit_asb(&compiled.module, &compiled.source)
+        .map_err(|blocked| CliError::new(blocked, 1))?;
+    // The bounds of `#[salama]` functions (the build already checked their rules).
+    if let Ok(program) = asili_evaluator::compile_module_explained(&compiled.module) {
+        for r in asili_evaluator::salama::kagua(&compiled.module, &program).unwrap_or_default() {
+            println!(
+                "salama: kazi '{}' — hatua ≤ {}, kumbukumbu ≤ baiti {}",
+                r.kazi, r.hatua, r.kumbukumbu
+            );
+        }
+    }
     let artifact = target.join(format!("{}.asb", compiled.config.name));
     fs::write(&artifact, &asb).map_err(|e| {
         CliError::new(
@@ -361,7 +494,18 @@ pub fn emit_build_artifacts(
         )
     })?;
 
-    build_native_library(&asb, &target, &compiled.config.name);
+    drop(bytecode_phase);
+    {
+        let _phase = asili_trace::phase("msimbo asilia");
+        build_native_library(&asb, &target, &compiled.config.name, profile)?;
+    }
+    if profile == BuildProfile::Release {
+        write_standalone(&asb, &target, &compiled.config.name)?;
+    }
+    if compiled.target.0 == "cortex-m" {
+        let _phase = asili_trace::phase("cortex-m");
+        write_device(&compiled.module, &target, &compiled.config.name)?;
+    }
 
     let meta = target.join(format!("{}.build.manifest", compiled.config.name));
     let input_hash_line = compiled
@@ -518,7 +662,7 @@ pub fn run_project_tests_parallel(
                                 timeout,
                             );
                             result.into_iter().next().unwrap_or_else(|| TestResult {
-                                name: f.name.clone(),
+                                name: f.name.to_string(),
                                 passed: false,
                                 message: "failed to run test".to_string(),
                             })
@@ -541,7 +685,7 @@ pub fn run_project_tests_parallel(
 pub fn list_project_tests(root: &Path) -> Result<Vec<String>, CliError> {
     Ok(discover_project_tests(root, None)?
         .into_iter()
-        .map(|(_, test)| test.name)
+        .map(|(_, test)| test.name.to_string())
         .collect())
 }
 
@@ -600,6 +744,50 @@ mod tests {
     /// dependency and uses both. Exercises the resolver's path-dependency lookup and
     /// merge_for_eval's struct/constant handling end-to-end through compile_project.
     #[test]
+    fn build_profiles_parse_and_reject_unimplemented_ones() {
+        assert_eq!(BuildProfile::parse("dev").unwrap(), BuildProfile::Dev);
+        assert_eq!(
+            BuildProfile::parse("release").unwrap(),
+            BuildProfile::Release
+        );
+        assert!(BuildProfile::parse("embedded")
+            .unwrap_err()
+            .message
+            .contains("haijatekelezwa"));
+        assert!(BuildProfile::parse("haraka")
+            .unwrap_err()
+            .message
+            .contains("haijulikani"));
+    }
+
+    /// No profile writes a syntax-tree artifact: a program the bytecode compiler can't lower
+    /// fails the build with the construct that blocked it.
+    #[test]
+    fn builds_refuse_programs_that_do_not_lower() {
+        let root = temp_dir("release-ast");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("pata.toml"), crate::test_support::MANIFEST).unwrap();
+        // `tupa` of a binding declared outside an enclosing loop isn't lowered to bytecode.
+        fs::write(
+            root.join("src/kuu.as"),
+            "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    weka x = 1\n    kwa i kutoka 0 hadi 1 {\n        tupa x\n    }\n}\n",
+        )
+        .unwrap();
+        let compiled = compile_project(&root, None).expect("compiles");
+        for profile in [BuildProfile::Dev, BuildProfile::Release] {
+            let err = emit_build_artifacts(&root, &compiled, None, profile)
+                .expect_err("no syntax-tree artifact");
+            assert!(
+                err.message.contains("kugeuzwa kuwa bytecode"),
+                "{}",
+                err.message
+            );
+            assert!(err.message.contains("kazi 'kuu'"), "{}", err.message);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn compile_project_resolves_struct_and_constant_from_path_dependency() {
         let workspace = temp_dir("workspace");
         let dep_dir = workspace.join("mathutil");
@@ -640,7 +828,8 @@ mod tests {
         // Prove it's not just structurally present but actually runs end-to-end: a struct field
         // initialized from an imported constant, through the CLI's full compile pipeline and the
         // evaluator's runtime, should produce the constant's real value.
-        let result = asili_evaluator::run_function(&compiled.module, "thamani", vec![])
+        let result = asili_evaluator::NativeProgram::build(&compiled.module)
+            .and_then(|program| program.call("thamani", vec![]))
             .expect("thamani() should run using the imported struct and constant");
         match result {
             asili_evaluator::Value::Namba(n) => {
@@ -779,14 +968,20 @@ mod tests {
             "tu_native should be filtered out of the in-memory module for target=wasm"
         );
 
-        let artifact = emit_build_artifacts(&root, &compiled, None).expect("emit .asb");
+        let artifact =
+            emit_build_artifacts(&root, &compiled, None, BuildProfile::Dev).expect("emit .asb");
         let bytes = fs::read(&artifact).expect("read .asb");
-        let loaded = load_asb(&bytes).expect("load_asb");
+        let names: Vec<String> = asili_evaluator::load_asb_bytecode(&bytes)
+            .expect("load_asb_bytecode")
+            .functions
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert!(
-            !loaded.functions.iter().any(|f| f.name == "tu_native"),
+            !names.iter().any(|n| n == "tu_native"),
             "tu_native should be absent from the emitted .asb, not just the in-memory module"
         );
-        assert!(loaded.functions.iter().any(|f| f.name == "kuu"));
+        assert!(names.iter().any(|n| n == "kuu"));
 
         let _ = fs::remove_dir_all(&root);
     }

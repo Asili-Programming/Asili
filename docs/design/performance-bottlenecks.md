@@ -1,0 +1,175 @@
+# Performance bottlenecks — measured, ranked, with fixes
+
+A sweep of every engine and phase, October 2026: what is slow, why (from profiles, not guesses),
+what fixes it, and what has been done. Numbers are best-of-N wall time on a 4-core x86-64 VM
+(±5% noise) or exact instruction counts from callgrind where small changes need to be visible.
+
+## Workloads
+
+The examples in `examples/` all finish in ~2 ms — process start-up — so they cannot show
+bottlenecks. Seven small programs each stress one thing (kept in the session scratchpad; each is
+a few lines and easy to recreate from the descriptions):
+
+| Workload | What it does | Asili native | Tree-walker | Reference |
+|---|---|---|---|---|
+| desimali | 20 M iterations of float multiply-add | 146 ms | 6.9 s | C −O2 146 ms |
+| ungo | sieve of 5 M | 24 ms | 5.4 s | C −O2 56 ms |
+| orodha | push 1 M numbers, sum with `kwa x katika` | 8 ms (was 15–17) | 435 ms | C −O2 12 ms |
+| fib | recursive `fib(30)`, 1.35 M calls | 11 ms (was 14) | 796 ms | C −O2 5.9 ms |
+| umbo | build a 2-field `umbo` 1 M times through a `kazi` | 3 ms (was 150–185 ms) | 590 ms | C −O2 1.9 ms |
+| kamusi | 300 k `Kamusi` updates with `Neno` keys | ~70 ms (was 75–90) | 184 ms | Python 66 ms |
+| maneno | 300 k numbers to text + join; 20 k `s = s + "ab"` | 60 ms (was 71–79) | 105 ms | Python 64 ms |
+
+Sudoku (`examples/sudoku/bench/run.sh`): asili-nguvu 5.2 ms, clang −O2 5.9 ms, 90,665 attempts.
+
+Summary: numeric code compiled by nguvu is at or above C. Everything that touches non-numeric
+values (structs, maps, strings, methods) leaves native code for the host on every operation and
+is 1–80× off its reference. Calls between numeric functions cost ~1.9× C.
+
+## Fixed in this round
+
+| # | Bottleneck | Evidence | Fix | Result |
+|---|---|---|---|---|
+| F1 | `Value` was 56 bytes | every clone, drop and move copies it | struct/field/enum/variant names interned (`asili_parser::Name`, 8 bytes); `Kamusi`, `Seti`, `Namba_Kuu`, `Namba_Sahihi` behind `Rc` | 32 bytes; tree-walker Sudoku 11.53 → 9.95 G instructions |
+| F2 | Copying a `Kamusi`/`Seti` copied every entry | tree-walker map loop 6.0 s | copy on write (`Rc::make_mut`), like `Orodha` | 6,034 → 184 ms (33×) |
+| F3 | A `Vec` allocated and freed per builtin/method call in the host | 900 k allocations in the map loop | one reused argument buffer | −3% map loop |
+| F4 | Trace spans cost ~37 instructions per host call with tracing off | `asili_trace::open` in profiles | inline off-check, traced path `#[cold]` | −2% struct loop |
+| F5 | Builtin table built twice at every start | 249 k of 1.08 M start-up instructions | built once, sorted once | 1.08 → 0.98 M |
+| F6 | Small functions called through the host; structs built on the heap per iteration | ~600 instructions per call, ~280 per struct built, ~100 per field read | inlining of `rejesha`-only functions when compiling bytecode (`inlinable`, guarded by `CheckDepth`), then scalar replacement of structs that never leave their function (`scalars.rs`) | struct loop 1,805 M → 9 M instructions, ~150–185 → 3 ms (C 1.9 ms) |
+| F8 | `s = s + t` copied the whole string every time | 45% of the strings workload in `memcpy` | `Neno` storage is `Text` (header + bytes, spare capacity), appended in place when unshared (`ops::assign_in_place`, both engines) | 830 → 427 M instructions, 71 → 60 ms (Python 64) |
+| F9 | Boxing numbers, copying values and loading constants each went through the host's general instruction path | ~100 instructions of dispatch per instruction | direct runtime calls from native code (`BoxNum`, `BoxBool`, `ValMov`, `ConstVal`) | map loop −9%, strings −6% |
+| F10 | Every list push called the runtime | ~85 instructions per push | inline append when there is room, the length stored into the list; runtime only to grow | list workload 119.6 → 37.8 M instructions |
+| F11 | x86-64 parked every incoming argument on the stack and reloaded every call argument from it | 4 stores + 4 loads per entry, a load per pointer argument per call | arguments kept in callee-saved registers move register to register | Sudoku 23.66 → 22.87 M instructions |
+| F12 | Direct entries took four pointer arguments and returned their number through memory | prologue parked `rt` and the stack limit, every call reloaded them; 5 callee-saved pushes in `fib` | direct entries take `(host, registers)`, read the runtime table and stack limit from the host (`RT_OFFSET`, `LIMIT_OFFSET`; `run_native` sets the limit), return the number in `xmm0`/`d0` with status 0; runtime calls name their table register (`Inst::Call::table`) | fib 170.6 → 138.3 M instructions, 3 pushes instead of 5 |
+| F13 | Slow paths rejoining hot code counted as loops | executed alignment padding after every direct call; loop-depth weights inflated for everything after | a backward edge from a cold block to a hot one does not close a loop | fib 178.7 → 170.6 M, list loop 37.8 → 34.8 M, Sudoku 22.87 → 22.75 M |
+| F14 | `a + b` into `b`'s register went through a scratch register | two extra moves per such operation | `+` and `*` commute into the destination | fib 138.3 → 132.9 M |
+| F7 | x86-64 prologues pushed every callee-saved register | 10 push/pop per call in small functions | push only the registers the function uses (AArch64 already did) | no change on fib (it uses all five); smaller frames elsewhere |
+
+Earlier the same day: token kinds and interned names in the parser and tree-walker, parallel and
+reproducible native builds, incremental LSP parsing (see `CHANGELOG.md`).
+
+## Open, ranked by impact
+
+### 1. Direct calls between numeric functions (fib: 1.9× C)
+
+*Done* (F11–F14): two pointer arguments, the result in a register, only the callee-saved
+registers used, no padding after calls. ~49 instructions per call remain (C: ~15).
+
+*Evidence for the rest*: arguments still go through a memory buffer (caller store, callee
+load); the depth counter is loaded, checked, incremented and restored around every call, and
+the stack pointer compared with the host's limit; float constants are rematerialized after each
+call (every `xmm` register is caller-saved on System V); the whole prologue and epilogue run
+even on the base case.
+
+*Fix*: `f64` arguments in `xmm0–7`/`v0–7` with a register-to-register parallel move at call
+sites (the buffer written only on the cold host-call path); constants as memory operands from a
+per-function pool; shrink-wrapping (save callee-saved registers only on paths that use them).
+
+### 2. Every non-numeric operation is a round trip to the host (umbo 78×, kamusi, maneno)
+
+*Evidence*: 100–200 instructions per operation before any work: native code spills registers,
+calls `native_exec`, which looks the instruction up again, tries `numeric_op`, then matches the
+whole `Opcode` enum in `exec_slow`; then native code reloads. A struct loop iteration is ~1,800
+instructions; the map loop ~3,000.
+
+*Fix*: typed runtime entry points that native code calls directly for the hot non-numeric
+operations — field read by slot, struct build, map get/set with a `Neno` key, string concat,
+list push — with their operands as arguments, no generic decode, and no spill of registers the
+operation does not read. Then dedicated opcodes for the hot methods (`pata`, `angu`, `ingiza`,
+`ongeza`, `urefu`, `idadi`) chosen when the bytecode is compiled.
+
+### 3. Calls to functions that take or return values go through the host
+
+*Evidence*: ~600 instructions per call: `frame_for` (pooled frame, resized and cleared),
+`invoke` (depth, stack check), `run_native`, status decoding.
+
+*Done for small functions* (F6): a function whose body is one `rejesha` of a pure expression is
+inlined. *Still open* for larger ones: direct entries for functions with value registers (pass a
+frame pointer, as the host does), and inlining of bodies with statements, method calls or `?`.
+
+### 4. Struct layout
+
+*Partly done* (F6): a struct that never leaves its function is no longer built at all. Structs
+that are stored, passed or returned still are, and for those:
+
+*Evidence*: every struct instance carries its own list of `(field name, value)` pairs; building
+one allocates and fills that list, and a field read by name searches it.
+
+*Fix*: `Struct(Rc<StructType>, Rc<[Value]>)` — the field names live once in the type, a read is
+an index (already known at compile time: `FieldNum`'s `slot`), and native code can read a field
+without the host once the layout is fixed.
+
+### 5. Method dispatch by string
+
+*Partly done*: bytecode method instructions carry an interned `Name`, and the host classifies
+a call (`is_pure_name`, `is_mutating_name`) by pointer comparison against interned copies of
+the method tables — map loop −3.5%, strings −2.4%. Measured and ruled out: moving arguments out
+of their registers for the call instead of copying them (putting them back costs more than the
+reference counts saved; map loop +14%).
+
+*Still open*: the implementation is still found by a `match` over (receiver, name string), and
+the tree-walker classifies by string. *Fix*: a method id resolved once (bytecode compile; for
+the tree-walker, at parse time) and a `match` on it.
+
+### 6. Building a string by appending is quadratic — fixed (F8)
+
+*Evidence*: `s = s + "ab"` 20,000 times copies 400 MB (45% of the strings workload); `Neno` is an
+immutable `Rc<str>`, so every append copies the whole string. CPython appends in place when the
+string is not shared.
+
+*Fix*: a `Neno` with spare capacity that appends in place when its owner is unique (the same
+copy-on-write rule as lists and maps).
+
+### 7. Tree-walker (200× native)
+
+*Resolved (2026-10): the tree-walker was removed; wasm has a native target of its own.*
+
+Matters wherever there is no native backend (wasm, other CPUs). *Evidence*: Sudoku 1.0 s vs
+5.2 ms; expression dispatch, variable lookup by scanning scopes, value clone/drop.
+
+*Fix*: resolve each local to a slot index when the function is analysed (no scan), and compile
+expressions to closures instead of matching the syntax tree at every step. Typically 2–4×.
+
+### 8. Native build: range analysis is 59% of it
+
+*Evidence*: `analyze_numbers` joins dense per-register state vectors at every block edge.
+*Fix*: track only the registers live at each block, or run the analysis on SSA values.
+
+### 9. Start-up (~1 ms above a bare process)
+
+*Evidence*: 35% dynamic relocation of the PIE runner, 15% building ~350 boxed builtin closures
+keyed by `String`. *Fix*: a static, non-PIE runner; a static builtin table (`fn` pointers,
+`&'static str` names).
+
+### 10. LSP requests still parse the whole document
+
+Hover, inlay hints, semantic tokens and symbols each lex and parse the full text per request.
+*Fix*: take the tree from `DocStore::parse` (already incremental for diagnostics).
+
+### 11. Silent fallback to the tree-walker
+
+*Resolved (2026-10): there is no fallback; a construct that doesn't lower is a build error.*
+
+A `kazi` the bytecode compiler cannot lower runs ~200× slower, silently, in debug builds (release
+builds refuse, naming the `kazi`). *Fix*: a warning from `pata jenga` naming each such `kazi`.
+
+## Accuracy finding — fixed
+
+The semantic analyzer accepted a call to a method that does not exist (`a.panga()` on an
+`Orodha<Namba>` compiled, then failed at run time with a misleading message). Fixed in
+`0e60649` (issue #76): the method lists live once in `asili_parser::builtins`, the analyzer
+reports `SEM040`, and a test checks the engines implement every listed method.
+
+## Next
+
+Measured and ruled out this round: passing `f64` arguments of direct calls in registers (the
+code generator routes every call argument through its home slot, so it saves nothing without
+a register-to-register parallel move); a stack-allocated argument array for host method calls
+(`SmallVec`, 4 % slower than the reused buffer — moving the inline array costs more than it
+saves). Whole-process Sudoku (minimum of 20 runs): C 4.18 ms, `tenda` 4.20 ms, the standalone
+executable 3.97 ms — level within noise; Asili takes ~120 more page faults (~0.1 ms) at start.
+
+Done since: the leaner direct-call convention (F12–F14, fib −26 % in instructions, 13.4 →
+11.0 ms). Remaining, all structural: method ids resolved at compile time instead of name
+matching (~10 % on map- and string-heavy code); local slots and closure compilation for the
+tree-walker (2–4×, REPL and wasm); register arguments for direct calls (above).

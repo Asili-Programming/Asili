@@ -2,8 +2,6 @@
 //! rationale (deliberately stricter than, and independent from, `SendValue`/`try_into_send` —
 //! see that type's own doc comment in `value/mod.rs`).
 
-use std::collections::HashMap;
-
 use super::{ErrorKind, EvalError, MapKey, Value};
 
 /// Recursion depth cap for `to_json`/`from_json`. Guards against a stack overflow on
@@ -36,10 +34,13 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
     }
     use serde_json::Value as J;
     Ok(match v {
-        Value::Namba(n) => serde_json::Number::from_f64(*n)
-            .map(J::Number)
-            .unwrap_or(J::Null),
-        Value::Neno(s) => J::String(s.clone()),
+        Value::Namba(n) => json_number(*n),
+        Value::Neno(s) => J::String(s.to_string()),
+        // Bytes have no JSON form; base64 is the usual carrier.
+        Value::Baiti(b) => {
+            use base64::Engine;
+            J::String(base64::engine::general_purpose::STANDARD.encode(b))
+        }
         Value::Ukweli(b) => J::Bool(*b),
         Value::Tupu | Value::Hamna => J::Null,
         Value::Herufi(c) => J::String(c.to_string()),
@@ -51,9 +52,7 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
         // A raw memory address has no safe reason to be a JSON number a client could do
         // arithmetic on — encode as a string, deliberately.
         Value::Anuani(a) => J::String(a.to_string()),
-        Value::Wakati(secs) => serde_json::Number::from_f64(*secs)
-            .map(J::Number)
-            .unwrap_or(J::Null),
+        Value::Wakati(secs) => json_number(*secs),
         Value::Chaguo(opt) => match opt {
             Some(inner) => to_json_depth(inner, depth + 1)?,
             None => J::Null,
@@ -79,7 +78,7 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
         ]),
         Value::Kamusi(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
+            for (k, v) in map.iter() {
                 out.insert(map_key_to_json_field(k), to_json_depth(v, depth + 1)?);
             }
             J::Object(out)
@@ -96,14 +95,14 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
         // extension point if that's ever needed.
         Value::Struct(_name, fields) => {
             let mut out = serde_json::Map::with_capacity(fields.len());
-            for (fname, v) in fields {
-                out.insert(fname.clone(), to_json_depth(v, depth + 1)?);
+            for (fname, v) in fields.iter() {
+                out.insert(fname.to_string(), to_json_depth(v, depth + 1)?);
             }
             J::Object(out)
         }
         Value::Enum(_enum_name, variant, data) => {
             let mut out = serde_json::Map::new();
-            out.insert("aina".to_string(), J::String(variant.clone()));
+            out.insert("aina".to_string(), J::String(variant.to_string()));
             if let Some(d) = data {
                 out.insert("data".to_string(), to_json_depth(d, depth + 1)?);
             }
@@ -124,6 +123,8 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
         | Value::Faili(_)
         | Value::Mkondo(_)
         | Value::MkondoSikilizaji(_)
+        | Value::MkondoUdp(_)
+        | Value::MkondoWs(_)
         | Value::Kumbukumbu(_) => {
             return Err(EvalError::Coded {
                 kind: ErrorKind::BadInput,
@@ -133,7 +134,8 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
                 ),
             });
         }
-        Value::NjiaTx(_)
+        Value::Ahadi(_)
+        | Value::NjiaTx(_)
         | Value::NjiaRx(_)
         | Value::NjiaTxBounded(_)
         | Value::NjiaRxBounded(_)
@@ -155,10 +157,14 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
 /// matching how JSON.stringify(Map) and most JSON-object-from-map codecs behave elsewhere.
 fn map_key_to_json_field(k: &MapKey) -> String {
     match k {
-        MapKey::Neno(s) => s.clone(),
+        MapKey::Neno(s) => s.to_string(),
         MapKey::Namba(bits) => f64::from_bits(*bits).to_string(),
         MapKey::Ukweli(b) => b.to_string(),
         MapKey::Herufi(c) => c.to_string(),
+        MapKey::Baiti(b) => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(b)
+        }
     }
 }
 
@@ -167,11 +173,14 @@ fn variant_name(v: &Value) -> &'static str {
         Value::KashaGC(_) => "Kasha_GC",
         Value::KashaGCDhaifu(_) => "Kasha_GC_Dhaifu",
         Value::MkondoSikilizaji(_) => "MkondoSikilizaji",
+        Value::MkondoUdp(_) => "MkondoUdp",
+        Value::MkondoWs(_) => "MkondoWs",
         #[cfg(not(target_arch = "wasm32"))]
         Value::TlsUsanidi(_) => "TlsUsanidi",
         Value::Faili(_) => "Faili",
         Value::Mkondo(_) => "Mkondo",
         Value::Kumbukumbu(_) => "Kumbukumbu",
+        Value::Ahadi(_) => "Ahadi",
         Value::NjiaTx(_) => "NjiaTx",
         Value::NjiaRx(_) => "NjiaRx",
         Value::NjiaTxBounded(_) => "NjiaTxBounded",
@@ -190,8 +199,8 @@ fn from_json_depth(j: &serde_json::Value, depth: usize) -> Value {
         J::Null => Value::Hamna,
         J::Bool(b) => Value::Ukweli(*b),
         J::Number(n) => Value::Namba(n.as_f64().unwrap_or(f64::NAN)),
-        J::String(s) => Value::Neno(s.clone()),
-        J::Array(items) => Value::Orodha(
+        J::String(s) => Value::neno(s.clone()),
+        J::Array(items) => Value::list(
             items
                 .iter()
                 .map(|v| from_json_depth(v, depth + 1))
@@ -199,11 +208,12 @@ fn from_json_depth(j: &serde_json::Value, depth: usize) -> Value {
         ),
         J::Object(map) => {
             let mut fields: Vec<(String, Value)> = Vec::with_capacity(map.len());
-            let mut out: HashMap<MapKey, Value> = HashMap::with_capacity(map.len());
+            let mut out =
+                crate::value::Kamusi::with_capacity_and_hasher(map.len(), Default::default());
             for (k, v) in map {
                 let value = from_json_depth(v, depth + 1);
                 fields.push((k.clone(), value.clone()));
-                out.insert(MapKey::Neno(k.clone()), value);
+                out.insert(MapKey::Neno(k.as_str().into()), value);
             }
             // A JSON object has no distinction between "this was an Asili Struct/Tokeo/Enum"
             // and "this was a Kamusi" — decode as Kamusi<Neno, _>, the structurally accurate
@@ -211,7 +221,7 @@ fn from_json_depth(j: &serde_json::Value, depth: usize) -> Value {
             // the decoded Kamusi's fields. `fields` is unused for the Kamusi case but kept
             // available for a future rename/typed-decode extension point rather than discarded.
             let _ = fields;
-            Value::Kamusi(out)
+            Value::Kamusi(std::rc::Rc::new(out))
         }
     }
 }
@@ -247,7 +257,9 @@ mod tests {
 
     #[test]
     fn namba_kuu_encodes_as_decimal_string() {
-        let n = Value::NambaKuu(num_bigint::BigInt::from(123456789012345678_i64));
+        let n = Value::NambaKuu(std::rc::Rc::new(num_bigint::BigInt::from(
+            123456789012345678_i64,
+        )));
         let j = n.to_json().unwrap();
         assert_eq!(j, serde_json::json!("123456789012345678"));
     }
@@ -255,7 +267,9 @@ mod tests {
     #[test]
     fn namba_sahihi_encodes_as_decimal_string() {
         use std::str::FromStr;
-        let n = Value::NambaSahihi(bigdecimal::BigDecimal::from_str("3.1415926535").unwrap());
+        let n = Value::NambaSahihi(std::rc::Rc::new(
+            bigdecimal::BigDecimal::from_str("3.1415926535").unwrap(),
+        ));
         let j = n.to_json().unwrap();
         assert_eq!(j, serde_json::json!("3.1415926535"));
     }
@@ -268,13 +282,13 @@ mod tests {
 
     #[test]
     fn orodha_round_trips() {
-        let v = Value::Orodha(vec![
+        let v = Value::list(vec![
             Value::Namba(1.0),
             Value::Namba(2.0),
             Value::Neno("x".into()),
         ]);
         let j = v.to_json().unwrap();
-        assert_eq!(j, serde_json::json!([1.0, 2.0, "x"]));
+        assert_eq!(j, serde_json::json!([1, 2, "x"]));
     }
 
     #[test]
@@ -283,7 +297,7 @@ mod tests {
             Value::Chaguo(Some(Box::new(Value::Namba(5.0))))
                 .to_json()
                 .unwrap(),
-            serde_json::json!(5.0)
+            serde_json::json!(5)
         );
         assert_eq!(
             Value::Chaguo(None).to_json().unwrap(),
@@ -294,7 +308,7 @@ mod tests {
     #[test]
     fn tokeo_encodes_tagged() {
         let ok = Value::sawa(Value::Namba(1.0));
-        assert_eq!(ok.to_json().unwrap(), serde_json::json!({"Sawa": 1.0}));
+        assert_eq!(ok.to_json().unwrap(), serde_json::json!({"Sawa": 1}));
         let err = Value::kosa("kosa");
         assert_eq!(err.to_json().unwrap(), serde_json::json!({"Kosa": "kosa"}));
     }
@@ -302,14 +316,15 @@ mod tests {
     #[test]
     fn struct_encodes_as_flat_object_reflectively() {
         let v = Value::Struct(
-            "Pika".to_string(),
+            "Pika".into(),
             vec![
-                ("x".to_string(), Value::Namba(1.0)),
-                ("y".to_string(), Value::Neno("hi".into())),
-            ],
+                ("x".into(), Value::Namba(1.0)),
+                ("y".into(), Value::Neno("hi".into())),
+            ]
+            .into(),
         );
         let j = v.to_json().unwrap();
-        assert_eq!(j, serde_json::json!({"x": 1.0, "y": "hi"}));
+        assert_eq!(j, serde_json::json!({"x": 1, "y": "hi"}));
     }
 
     #[test]
@@ -326,7 +341,7 @@ mod tests {
         );
         assert_eq!(
             with_data.to_json().unwrap(),
-            serde_json::json!({"aina": "Kuna", "data": 7.0})
+            serde_json::json!({"aina": "Kuna", "data": 7})
         );
     }
 
@@ -341,9 +356,9 @@ mod tests {
         // These pass `Value::try_into_send` (they ARE Send-safe, for tenda's benefit) but have
         // no JSON representation — the JSON codec's exclusion set is intentionally stricter
         // than SendValue's, not a reuse of it. See the module doc comment.
-        let (tx, rx) = std::sync::mpsc::channel::<super::super::SendValue>();
-        let tx_val = Value::NjiaTx(std::sync::Arc::new(std::sync::Mutex::new(tx)));
-        let rx_val = Value::NjiaRx(std::sync::Arc::new(std::sync::Mutex::new(rx)));
+        let (tx, rx) = flume::unbounded::<super::super::SendValue>();
+        let tx_val = Value::NjiaTx(tx);
+        let rx_val = Value::NjiaRx(rx);
         assert!(
             tx_val.try_into_send().is_some(),
             "sanity: NjiaTx is Send-safe"
@@ -356,7 +371,7 @@ mod tests {
     fn depth_limit_fails_cleanly_instead_of_overflowing_stack() {
         let mut v = Value::Namba(0.0);
         for _ in 0..(MAX_DEPTH + 10) {
-            v = Value::Orodha(vec![v]);
+            v = Value::list(vec![v]);
         }
         assert!(
             v.to_json().is_err(),
@@ -366,11 +381,11 @@ mod tests {
 
     #[test]
     fn kamusi_round_trips_through_neno_keys() {
-        let mut map = HashMap::new();
+        let mut map = crate::value::Kamusi::default();
         map.insert(MapKey::Neno("a".into()), Value::Namba(1.0));
-        let v = Value::Kamusi(map);
+        let v = Value::Kamusi(std::rc::Rc::new(map));
         let j = v.to_json().unwrap();
-        assert_eq!(j, serde_json::json!({"a": 1.0}));
+        assert_eq!(j, serde_json::json!({"a": 1}));
     }
 
     #[test]
@@ -388,4 +403,16 @@ mod tests {
             other => panic!("expected Kamusi, got {other:?}"),
         }
     }
+}
+
+/// A `Namba` as a JSON number: a whole number within ±2^53 is written without a fraction (`3`,
+/// not `3.0`), which servers parsing it into an integer require; NaN and infinities are `null`.
+fn json_number(n: f64) -> serde_json::Value {
+    const EXACT: f64 = 9_007_199_254_740_992.0; // 2^53
+    if n.fract() == 0.0 && n.abs() <= EXACT && !(n == 0.0 && n.is_sign_negative()) {
+        return serde_json::Value::Number((n as i64).into());
+    }
+    serde_json::Number::from_f64(n)
+        .map(serde_json::Value::Number)
+        .unwrap_or(serde_json::Value::Null)
 }

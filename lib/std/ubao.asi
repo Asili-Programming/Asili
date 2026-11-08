@@ -1,0 +1,18 @@
+# Kiolesura cha moduli ya `ubao`, kwa Asili.
+# Imetengenezwa kutoka core/parser/src/builtins.rs (BUILTIN_MODULES) — usihariri faili hili;
+# badilisha jedwali, kisha: ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs
+#
+# Ubao: bodi pepe yenye pini na saa. Kazi za pini zinahitaji `#[wazi]`.
+
+# Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`.
+kazi ubao_andika(pini: Namba, hali: Ukweli) -> Tupu
+
+# Soma hali ya pini (kweli au si_kweli) kutoka ratiba ya pembejeo ya bodi; lazima kazi iwe
+# `#[wazi]`.
+kazi ubao_soma(pini: Namba) -> Ukweli
+
+# Sogeza saa ya bodi mbele kwa milisekunde ms; haitumii saa halisi.
+kazi ubao_subiri(ms: Namba) -> Tupu
+
+# Saa ya bodi kwa milisekunde, kuanzia 0 kila mwanzo wa mpango.
+kazi ubao_saa() -> Namba

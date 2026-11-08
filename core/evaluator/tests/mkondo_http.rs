@@ -5,10 +5,9 @@
 //! wire bytes is both simpler and a stronger proof than trusting a client library's own framing).
 //!
 //! `OmbiHttp`/`JibuHttp` are plain `Value::Struct`s at runtime (the same reflection-friendly
-//! shape the JSON codec uses) — but the Asili *source* in each test still needs a matching
-//! `umbo OmbiHttp { ... }`/`umbo JibuHttp { ... }` declaration for the semantic analyzer to
-//! accept `ombi: OmbiHttp` as a parameter type and type-check field access on it (SEM098/SEM099
-//! otherwise) — the struct's *name* is never checked at runtime by `http.rs`, only its fields.
+//! shape the JSON codec uses), and builtin `umbo`s a program uses without declaring them. Most
+//! tests here still declare their own (a program's declaration takes the builtin's place), which
+//! keeps that path covered; `asili_client_and_server_without_declarations` uses the builtins.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -52,7 +51,7 @@ fn start_server(kazi_and_umbo_src: &str, idadi_ya_nyuzi: f64) -> String {
 
     let addr_clone = addr.clone();
     std::thread::spawn(move || {
-        let _ = run_function(&module, "anza", vec![Value::Neno(addr_clone)]);
+        let _ = run_function(&module, "anza", vec![Value::neno(addr_clone)]);
     });
     addr
 }
@@ -151,7 +150,7 @@ fn request_headers_and_body_reach_kazi_jina() {
     let kazi = r#"
         kazi mtumishi(ombi: OmbiHttp) -> JibuHttp {
             weka vichwa = kamusi()
-            weka aina = jaribu (ombi.vichwa.pata("X-Aina"))
+            weka aina = jaribu (ombi.vichwa.pata("x-aina"))
             rejesha JibuHttp { hali: 200, vichwa: vichwa, mwili: (aina kama Neno) + "|" + ombi.mwili }
         }
     "#;
@@ -400,4 +399,93 @@ fn malformed_request_line_is_rejected_with_400() {
 
     let (status, _) = read_one_response(&mut client, &mut carry);
     assert_eq!(status, 400);
+}
+
+/// Both ends in Asili, neither declaring `OmbiHttp`/`JibuHttp`: the server sets two cookies
+/// through `vichwa_vyote`, and the client (`http_ombi` with `vidakuzi`) sends them back.
+#[test]
+fn asili_client_and_server_without_declarations() {
+    let server = compile(
+        r#"
+        leta mfumo
+
+        kazi mtumishi(ombi: OmbiHttp) -> JibuHttp {
+            ikiwa ombi.anwani == "/ingia" {
+                rejesha JibuHttp {
+                    hali: 200,
+                    vichwa: kamusi(),
+                    mwili: "karibu",
+                    vichwa_vyote: [jozi("Set-Cookie", "a=1"), jozi("Set-Cookie", "b=2")],
+                }
+            }
+            rejesha JibuHttp { hali: 200, vichwa: kamusi(), mwili: ombi.vichwa.pata("cookie").angu("hakuna") }
+        }
+
+        kazi anza(anwani: Neno) -> Tupu {
+            weka s = jaribu (mkondo_sikiliza(anwani))
+            jaribu (mkondo_tumikia_http(s, "mtumishi", 2.0))
+        }
+    "#,
+    );
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+    let addr = probe.local_addr().expect("addr").to_string();
+    drop(probe);
+    let server_addr = addr.clone();
+    std::thread::spawn(move || {
+        let _ = run_function(&server, "anza", vec![Value::neno(server_addr)]);
+    });
+    drop(connect_with_retry(&addr));
+    let client = compile(&format!(
+        r#"
+        leta mfumo
+
+        kazi mteja() -> Tokeo<Neno, Neno> {{
+            weka chaguo = ChaguoHttp {{ vidakuzi: kweli }}
+            weka kwanza = http_ombi("GET", "http://{addr}/ingia", chaguo)?
+            weka pili = http_ombi("GET", "http://{addr}/", ChaguoHttp {{ vidakuzi: kweli }})?
+            rejesha tokeo(kwanza.mwili + " " + pili.mwili)
+        }}
+    "#
+    ));
+    let result = run_function(&client, "mteja", vec![]).expect("runs");
+    assert_eq!(
+        result,
+        Value::Tokeo(Ok(Box::new(Value::neno("karibu a=1; b=2".to_string()))))
+    );
+}
+
+/// HEAD gets the GET answer's headers (its `Content-Length` included) and no body, so the next
+/// request on the same keep-alive connection still reads cleanly; every status has its reason
+/// phrase.
+#[test]
+fn head_has_no_body_and_statuses_have_reasons() {
+    let kazi = r#"
+        kazi mtumishi(ombi: OmbiHttp) -> JibuHttp {
+            ikiwa ombi.anwani == "/mpya" {
+                rejesha JibuHttp { hali: 201, vichwa: kamusi(), mwili: "imeundwa" }
+            }
+            rejesha JibuHttp { hali: 200, vichwa: kamusi(), mwili: "habari" }
+        }
+    "#;
+    let addr = start_server(kazi, 1.0);
+    let mut client = connect_with_retry(&addr);
+    client
+        .write_all(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET /mpya HTTP/1.1\r\nHost: x\r\n\r\n")
+        .expect("write");
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !String::from_utf8_lossy(&raw).contains("imeundwa") {
+        let n = client.read(&mut chunk).expect("read");
+        assert!(n > 0, "closed early: {}", String::from_utf8_lossy(&raw));
+        raw.extend_from_slice(&chunk[..n]);
+    }
+    let text = String::from_utf8_lossy(&raw);
+    let (head, rest) = text.split_once("\r\n\r\n").expect("head response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert!(
+        head.to_ascii_lowercase().contains("content-length: 6"),
+        "{head}"
+    );
+    // Right after the HEAD answer's headers comes the next response, not a body.
+    assert!(rest.starts_with("HTTP/1.1 201 Created\r\n"), "{rest}");
 }

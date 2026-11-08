@@ -6,7 +6,7 @@
 
 - **Syntax:** Swahili keywords (`kazi`, `weka`, `ikiwa`, `linganisha`, `rejesha`, …).
 - **Types:** Primitives (`Namba`, `Neno`, `Ukweli`), collections (`Orodha<T>`, `Kamusi<K,V>`), `Chaguo<T>`, `Tokeo<T,E>`, structs and impls.
-- **Stdlib:** Modular built-ins (msingi, mfumo, majira, matumizi, faili, hisabati, runtime, syscall, kiungo, sambamba) plus `lib/std` interface stubs.
+- **Stdlib:** Modular built-ins (msingi, mfumo, majira, matumizi, faili, hisabati, ruwaza, usimbaji, runtime, syscall, kiungo, sambamba, kasha_gc) plus `lib/std` interface stubs.
 - **Spec:** [docs/SPECIFICATION.md](docs/SPECIFICATION.md) and [docs/spec/](docs/spec/) define the language and execution model.
 
 ## Prerequisites
@@ -59,14 +59,13 @@ pata jenga --tenda
 | `core/` | Lexer, parser, semantic analysis, evaluator, diagnostics. |
 | `driver/` | Target adapters: `wasm` (implemented, browser + WASI); `embedded`, `posix`, `win32` (stub placeholders, not yet in the Cargo workspace). |
 | `pata/` | CLI (`pata-cli`), shared module resolver (`pata-core`), runner, LSP (`pata-lsp`), formatter (`pata-fmt`), linter (`pata-lint`), package resolver (`pata-package`), Debug Adapter Protocol server (`pata-dap`), shared `pata.toml` discovery (`pata-config`). |
-| `extensions/vscode/` | VS Code extension — syntax highlighting, LSP client, bundled `pata-lsp`. |
 | `lib/` | Standard library surface (`lib/std/*.asi` stubs). |
 | `docs/spec/` | Language specification. |
 | `examples/` | Sample Asili programs. |
 | `docs/` | How-to and design notes. |
 
-Generated API reference (rustdoc + TypeDoc) for reading the code is published at
-<https://victorkariuki.github.io/Asili/> — see [CONTRIBUTING.md](CONTRIBUTING.md#api-documentation)
+Generated API reference (rustdoc) for reading the code is published at
+<https://asili-programming.github.io/Asili/> — see [CONTRIBUTING.md](CONTRIBUTING.md#api-documentation)
 to build it locally.
 
 ## Standard library modules

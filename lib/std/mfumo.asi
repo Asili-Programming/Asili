@@ -1,10 +1,236 @@
-# Mfumo (system) – interface stub
+# Kiolesura cha moduli ya `mfumo`, kwa Asili.
+# Imetengenezwa kutoka core/parser/src/builtins.rs (BUILTIN_MODULES) — usihariri faili hili;
+# badilisha jedwali, kisha: ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs
+#
+# Mfumo: mazingira, programu nyingine, JSON, mtandao (TCP, TLS, HTTP) na ishara.
 
-thabiti TOLEO: Neno
+# Ombi ambalo seva ya `mkondo_tumikia_http` hupitisha kwa kazi yake.
+umbo OmbiHttp {
+    # GET, POST, ...
+    njia: Neno,
+    # Njia na hoja za ombi ("/bidhaa?id=7").
+    anwani: Neno,
+    # Vichwa vya ombi, majina kwa herufi ndogo.
+    vichwa: Kamusi<Neno, Neno>,
+    # Mwili wa ombi (baiti zisizo UTF-8 hubadilishwa).
+    mwili: Neno,
+    # Njia ya anwani bila hoja, iliyofumbuliwa ("/bidhaa").
+    sehemu: Neno,
+    # Hoja za anwani, zilizofumbuliwa (`?id=7` → id: "7").
+    hoja: Kamusi<Neno, Neno>,
+    # Mwili wa ombi kama baiti.
+    mwili_baiti: Baiti,
+    # Anwani ya mteja.
+    mteja: Neno,
+    # Toleo la HTTP ("HTTP/1.1", "HTTP/2").
+    toleo: Neno,
+}
+
+# Jibu la HTTP: kazi ya seva hulirudisha, `http_ombi` hulipokea.
+umbo JibuHttp {
+    # Msimbo wa hali (200, 404, ...).
+    hali: Namba,
+    # Vichwa, majina kwa herufi ndogo; kichwa kinachorudiwa huunganishwa kwa ", ".
+    vichwa: Kamusi<Neno, Neno>,
+    # Mwili (tupu kwa `hifadhi`; base64 kwa `jibu_base64`).
+    mwili: Neno,
+    # Maelezo ya hali ("Not Found").
+    sababu?: Neno,
+    # Anwani ya mwisho, baada ya kuelekezwa.
+    anwani?: Neno,
+    # Toleo la HTTP ("HTTP/1.1").
+    toleo?: Neno,
+    # Kila kichwa kwa mpangilio, marudio yakiwa tofauti (`set-cookie`); seva huvituma vyote.
+    vichwa_vyote?: Orodha<Jozi<Neno, Neno>>,
+    # Sekunde ombi lilizochukua, pamoja na kuelekezwa na kujaribu tena.
+    muda?: Namba,
+    # Mwili kama baiti (seva hutuma huu badala ya `mwili`).
+    mwili_baiti?: Baiti,
+    # Kazi itakayopokea WebSocket: ombi la uboreshaji hujibiwa 101 na kazi hii hupokea
+    # `MkondoWs` kwa kila muunganisho.
+    ws?: Neno,
+    # NjiaRx (ya `njia` au `njia_na_kikomo`): seva hutuma kila thamani yake kama kipande cha
+    # mwili, hadi njia ifungwe (`tukio_sse` kwa matukio).
+    mwili_njia?: Haijulikani,
+}
+
+# Chaguo za `mkondo_tumikia_http`; kila uga ni wa hiari.
+umbo ChaguoSeva {
+    # Baiti za juu za mwili wa ombi (kawaida 16 MiB); zaidi: 413.
+    kikomo_mwili?: Namba,
+    # Jibu pia kwa HTTP/3 (QUIC, UDP) kwenye mlango ule ule; inahitaji `tls`. Nyuzi ya kwanza
+    # pekee ndiyo huanzisha HTTP/3.
+    h3?: Ukweli,
+    # Sekunde za TLS na kutuma vichwa vya ombi (kawaida 30).
+    muda?: Namba,
+    # Bana majibu (gzip, brotli) mteja akikubali (kawaida kweli).
+    bana?: Ukweli,
+    # Sekunde ambazo miunganisho iliyo wazi hupewa kumaliza seva ikisimamishwa (kawaida 10).
+    muda_kuzima?: Namba,
+}
+
+# Chaguo za `mkondo_unganisha`; kila uga ni wa hiari.
+umbo ChaguoMkondo {
+    # Tumia TLS, ukithibitisha cheti cha seva.
+    tls?: Ukweli,
+    # Jina ambalo cheti cha seva lazima kiwe nalo (kawaida: mwenyeji wa anwani).
+    jina_seva?: Neno,
+    # Sekunde za kuunganisha (kutafuta, kuunganisha na TLS).
+    muda?: Namba,
+    # Faili la PEM la vyeti vya mamlaka vitakavyoaminiwa pekee (badala ya orodha ya Mozilla).
+    cheti_ca?: Neno,
+    # Cheti cha mteja (PEM) kwa TLS ya pande mbili, pamoja na `ufunguo`.
+    cheti?: Neno,
+    # Ufunguo wa siri (PEM) wa `cheti`.
+    ufunguo?: Neno,
+    # 4 au 6: tumia IPv4 au IPv6 pekee.
+    familia_ip?: Namba,
+}
+
+# Chaguo za `mkondo_sikiliza`; kila uga ni wa hiari.
+umbo ChaguoSikiliza {
+    # Ruhusu soketi (programu) kadhaa kusikiliza mlango mmoja (SO_REUSEPORT, Unix).
+    tumia_tena?: Ukweli,
+    # Miunganisho mingapi inaweza kusubiri kukubaliwa (kawaida 1024).
+    foleni?: Namba,
+}
+
+# Chaguo za `http_ombi`; kila uga ni wa hiari. Mwili ni mmoja tu kati ya `mwili`,
+# `mwili_base64`, `json`, `fomu`, `fomu_sehemu`/`fomu_faili` na `faili`.
+umbo ChaguoHttp {
+    # Vichwa vya ombi ("User-Agent", "Accept", ...).
+    vichwa?: Kamusi<Neno, Neno>,
+    # Huongezwa kwenye anwani kama `?jina=thamani`, zikisimbwa.
+    hoja?: Kamusi<Neno, Neno>,
+    # Mwili wa maandishi (text/plain; charset=utf-8).
+    mwili?: Neno,
+    # Mwili wa baiti, ulioandikwa kwa base64 (application/octet-stream).
+    mwili_base64?: Neno,
+    # Thamani yoyote, hutumwa kama JSON (application/json).
+    json?: Haijulikani,
+    # Fomu ya application/x-www-form-urlencoded.
+    fomu?: Kamusi<Neno, Neno>,
+    # Sehemu za maandishi za fomu ya multipart/form-data.
+    fomu_sehemu?: Kamusi<Neno, Neno>,
+    # Sehemu za faili za fomu ya multipart: jina la sehemu → njia ya faili.
+    fomu_faili?: Kamusi<Neno, Neno>,
+    # Tuma faili hili kama mwili, bila kulisoma lote kwenye kumbukumbu.
+    faili?: Neno,
+    # Content-Type ya mwili, badala ya ile ya kawaida.
+    aina?: Neno,
+    # Uthibitisho wa Basic (pamoja na `nenosiri`).
+    mtumiaji?: Neno,
+    # Nenosiri la uthibitisho wa Basic.
+    nenosiri?: Neno,
+    # Uthibitisho wa Bearer.
+    tokeni?: Neno,
+    # Sekunde za ombi lote (kawaida 60; 0: bila kikomo).
+    muda?: Namba,
+    # Sekunde za kuunganisha tu.
+    muda_kuunganisha?: Namba,
+    # Idadi ya juu ya kuelekezwa kufuatwa (kawaida 10; 0: jibu la 3xx hurudishwa).
+    elekezo?: Namba,
+    # Majaribio zaidi (hadi 10) ya njia zisizobadilisha kitu, muunganisho ukishindwa au hali
+    # ikiwa 429/502/503/504; husubiri `Retry-After`.
+    jaribu_tena?: Namba,
+    # Wakala: "http://mwenyeji:mlango", "socks5://..." (mtumiaji:nenosiri@ yanaruhusiwa); ""
+    # huzima HTTPS_PROXY/HTTP_PROXY.
+    wakala?: Neno,
+    # 4 au 6: tumia IPv4 au IPv6 pekee.
+    familia_ip?: Namba,
+    # Faili la PEM la vyeti vya mamlaka vitakavyoaminiwa pekee (badala ya orodha ya Mozilla).
+    cheti_ca?: Neno,
+    # Cheti cha mteja (PEM) kwa TLS ya pande mbili, pamoja na `ufunguo`.
+    cheti?: Neno,
+    # Ufunguo wa siri (PEM) wa `cheti`.
+    ufunguo?: Neno,
+    # Tumia mkebe mmoja wa vidakuzi wa programu nzima: hupokea `Set-Cookie`, hutuma `Cookie`.
+    vidakuzi?: Ukweli,
+    # Baiti za juu za mwili wa jibu (kawaida 64 MiB).
+    kikomo?: Namba,
+    # Andika mwili kwenye faili hili (kwa vipande; faili haliandikwi ombi likishindwa).
+    hifadhi?: Neno,
+    # Rudisha mwili kama base64 (kwa baiti zisizo maandishi).
+    jibu_base64?: Ukweli,
+    # Hali isiyo 2xx iwe kosa lenye hali na mwanzo wa mwili.
+    kosa_hali?: Ukweli,
+    # Tuma ombi hili kwa HTTP/3 (QUIC), pamoja na kuelekezwa upya, kujaribu tena na vidakuzi.
+    h3?: Ukweli,
+}
+
+# Jina la mfumo wa uendeshaji.
 thabiti JINA_OS: Neno
+# Toleo la Asili.
+thabiti TOLEO: Neno
 
-kazi vigezo() -> Orodha<Neno>
-kazi pata_env(jina: Neno) -> Chaguo<Neno>
+# Endesha programu nyingine; matokeo yake (stdout) ikifaulu, au kosa lenye msimbo na stderr.
+kazi endesha(amri: Neno, hoja: Orodha<Neno>) -> Tokeo<Neno, Neno>
+
+# Ombi la HTTP(S) la njia yoyote (GET, POST, ...). Jibu zima kwa hali yoyote; kosa ni la
+# muunganisho tu (au la hali isiyo 2xx, `kosa_hali` ikiwa kweli).
+kazi http_ombi(njia: Neno, anwani: Neno, chaguo?: ChaguoHttp) -> Tokeo<JibuHttp, Neno>
+
+# Kikomo cha kumbukumbu ya programu, kwa baiti (0: hakuna); kukipita husimamisha programu.
+kazi kikomo_kumbukumbu(baiti: Namba) -> Tupu
+
+# Thamani kutoka maandishi ya JSON.
+kazi kutoka_json(maandishi: Neno) -> Tokeo<Kamusi<Neno, Haijulikani>, Neno>
+
+# Maandishi ya JSON ya thamani.
+kazi kwa_json(thamani: Haijulikani) -> Tokeo<Neno, Neno>
+
+# Sikiliza miunganisho kwenye anwani ("mwenyeji:mlango"; mlango 0: wowote ulio wazi;
+# "unix:/njia"). `.kubali()` hupokea mmoja, `.simama()` husimamisha.
+kazi mkondo_sikiliza(anwani: Neno, chaguo?: ChaguoSikiliza) -> Tokeo<MkondoSikilizaji, Neno>
+
+# Hudumia kila muunganisho kwa `kazi_jina(Mkondo)` (kama kazi ya sawia) kwenye nyuzi
+# `idadi_ya_nyuzi`, hadi msikilizaji asimamishwe.
+kazi mkondo_tumikia(sikilizaji: MkondoSikilizaji, kazi_jina: Neno, idadi_ya_nyuzi: Namba, tls?: TlsUsanidi?) -> Tokeo<Tupu, Neno>
+
+# Seva ya HTTP/1.1 na HTTP/2: kila ombi ni `kazi_jina(OmbiHttp) -> JibuHttp` (kama kazi ya
+# sawia), hadi msikilizaji asimamishwe.
+kazi mkondo_tumikia_http(sikilizaji: MkondoSikilizaji, kazi_jina: Neno, idadi_ya_nyuzi: Namba, tls?: TlsUsanidi?, chaguo?: ChaguoSeva) -> Tokeo<Tupu, Neno>
+
+# Unganisha kwenye anwani ("mwenyeji:mlango", "[::1]:mlango" au "unix:/njia"), kwa TLS ikiombwa.
+kazi mkondo_unganisha(anwani: Neno, chaguo?: ChaguoMkondo) -> Tokeo<Mkondo, Neno>
+
+# Anza mlinzi: programu isipomlisha ndani ya ms milisekunde, husimamishwa.
+kazi mlinzi_anza(ms: Namba) -> Tokeo<Tupu, Neno>
+
+# Lisha mlinzi aliyeanzishwa na `mlinzi_anza`.
+kazi mlinzi_lisha() -> Tupu
+
+# Thamani ya kigezo cha mazingira, au `Hamna`.
+kazi pata_env(jina: Neno) -> Neno?
+
+# Rudisha ishara ya OS kwenye ushughulikiaji wake wa kawaida.
+kazi rejesha_ishara(ishara: Namba) -> Tokeo<Tupu, Neno>
+
+# Ita kazi `kazi_jina` ishara ya OS ikifika (Unix).
+kazi sikiliza_ishara(ishara: Namba, kazi_jina: Neno) -> Tokeo<Tupu, Neno>
+
+# Anwani za IP za jina la mwenyeji (DNS).
+kazi tafuta_anwani(jina: Neno) -> Tokeo<Orodha<Neno>, Neno>
+
+# Pakia cheti na ufunguo (PEM) kwa seva ya TLS.
+kazi tls_sanidi(cheti_njia: Neno, ufunguo_njia: Neno) -> Tokeo<TlsUsanidi, Neno>
+
+# Maliza programu kwa msimbo wa kutoka.
 kazi toka(kodi: Namba) -> Tupu
-kazi sikiliza_ishara(ishara: Namba, kazi_jina: Neno) -> Tupu
-kazi rejesha_ishara(ishara: Namba) -> Tupu
+
+# Tukio moja la server-sent events (text/event-stream): mistari ya `id:`, `event:` na `data:`,
+# kisha mstari mtupu.
+kazi tukio_sse(data: Neno, tukio?: Neno, kitambulisho?: Neno) -> Neno
+
+# Unganisha WebSocket kwenye `ws://` au `wss://` (kwa TLS: `tls`, `cheti_ca`, `cheti`/`ufunguo`,
+# `jina_seva`, `muda`).
+kazi ws_unganisha(anwani: Neno, chaguo?: ChaguoMkondo) -> Tokeo<MkondoWs, Neno>
+
+# Soketi ya UDP kwenye anwani ("0.0.0.0:0": anwani yoyote, mlango wowote ulio wazi).
+kazi udp_fungua(anwani: Neno) -> Tokeo<MkondoUdp, Neno>
+
+# Hoja za mstari wa amri.
+kazi vigezo() -> Orodha<Neno>
+
+# Weka kigezo cha mazingira.
+kazi weka_env(jina: Neno, thamani: Neno) -> Tupu

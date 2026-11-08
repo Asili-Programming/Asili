@@ -65,6 +65,7 @@
 //! `pata_core::find_module_file`; still no `pata.lock`-driven version-constraint awareness).
 
 pub mod actions;
+pub mod builtin_docs;
 mod diagnostics;
 mod doc_store;
 mod format;
@@ -82,7 +83,7 @@ pub mod workspace;
 pub use server::{run_stdio, run_stdio_blocking};
 pub use tower_lsp;
 
-use diagnostics::{asili_diagnostics_to_lsp_with_source, run_lex_parse};
+use diagnostics::asili_diagnostics_to_lsp_with_source;
 use server::Backend;
 use tower_lsp::{
     lsp_types::{
@@ -301,7 +302,13 @@ impl LanguageServer for Backend {
             let lsp_diags = self
                 .documents
                 .diagnostics_for(&uri_str, &text, || {
-                    let diags = run_lex_parse(&text, workspace.as_ref(), file_path.as_deref());
+                    let parsed = self.documents.parse(&uri_str, &text);
+                    let diags = diagnostics::run_parsed(
+                        &text,
+                        parsed,
+                        workspace.as_ref(),
+                        file_path.as_deref(),
+                    );
                     asili_diagnostics_to_lsp_with_source(&diags, &text)
                 })
                 .await;
@@ -331,7 +338,13 @@ impl LanguageServer for Backend {
             // cache hit rather than a second identical recomputation.
             self.documents
                 .diagnostics_for(&uri_str, &text, || {
-                    let diags = run_lex_parse(&text, workspace.as_ref(), file_path.as_deref());
+                    let parsed = self.documents.parse(&uri_str, &text);
+                    let diags = diagnostics::run_parsed(
+                        &text,
+                        parsed,
+                        workspace.as_ref(),
+                        file_path.as_deref(),
+                    );
                     asili_diagnostics_to_lsp_with_source(&diags, &text)
                 })
                 .await
@@ -368,7 +381,13 @@ impl LanguageServer for Backend {
             };
             self.documents
                 .diagnostics_for(&uri_str, &text, || {
-                    let diags = run_lex_parse(&text, workspace.as_ref(), file_path.as_deref());
+                    let parsed = self.documents.parse(&uri_str, &text);
+                    let diags = diagnostics::run_parsed(
+                        &text,
+                        parsed,
+                        workspace.as_ref(),
+                        file_path.as_deref(),
+                    );
                     asili_diagnostics_to_lsp_with_source(&diags, &text)
                 })
                 .await
@@ -437,7 +456,7 @@ impl LanguageServer for Backend {
         Ok(Some(SignatureHelp {
             signatures: vec![SignatureInformation {
                 label: info.label,
-                documentation: None,
+                documentation: info.doc.map(tower_lsp::lsp_types::Documentation::String),
                 parameters: Some(parameters),
                 active_parameter: None,
             }],

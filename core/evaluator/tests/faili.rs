@@ -47,7 +47,7 @@ fn write_then_read_round_trips() {
     );
     let module = compile(&src);
     let result = run_function(&module, "jaribu", vec![]).expect("runs");
-    assert_eq!(result, Value::Neno("habari".to_string()));
+    assert_eq!(result, Value::neno("habari".to_string()));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -113,7 +113,7 @@ fn scope_exit_without_explicit_tupa_still_closes_the_handle() {
     let result = run_function(&module, "jaribu", vec![]).expect("runs");
     assert_eq!(
         result,
-        Value::Neno("pili".to_string()),
+        Value::neno("pili".to_string()),
         "second open+write should succeed cleanly after the first handle's scope exited, \
          proving Drop released the OS handle without needing explicit tupa/funga"
     );
@@ -204,4 +204,29 @@ fn double_funga_is_a_safe_no_op() {
         "closing an already-closed Faili handle must not panic"
     );
     let _ = std::fs::remove_file(&path);
+}
+
+/// A handle declared inside a block is released when the block ends — so what it wrote is in
+/// the file when the same `kazi` reads it after the block.
+#[test]
+fn block_scope_exit_closes_the_handle() {
+    let path = temp_path("block");
+    let src = format!(
+        r#"
+        leta faili
+        kazi jaribu() -> Neno {{
+            ikiwa kweli {{
+                weka w = jaribu (faili_fungua("{p}", "andika"))
+                jaribu (w.andika("ndani ya kizuizi"))
+            }}
+            weka r = jaribu (faili_fungua("{p}", "soma"))
+            rejesha jaribu (r.soma())
+        }}
+        "#,
+        p = path.display()
+    );
+    let module = compile(&src);
+    let got = run_function(&module, "jaribu", vec![]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(got.expect("run"), Value::neno("ndani ya kizuizi"));
 }

@@ -1,10 +1,10 @@
 use super::{CliError, CliResult};
 use crate::pipeline::compile::{
-    cache_key, compile_project, compile_single_file, emit_build_artifacts,
+    cache_key, compile_project, compile_single_file, emit_build_artifacts, BuildProfile,
 };
 use crate::pipeline::performance::{PerformanceMetrics, ScopedTimer};
 use crate::pipeline::project::find_workspace_root;
-use asili_evaluator::{load_asb, parse_format, run_artifact, run_main};
+use asili_evaluator::run_artifact;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,11 +15,15 @@ Jenga mradi kutoka pata.toml au faili moja (bila mradi).
 Chagua:
   --tenda            Baada ya kujenga, tenda kazi kuu na hoja zinazofuata.
   --pato <njia>      Mahali pa kuweka kilele (default: kilele/).
-  --namna <dev|release|embedded>  Namna ya kujenga (haijatumika bado).
-  --lengo <lengo>    Lengo la kujenga (mf. "native", "wasm"). Hupita
-                     [jenga] lengo katika pata.toml; default "native".
+  --namna <dev|release>        dev (chaguo-msingi): msimbo asilia ukiwezekana, vinginevyo bila.
+                                release: lazima bytecode na msimbo asilia, la sivyo kosa.
+  --lengo <lengo>    Lengo la kujenga: "native" (chaguo-msingi), "wasm", au
+                     "cortex-m" (pia huandika kazi za #[salama] kama kilele/<jina>-cortex-m.o
+                     na kilele/<jina>.h kwa kifaa). Hupita [jenga] lengo katika pata.toml.
   --workspace-info   Onyesha wanachama wa workspace na urejeshi.
   --muda             Onyesha muda wa kila awamu ya ujenzi (kuchanganua/kutoa).
+  --fuatilia[=namna] Fuatilia ujenzi na utekelezaji: mti (chaguo-msingi), json,
+                     json:<faili> au binari:<faili> (pia ASILI_FUATILIA).
   --msaada           Onyesha ujumbe huu.
 
 Hoja za kuu: Kila neno lisilokuwa chagua linapewa kwa kuu(hoja: Orodha<Neno>).
@@ -42,8 +46,9 @@ pub fn run(args: &[String]) -> CliResult {
         show_workspace_info()?;
         return Ok(());
     }
-    let (_profile, out, do_run, single_file, program_args, build_target, show_timing) =
+    let (profile, out, do_run, single_file, program_args, build_target, show_timing) =
         parse_args(args)?;
+    let profile = BuildProfile::parse(&profile)?;
     let mut metrics = PerformanceMetrics::new(5000);
     let total_timer = ScopedTimer::new("jumla");
     if let Some(ref path) = single_file {
@@ -72,7 +77,8 @@ pub fn run(args: &[String]) -> CliResult {
             .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", path.display()), 1))?;
         let key = cache_key(name, &source, build_target.as_deref().unwrap_or("native"));
         let cache_path = target.join(".asb-cache").join(format!("{key}.asb"));
-        if cache_path.exists() {
+        // The cache only ever holds best-effort artifacts; release always rebuilds.
+        if profile == BuildProfile::Dev && cache_path.exists() {
             fs::create_dir_all(&target).map_err(|e| {
                 CliError::new(format!("imeshindwa kuunda {}: {e}", target.display()), 1)
             })?;
@@ -82,9 +88,11 @@ pub fn run(args: &[String]) -> CliResult {
                     1,
                 )
             })?;
-            if parse_format(&asb_bytes).as_deref() != Some("bytecode") {
-                let module = load_asb(&asb_bytes)
-                    .map_err(|e| CliError::new(format!("kuipakia asb: {e}"), 1))?;
+            // An artifact this build cannot read is rebuilt, not an error.
+            let cached = asili_evaluator::load_asb_bytecode(&asb_bytes)
+                .ok()
+                .and_then(|program| program.ast);
+            if let Some(module) = cached {
                 let artifact = target.join(format!("{name}.asb"));
                 fs::write(&artifact, &asb_bytes).map_err(|e| {
                     CliError::new(
@@ -101,8 +109,8 @@ pub fn run(args: &[String]) -> CliResult {
                 let _ = fs::write(&meta, manifest);
                 println!("imejengwa (cache): {}", artifact.display());
                 if do_run {
-                    run_main(&module, program_args)
-                        .map_err(|e| CliError::new(format!("kuendesha kuu: {e}"), 1))?;
+                    run_artifact(&artifact, program_args)
+                        .map_err(|e| CliError::new(e.to_string(), e.exit_code()))?;
                 }
                 if show_timing {
                     metrics.set_total(total_timer.elapsed());
@@ -124,13 +132,13 @@ pub fn run(args: &[String]) -> CliResult {
     };
 
     let emit_timer = ScopedTimer::new("kutoa");
-    let artifact = if compiled.from_cache {
+    let artifact = if compiled.from_cache && profile == BuildProfile::Dev {
         let target = out.as_ref().cloned().unwrap_or_else(|| root.join("kilele"));
         let a = target.join(format!("{}.asb", compiled.config.name));
         println!("imejengwa (cache): {}", a.display());
         a
     } else {
-        let a = emit_build_artifacts(&root, &compiled, out.as_deref())?;
+        let a = emit_build_artifacts(&root, &compiled, out.as_deref(), profile)?;
         println!("imejengwa: {}", a.display());
         a
     };
@@ -223,7 +231,9 @@ pub fn parse_args(
                 i += 1;
             }
             other => {
-                if other.ends_with(".as") && single_file.is_none() {
+                if let Some(traced) = super::trace_flag(other) {
+                    traced?;
+                } else if other.ends_with(".as") && single_file.is_none() {
                     single_file = Some(PathBuf::from(other));
                 } else {
                     program_args.push(other.to_string());
@@ -262,11 +272,11 @@ mod tests {
             asb_bytes.starts_with(b"ASB-STUB"),
             "asb should have ASB-STUB header"
         );
-        let module = asili_evaluator::load_asb(&asb_bytes).expect("load_asb");
-        assert!(
-            !module.functions.is_empty(),
-            "asb should contain merged module"
-        );
+        let functions = asili_evaluator::load_asb_bytecode(&asb_bytes)
+            .expect("load_asb_bytecode")
+            .functions
+            .len();
+        assert!(functions > 0, "asb should contain merged module");
         let manifest =
             fs::read_to_string("kilele/app.build.manifest").expect("per-artifact manifest");
         assert!(

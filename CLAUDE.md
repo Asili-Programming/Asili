@@ -2,7 +2,7 @@
 
 ## Keep the wiki and docs/ in sync — both directions
 
-This repo has a GitHub wiki at `github.com/victorKariuki/Asili/wiki` (separate git repo,
+This repo has a GitHub wiki at `github.com/Asili-Programming/Asili/wiki` (separate git repo,
 `Asili.wiki.git`) documenting the language, stdlib, CLI, architecture, roadmap, and contributor
 info across 27 pages. Each wiki page is derived from a specific `docs/` file or repo file (full
 mapping in the `update-wiki` skill) — the wiki and `docs/` must always say the same thing, so this
@@ -73,6 +73,14 @@ history is expensive and disruptive (invalidates open PRs, requires everyone wit
 re-sync) — don't rely on a future cleanup to fix a trailer that should never be added in the first
 place.
 
+This also covers the commit **author**, not only trailers. Before the first commit in any session,
+check `git config user.name`/`user.email`: if it says `Claude`/`noreply@anthropic.com` (the cloud
+session default), set it for this repo to the maintainer identity used throughout history —
+`git config user.name "Victor Kaiuki"` and `git config user.email "vikgachewa@hotmail.com"` —
+before committing anything. About 29 commits authored as Claude were pushed to `develop`/`main` in
+September 2026; the maintainer chose not to rewrite them, so leave those as they are and don't add
+more.
+
 ## Keep the GitHub Project boards current
 
 This repo's work is tracked on two GitHub Projects (v2, owned by `victorKariuki`, not the repo
@@ -91,34 +99,44 @@ package resolver) are separate crates that can silently drift. Whenever a change
 `core/evaluator/src/builtins/*.rs` (a builtin added/removed/resignatured), `core/parser/src/ast.rs`
 or `semantic/types.rs` (a new keyword/type/syntax form), or `semantic/analyzer.rs` (a new/changed
 `Diagnostic` code), invoke the `sync-pata-toolchain` skill before considering the change finished —
-it holds the verified map of what actually needs updating (`lib/std/*.asi` interface stubs above
-all — these are hand-written and will not fail to compile if left stale, so nothing else catches
-drift there; plus docs, lint rules, the formatter, or the package resolver depending on what
-changed). Do this proactively, chaining into `swahili-docs-and-errors`, `release-and-git-flow`, and
+it holds the verified map of what actually needs updating (the builtin's signature and
+description in `core/parser/src/builtins.rs`'s `BUILTIN_MODULES` above all, then the generated
+`lib/std/*.asi` stubs regenerated from it; plus docs, lint rules, the formatter, or the package
+resolver depending on what changed). Do this proactively, chaining into `swahili-docs-and-errors`, `release-and-git-flow`, and
 `update-wiki` as each applies to the same change, rather than treating toolchain sync as a
 separate follow-up task.
 
 ## Keep Asili at C speed — engines agree, benchmark proves it
 
-Asili runs the Sudoku benchmark (`examples/sudoku/bench/run.sh`) at C speed through LLVM AOT
-native code, with a typed register VM as the no-clang fallback and the tree-walker for
-everything else. Whenever a change touches `core/evaluator/` (`bytecode.rs`, `aot.rs`,
-`native.rs`, `eval/ops.rs`, `eval/methods.rs`, `builtins/`), parser lowering/desugaring, the
+Asili runs the Sudoku benchmark (`examples/sudoku/bench/run.sh`) at C speed through native
+code from its own backend (`nguvu`, no external compiler). Native code is the only way any
+program runs — machine code on x86-64/AArch64, a wasm module in the browser playground
+(`nguvu/wasm.rs`); there is no interpreter of any kind (no tree-walker, no bytecode
+interpreter) and no fallback: a construct the bytecode compiler can't lower is a build error.
+Whenever a change
+touches `core/evaluator/` (`bytecode.rs`, `nguvu/`, `aot.rs`, `native.rs`, `host.rs`, `eval/`, `builtins/`), parser lowering/desugaring, the
 `.asb` format, or adds an operator/builtin/method/opcode/AST variant, invoke the
 `performance-guardrails` skill before considering the work done. Non-negotiables it enforces:
 
-- **One semantics source.** Operators, casts, methods, indexing, `?`/`jaribu`, formatting and
-  iteration are implemented once (`eval/ops.rs`, `eval/methods.rs`, `bytecode.rs::numeric_op`)
-  and called by every engine. Never re-implement a rule inside the VM or the AOT emitter.
-- **One native backend** — LLVM IR text compiled by clang. No JIT, no C transpiler.
-- **Native code is bit-identical to the interpreter** — integer lowering only when range
-  analysis proves it (or speculates with a deopt guard); every new opcode is described to
-  `native.rs` (`num_reads`/`num_writes`/`list_writes`/`transfer`); `BYTECODE_VERSION` /
-  `ABI_VERSION` bumped when their formats change.
+- **One semantics source.** Operators, casts, methods, indexing, patterns, `?`/`jaribu`,
+  formatting and iteration are implemented once (`eval/ops.rs`, `eval/methods.rs`,
+  `eval/pattern.rs`, `host.rs::numeric_op`) and called by native code's host. Never
+  re-implement a rule inside the native backend or the host.
+- **One native backend** — `nguvu`, in-house: bytecode → IR → machine code (or a wasm module),
+  written by `pata jenga` as `kilele/<name>.nguvu`. No external compiler, assembler or linker,
+  no C transpiler.
+- **Native code gives the language's reference results bit for bit** — integer lowering only
+  when range analysis proves it (no speculation, no deoptimization: an unprovable register stays
+  `f64`); every new opcode is described to `native.rs` (`num_reads`/`num_writes`/`list_writes`/
+  `transfer`); `BYTECODE_VERSION` / `ABI_VERSION` / `IMAGE_VERSION` bumped when their formats
+  change.
 - **Tests and numbers, not assumptions**: `engines_agree.rs` and `native_tiers.rs` cover every
-  new construct, and `run.sh` is rerun after engine changes — asili-aot within ~1.6× of C and
-  the attempt count exactly 90,665. Report the measured numbers, and treat a regression as a
-  bug to fix before finishing.
+  new construct against hand-checked expectations (`tests/golden/`), `driver/wasm/tests/agree.sh`
+  keeps the wasm target printing what native code prints, `tests/fuzz.rs` keeps optimized
+  native code computing what unoptimized code does (the IR verifier, `nguvu/verify.rs`, runs
+  after every optimizer pass in debug builds), and `run.sh` is rerun after engine
+  changes — asili-nguvu at or below clang `-O2` C on the solve and the attempt count exactly
+  90,665. Report the measured numbers, and treat a regression as a bug to fix before finishing.
 
 ## Write once, reuse — no second implementations
 
@@ -131,17 +149,24 @@ the change. The current single sources:
 | Concern | The one place |
 |---|---|
 | Language keywords | `asili_lexer::KEYWORDS` (LSP completion/hover/rename, formatter) |
-| Expression-tree shape | `Expr::children` in `core/parser/src/ast.rs` (lint, LSP, parser checks) |
-| Builtin signatures | `core/parser/src/builtins.rs` export tables (analyzer, LSP completion); `BUILTIN_MODULE_NAMES` for the module whitelist |
-| Builtin implementations | `core/evaluator/src/builtins/*` via `register_all`/`BuiltinTable` (evaluator and VM); `Value::sawa`/`Value::kosa`, `arg_str` for results/arguments |
-| Value semantics and methods | `eval/ops.rs`, `eval/methods.rs` |
-| Running a tree-walker function | `run_in_fresh_runtime` in `core/evaluator/src/lib.rs` |
+| Expression-tree shape | `Expr::children` / `Expr::map_children` in `core/parser/src/ast.rs`; `Exprs::descendants` to visit a whole expression; `Block::map_expr_roots` for every expression a block holds (lint, LSP, parser checks, module merging) |
+| Builtin signatures, descriptions and builtin `umbo`s | `core/parser/src/builtins.rs::BUILTIN_MODULES`, written as Asili signatures (`name(p: T, q?: T, ...r: T) -> R`) with a one-line Swahili description each: the analyzer's contracts (arity, optional/variadic parameters), LSP hover/signature help/completion (`pata/lsp/src/builtin_docs.rs`), and `lib/std/*.asi`, generated by `render_stub` (`ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs`); `BUILTIN_MODULE_NAMES` for the module whitelist |
+| Builtin implementations | `core/evaluator/src/builtins/*` via `register_all`/`BuiltinTable` (evaluator and native code's host); `Value::sawa`/`Value::kosa`, `arg_str` for results/arguments |
+| Value semantics, methods and patterns | `eval/ops.rs`, `eval/methods.rs`, `eval/pattern.rs` |
+| Running a module's function (tests, tools) | `asili_evaluator::NativeProgram` (`run_function`/`run_main` wrap it) |
 | Running an artifact | `asili_evaluator::run_artifact` (`pata tenda`, `jenga --tenda`, runner) |
 | Compile front end | `parse_and_resolve` + `check_program` in `pata/cli/src/pipeline/compile.rs` |
 | Finding `pata.toml` / reading tool sections | the `pata-config` crate |
 | LSP raw-source scanning | `pata/lsp/src/scan.rs::code_chars` |
 | `pata-cli` test fixtures | `pata/cli/src/test_support.rs` |
+| Connecting, listening, TLS configuration, DNS | the `asili-mtandao` crate (`core/mtandao`) |
+| Waiting without blocking a `sawia` task | `kazi_sawia::block_on` (`core/evaluator/src/kazi_sawia.rs`) |
+| Tracing (events, spans, output formats) | the `asili-trace` crate (`emit`/`enter`/`phase`; sinks chosen by `install_spec`) |
+| Identifier interning, Fx hashing | `asili_parser::Name` / `FxHasher` / `FxHashMap` (`core/parser/src/name.rs`) |
 
-Hand-maintained mirrors that cannot share code (the VS Code TextMate grammar, the playground
-highlighter, `lib/std/*.asi` stubs, `extension.ts`'s `findProjectRoot`) must be updated in the
-same change as their source of truth.
+Mirrors that cannot share code must be updated in the same change as their source of truth. Two
+live in their own repositories: the VS Code extension (`Asili-Programming/asili-vscode` — its
+TextMate grammar and `extension.ts`'s `findProjectRoot`) and the browser playground
+(`Asili-Programming/asili-playground` — its highlighter). Their word lists are generated from the
+compiler's by `pata/core/tests/editor_word_lists.rs`, run with `ASILI_VSCODE_DIR` /
+`ASILI_PLAYGROUND_DIR` pointing at those checkouts. `lib/std/*.asi` is generated, never edited by hand.

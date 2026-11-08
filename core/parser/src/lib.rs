@@ -6,13 +6,25 @@ mod ast;
 pub mod attrs;
 pub mod builtins;
 mod cursor;
+mod incremental;
 mod module_merge;
+mod name;
 mod parse;
 mod semantic;
+pub use asili_lexer::bytes_literal;
 pub use ast::*;
 pub use attrs::{item_survives, parse_sharti_predicate, ShartiPredicate, Target};
+pub use incremental::IncrementalParser;
 pub use module_merge::merge_modules;
-pub use semantic::parse_value_type;
+pub use name::{FxHashMap, FxHashSet, FxHasher, Name};
+pub use semantic::{
+    format_value_type, parse_value_type, parse_value_type_with, split_generic_args,
+};
+
+/// The newest Asili language (spec) version this toolchain implements — what `pata.toml`'s
+/// `[jumla] asili = "X.Y"` is checked against and what `pata njozi` writes. Bump it with the
+/// spec version in docs/SPECIFICATION.md (see docs/spec/00-maintenance.md).
+pub const LANGUAGE_VERSION: &str = "1.1";
 
 use cursor::Parser;
 

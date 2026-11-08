@@ -1,161 +1,55 @@
-//! Variable environment (stack of scopes).
+//! The language's predefined names.
 
-use std::collections::HashMap;
+// Runtime code never panics on its own: an impossible state is an error the program sees
+// (and its safe state handles), not a crash (see docs/design/safety-critical-roadmap.md §3).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 use crate::value::Value;
 
-/// Stack of scopes; inner scope shadows outer.
-#[derive(Clone, Debug, Default)]
-pub struct Env {
-    scopes: Vec<HashMap<String, Value>>,
-}
-
-impl Env {
-    pub fn new() -> Self {
-        Self {
-            scopes: vec![HashMap::new()],
-        }
-    }
-
-    pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    pub fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
-
-    pub fn get(&self, name: &str) -> Option<Value> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
-                return Some(v.clone());
-            }
-        }
-        None
-    }
-
-    pub(crate) fn get_ref(&self, name: &str) -> Option<&Value> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(value) = scope.get(name) {
-                return Some(value);
-            }
-        }
-        None
-    }
-
-    pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(value) = scope.get_mut(name) {
-                return Some(value);
-            }
-        }
-        None
-    }
-
-    // HACK: set() falls back to inserting into the global (first) scope when the name is not found
-    // in any existing scope. This silently creates a global from inside a function body, which masks
-    // undefined-variable bugs. Should return an error (or at minimum panic in debug builds) when
-    // the name does not already exist in any scope.
-    pub fn set(&mut self, name: &str, value: Value) {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), value);
-                return;
-            }
-        }
-        if let Some(scope) = self.scopes.first_mut() {
-            scope.insert(name.to_string(), value);
-        }
-    }
-
-    pub fn define(&mut self, name: &str, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
-        }
-    }
-
-    pub fn drop(&mut self, name: &str) -> bool {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.remove(name);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Seed the outermost scope with global constants (Ukomo, Siyo_Namba, PI, E, KWELI, TOLEO, etc.).
-    pub fn seed_global_constants(&mut self) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert("KWELI".to_string(), Value::Ukweli(true));
-            scope.insert("SIYO_KWELI".to_string(), Value::Ukweli(false));
-            scope.insert("TUPU".to_string(), Value::Tupu);
-            scope.insert("Ukomo".to_string(), Value::Namba(f64::INFINITY));
-            scope.insert("Siyo_Namba".to_string(), Value::Namba(f64::NAN));
-            scope.insert(
-                "TOLEO".to_string(),
-                Value::Neno(option_env!("CARGO_PKG_VERSION").unwrap_or("0.0.0").into()),
-            );
-            scope.insert(
-                "JINA_OS".to_string(),
-                Value::Neno(std::env::consts::OS.into()),
-            );
-            scope.insert("SEKUNDE_KWA_SIKU".to_string(), Value::Namba(86400.0));
-            scope.insert("MWANZO_WA_ZAMANI".to_string(), Value::Namba(0.0));
-            scope.insert(
-                "NJIA_SEPARATOR".to_string(),
-                Value::Neno(std::path::MAIN_SEPARATOR.to_string()),
-            );
-            scope.insert("PI".to_string(), Value::Namba(std::f64::consts::PI));
-            scope.insert("E".to_string(), Value::Namba(std::f64::consts::E));
-            scope.insert(
-                "PHI".to_string(),
-                Value::Namba((1.0_f64 + 5.0_f64.sqrt()) / 2.0),
-            );
-            scope.insert("TAU".to_string(), Value::Namba(2.0 * std::f64::consts::PI));
-            scope.insert("LN10".to_string(), Value::Namba(10.0_f64.ln()));
-            scope.insert("LN2".to_string(), Value::Namba(2.0_f64.ln()));
-            scope.insert(
-                "LOG10E".to_string(),
-                Value::Namba(std::f64::consts::E.log10()),
-            );
-            scope.insert(
-                "LOG2E".to_string(),
-                Value::Namba(std::f64::consts::E.log2()),
-            );
-            scope.insert("KIPEUO1_2".to_string(), Value::Namba(1.0 / 2.0_f64.sqrt()));
-            scope.insert("KIPEUO2".to_string(), Value::Namba(2.0_f64.sqrt()));
-            scope.insert("KIPEUO3".to_string(), Value::Namba(3.0_f64.sqrt()));
-            scope.insert("KIPEUO5".to_string(), Value::Namba(5.0_f64.sqrt()));
-            scope.insert("EPSILON".to_string(), Value::Namba(f64::EPSILON));
-            scope.insert("INF".to_string(), Value::Namba(f64::INFINITY));
-            scope.insert("NAN".to_string(), Value::Namba(f64::NAN));
-        }
-    }
-
-    /// Names defined in any scope (for REPL: pass as extern_constants so later lines see them).
-    pub fn defined_names(&self) -> Vec<String> {
-        let mut names = std::collections::HashSet::new();
-        for scope in &self.scopes {
-            for k in scope.keys() {
-                names.insert(k.clone());
-            }
-        }
-        names.into_iter().collect()
-    }
-
-    /// Every `(name, value)` binding currently in scope, innermost scope first — for a debugger's
-    /// "current variables" snapshot (`debug_hook::RealDebugHook::record_bindings`), where a name
-    /// shadowed by an inner scope must report the inner (shadowing) value, matching `Env::get`'s
-    /// own lookup order exactly. Order/dedup of same-named entries across scopes is the caller's
-    /// job (keep only the first occurrence of each name) — this just yields every scope's own
-    /// entries, innermost first.
-    pub fn iter_innermost_first(&self) -> impl Iterator<Item = (String, Value)> + '_ {
-        self.scopes
-            .iter()
-            .rev()
-            .flat_map(|scope| scope.iter().map(|(k, v)| (k.clone(), v.clone())))
-    }
+/// The language's predefined names (`Ukomo`, `Siyo_Namba`, `PI`, `KWELI`, `TOLEO`, …): what the
+/// bytecode compiler resolves a name to when it is neither local nor a module constant.
+pub(crate) fn global_constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("KWELI", Value::Ukweli(true)),
+        ("SIYO_KWELI", Value::Ukweli(false)),
+        ("TUPU", Value::Tupu),
+        ("Ukomo", Value::Namba(f64::INFINITY)),
+        ("Siyo_Namba", Value::Namba(f64::NAN)),
+        (
+            "TOLEO",
+            Value::Neno(option_env!("CARGO_PKG_VERSION").unwrap_or("0.0.0").into()),
+        ),
+        ("JINA_OS", Value::Neno(std::env::consts::OS.into())),
+        ("SEKUNDE_KWA_SIKU", Value::Namba(86400.0)),
+        ("MWANZO_WA_ZAMANI", Value::Namba(0.0)),
+        (
+            "NJIA_SEPARATOR",
+            Value::neno(std::path::MAIN_SEPARATOR.to_string()),
+        ),
+        ("PI", Value::Namba(std::f64::consts::PI)),
+        ("E", Value::Namba(std::f64::consts::E)),
+        ("PHI", Value::Namba((1.0_f64 + 5.0_f64.sqrt()) / 2.0)),
+        ("TAU", Value::Namba(2.0 * std::f64::consts::PI)),
+        ("LN10", Value::Namba(10.0_f64.ln())),
+        ("LN2", Value::Namba(2.0_f64.ln())),
+        ("LOG10E", Value::Namba(std::f64::consts::E.log10())),
+        ("LOG2E", Value::Namba(std::f64::consts::E.log2())),
+        ("KIPEUO1_2", Value::Namba(1.0 / 2.0_f64.sqrt())),
+        ("KIPEUO2", Value::Namba(2.0_f64.sqrt())),
+        ("KIPEUO3", Value::Namba(3.0_f64.sqrt())),
+        ("KIPEUO5", Value::Namba(5.0_f64.sqrt())),
+        ("EPSILON", Value::Namba(f64::EPSILON)),
+        ("INF", Value::Namba(f64::INFINITY)),
+        ("NAN", Value::Namba(f64::NAN)),
+    ]
 }

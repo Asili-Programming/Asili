@@ -22,18 +22,18 @@ after work has actually started, or stay open after the fix has shipped.
 
 1. **Before starting substantive work**, check whether it corresponds to an existing item on
    either board (`gh project item-list 16 --owner victorKariuki` /
-   `gh project item-list 17 --owner victorKariuki`, or `gh issue list --repo victorKariuki/Asili`
+   `gh project item-list 17 --owner victorKariuki`, or `gh issue list --repo Asili-Programming/Asili`
    for open issues not yet on a board). Match by subject, not by exact title wording.
 2. **When starting work on a tracked item**, move its Status to `In progress` (see commands
    below). Do this at the start of the work, not retroactively at the end — the board should
    reflect what's happening now, not just what's finished.
 3. **When work is fully shipped and merged** (committed, tests passing, pushed per this repo's
    usual push-confirmation rules — see `release-and-git-flow`), move the Status to `Done` and
-   close the underlying issue (`gh issue close <n> --repo victorKariuki/Asili`) if one exists.
+   close the underlying issue (`gh issue close <n> --repo Asili-Programming/Asili`) if one exists.
    Don't mark `Done` before the work has actually landed on a shared branch.
 4. **When you discover a real, scoped gap** while working (a deferred edge case, a documented
    "not implemented" comment, a genuine bug) that isn't already tracked, create a GitHub issue
-   (`gh issue create --repo victorKariuki/Asili`) with concrete detail — cite the actual file/line
+   (`gh issue create --repo Asili-Programming/Asili`) with concrete detail — cite the actual file/line
    or design-doc section, not a vague restatement — then add it to the appropriate board
    (`gh project item-add <16|17> --owner victorKariuki --url <issue-url>`) with a Priority
    (`P0`/`P1`/`P2`) and Status reflecting its real state (usually `To triage`/`Backlog`, not
@@ -56,7 +56,7 @@ gh project field-list 17 --owner victorKariuki --format json
 Add an existing issue to a board:
 
 ```bash
-gh project item-add <16|17> --owner victorKariuki --url https://github.com/victorKariuki/Asili/issues/<n>
+gh project item-add <16|17> --owner victorKariuki --url https://github.com/Asili-Programming/Asili/issues/<n>
 ```
 
 Set Status/Priority on an item (needs the project's own numeric ID — `PVT_...` — the item's own ID

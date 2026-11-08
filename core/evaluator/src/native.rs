@@ -1,11 +1,28 @@
-//! Support for ahead-of-time native code (`aot.rs`), kept separate from the LLVM emitter: the
-//! calling convention between machine code and the VM, per-instruction register effects used to
-//! spill/reload around interpreter callbacks, and the integer range analysis.
+//! Support for native code (`aot.rs`, `nguvu/`): the calling convention between machine code and
+//! its host (`host.rs`), per-instruction register effects used to spill/reload around calls back
+//! into the host, and the integer range analysis.
 
-use crate::bytecode::{CmpOp, Frame, Opcode, Reg, Ty};
+// Runtime code never panics on its own: an impossible state is an error the program sees
+// (and its safe state handles), not a crash (see docs/design/safety-critical-roadmap.md §3).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
+use crate::bytecode::{CmpOp, Opcode, Reg, Ty};
+use crate::host::Frame;
+use crate::numlist::Kind;
+use crate::value::Value;
 use std::ffi::c_void;
 
-/// `fn(runtime, vm, frame, nums) -> status << 32 | pc`.
+/// `fn(runtime, host, frame, nums) -> status << 32 | pc`.
 pub(crate) type NativeFn =
     unsafe extern "C" fn(*const Runtime, *mut c_void, *mut Frame, *mut f64) -> u64;
 
@@ -14,30 +31,148 @@ pub(crate) const STATUS_FINISH: u64 = 1;
 pub(crate) const STATUS_FAIL: u64 = 2;
 /// The function reached the `Return`/`ReturnTupu` instruction at `pc` (lower half).
 pub(crate) const STATUS_RETURN: u64 = 3;
-/// A speculation failed before instruction `pc`: every numeric register has been written back
-/// to the frame, and the interpreter continues the call from `pc` (deoptimization).
-pub(crate) const STATUS_DEOPT: u64 = 4;
 
-/// Entry points native code calls, passed as the first argument. Field order is ABI: the AOT
-/// backend loads them by offset.
+/// Entry points native code calls, passed as the first argument. Field order is ABI: generated
+/// code loads them by offset (`nguvu::ir::RtFn`).
 #[repr(C)]
 pub(crate) struct Runtime {
-    /// `(vm, frame, function, pc) -> 0 | STATUS_FINISH | STATUS_FAIL`: run one instruction in
-    /// the interpreter.
+    /// `(host, frame, function, pc) -> 0 | STATUS_FINISH | STATUS_FAIL`: run one instruction
+    /// native code does not compile, in the host.
     pub exec: extern "C" fn(*mut c_void, *mut Frame, u32, u32) -> u32,
-    pub list_ptr: extern "C" fn(*mut Frame, u32) -> *mut f64,
+    pub list_ptr: extern "C" fn(*mut Frame, u32, u32) -> *mut u64,
     pub list_len: extern "C" fn(*mut Frame, u32) -> i64,
+    /// The list's address, where its length is stored (`NumList` is `repr(C)`, `len` first).
+    pub list_head: extern "C" fn(*mut Frame, u32) -> *mut u8,
+    /// Bytes of element storage the list has.
+    pub list_room: extern "C" fn(*mut Frame, u32) -> i64,
     /// Append; returns the (possibly moved) data pointer.
-    pub list_push: extern "C" fn(*mut Frame, u32, f64) -> *mut f64,
+    pub list_push: extern "C" fn(*mut Frame, u32, f64) -> *mut u64,
     /// Remove at an in-range index; returns the new length.
     pub list_remove: extern "C" fn(*mut Frame, u32, i64) -> i64,
+    // Math helpers.
+    pub fmod: extern "C" fn(f64, f64) -> f64,
+    pub pow: extern "C" fn(f64, f64) -> f64,
+    pub floor: extern "C" fn(f64) -> f64,
+    pub ceil: extern "C" fn(f64) -> f64,
+    /// Rust's saturating `f64 as i64` (NaN → 0).
+    pub float_to_int_sat: extern "C" fn(f64) -> i64,
+    /// The language's shift amount (`f64 as i32`, outside `0..=63` → 0).
+    pub shift_amount: extern "C" fn(f64) -> i64,
+    /// `(host, function, nums) -> status`: make a direct call through the host's call path (when
+    /// the call depth or the stack would not allow a direct one); the result lands after the
+    /// callee's registers.
+    pub call_host: extern "C" fn(*mut c_void, u32, *mut f64) -> u64,
+    /// `(host) -> STATUS_FAIL`: a `CheckDepth` found the call depth at its limit; the error is
+    /// left pending.
+    pub depth_error: extern "C" fn(*mut c_void) -> u64,
+    // Value-register instructions that cannot fail, called directly (no `exec` round trip).
+    pub box_num: extern "C" fn(*mut Frame, u32, f64),
+    pub box_bool: extern "C" fn(*mut Frame, u32, f64),
+    pub val_mov: extern "C" fn(*mut Frame, u32, u32),
+    pub const_val: extern "C" fn(*mut c_void, *mut Frame, u32, u32),
 }
 
-pub(crate) extern "C" fn list_ptr(frame: *mut Frame, reg: u32) -> *mut f64 {
+/// `BoxNum`: `vals[dst] = Namba(v)`.
+pub(crate) fn box_num(frame: &mut Frame, dst: u32, v: f64) {
+    frame.vals[dst as usize] = Value::Namba(v);
+}
+
+/// `BoxBool`: `vals[dst] = Ukweli(v != 0)`.
+pub(crate) fn box_bool(frame: &mut Frame, dst: u32, v: f64) {
+    frame.vals[dst as usize] = Value::Ukweli(v != 0.0);
+}
+
+/// `ValMov`: `vals[dst] = vals[src]` (a copy).
+pub(crate) fn val_mov(frame: &mut Frame, dst: u32, src: u32) {
+    frame.vals[dst as usize] = frame.vals[src as usize].clone();
+}
+
+pub(crate) extern "C" fn rt_box_num(frame: *mut Frame, dst: u32, v: f64) {
+    // SAFETY: native code passes the frame it runs in, not otherwise borrowed during the call.
+    box_num(unsafe { &mut *frame }, dst, v)
+}
+
+pub(crate) extern "C" fn rt_box_bool(frame: *mut Frame, dst: u32, v: f64) {
+    // SAFETY: as in `rt_box_num`.
+    box_bool(unsafe { &mut *frame }, dst, v)
+}
+
+pub(crate) extern "C" fn rt_val_mov(frame: *mut Frame, dst: u32, src: u32) {
+    // SAFETY: as in `rt_box_num`.
+    val_mov(unsafe { &mut *frame }, dst, src)
+}
+
+/// Byte offsets into the host (`Host` is `repr(C)` and starts with these): the call-depth
+/// counter, the runtime table, and the stack limit for direct calls (see [`stack_limit`]).
+pub(crate) const DEPTH_OFFSET: i32 = 0;
+pub(crate) const RT_OFFSET: i32 = 8;
+pub(crate) const LIMIT_OFFSET: i32 = 16;
+
+/// Stack headroom kept free below a direct native call: generated frames and the runtime
+/// functions they call fit well inside it.
+pub(crate) const DIRECT_CALL_HEADROOM: usize = 256 * 1024;
+
+/// The lowest stack address at which native code may still make a direct call (a stack pointer
+/// at or below it takes the host's call path, which can grow the stack), or `usize::MAX`
+/// when the stack's extent is unknown (every call then takes that path).
+pub(crate) fn stack_limit() -> usize {
+    let marker = 0u8;
+    let sp = std::hint::black_box(&marker) as *const u8 as usize;
+    match crate::stack::remaining() {
+        Some(left) if left > DIRECT_CALL_HEADROOM => sp - left + DIRECT_CALL_HEADROOM,
+        _ => usize::MAX,
+    }
+}
+
+pub(crate) extern "C" fn rt_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
+
+pub(crate) extern "C" fn rt_pow(a: f64, b: f64) -> f64 {
+    a.powf(b)
+}
+
+pub(crate) extern "C" fn rt_floor(a: f64) -> f64 {
+    a.floor()
+}
+
+pub(crate) extern "C" fn rt_ceil(a: f64) -> f64 {
+    a.ceil()
+}
+
+pub(crate) extern "C" fn rt_float_to_int_sat(a: f64) -> i64 {
+    a as i64
+}
+
+pub(crate) extern "C" fn rt_shift_amount(a: f64) -> i64 {
+    let shift = a as i32;
+    if (0..=63).contains(&shift) {
+        shift as i64
+    } else {
+        0
+    }
+}
+
+/// Data pointer of list register `reg`, switched to the representation `kind` (a
+/// `Kind::code`) that native code chose from the range analysis; null if some element does not
+/// fit it (native code then stops with an internal error: its analysis proved they all fit).
+pub(crate) extern "C" fn list_ptr(frame: *mut Frame, reg: u32, kind: u32) -> *mut u64 {
     // SAFETY: called by native code with the frame it was handed; `reg` was checked at compile
     // time to be below the function's `list_regs`.
     let frame = unsafe { &mut *frame };
-    frame.lists[reg as usize].as_mut_ptr()
+    frame.lists[reg as usize].ensure(Kind::from_code(kind))
+}
+
+pub(crate) extern "C" fn list_head(frame: *mut Frame, reg: u32) -> *mut u8 {
+    // SAFETY: as in `list_ptr`; the frame's list registers are not resized during the call.
+    let frame = unsafe { &mut *frame };
+    &mut frame.lists[reg as usize] as *mut crate::numlist::NumList as *mut u8
+}
+
+pub(crate) extern "C" fn list_room(frame: *mut Frame, reg: u32) -> i64 {
+    // SAFETY: as in `list_ptr`.
+    let frame = unsafe { &*frame };
+    frame.lists[reg as usize].room() as i64
 }
 
 pub(crate) extern "C" fn list_len(frame: *mut Frame, reg: u32) -> i64 {
@@ -46,7 +181,9 @@ pub(crate) extern "C" fn list_len(frame: *mut Frame, reg: u32) -> i64 {
     frame.lists[reg as usize].len() as i64
 }
 
-pub(crate) extern "C" fn list_push(frame: *mut Frame, reg: u32, value: f64) -> *mut f64 {
+/// Append `value` (keeping the list's representation: native code only pushes integers onto
+/// integer lists) and return the possibly moved data pointer.
+pub(crate) extern "C" fn list_push(frame: *mut Frame, reg: u32, value: f64) -> *mut u64 {
     // SAFETY: as in `list_ptr`.
     let frame = unsafe { &mut *frame };
     let list = &mut frame.lists[reg as usize];
@@ -64,26 +201,30 @@ pub(crate) extern "C" fn list_remove(frame: *mut Frame, reg: u32, idx: i64) -> i
 
 /// Block leaders of a function: entry, jump targets, and successors of branches/returns.
 /// `None` if a jump target is out of range.
+/// Where a jump instruction can transfer control besides falling through.
+pub(crate) fn jump_target(op: &Opcode) -> Option<usize> {
+    match op {
+        Opcode::Jump { target }
+        | Opcode::JumpIfFalse { target, .. }
+        | Opcode::JumpIfTrue { target, .. }
+        | Opcode::JumpIfNot { target, .. }
+        | Opcode::ForStep { target, .. } => Some(*target as usize),
+        _ => None,
+    }
+}
+
 pub(crate) fn leaders(code: &[Opcode]) -> Option<std::collections::BTreeSet<usize>> {
     let mut leaders = std::collections::BTreeSet::new();
     leaders.insert(0usize);
     for (pc, op) in code.iter().enumerate() {
-        match op {
-            Opcode::Jump { target }
-            | Opcode::JumpIfFalse { target, .. }
-            | Opcode::JumpIfTrue { target, .. }
-            | Opcode::JumpIfNot { target, .. }
-            | Opcode::ForStep { target, .. } => {
-                if *target as usize >= code.len() {
-                    return None;
-                }
-                leaders.insert(*target as usize);
-                leaders.insert(pc + 1);
+        if let Some(target) = jump_target(op) {
+            if target >= code.len() {
+                return None;
             }
-            Opcode::Return { .. } | Opcode::ReturnTupu => {
-                leaders.insert(pc + 1);
-            }
-            _ => {}
+            leaders.insert(target);
+            leaders.insert(pc + 1);
+        } else if matches!(op, Opcode::Return { .. } | Opcode::ReturnTupu) {
+            leaders.insert(pc + 1);
         }
     }
     Some(leaders)
@@ -127,7 +268,51 @@ pub(crate) fn num_reads(op: &Opcode) -> Vec<Reg> {
             .filter(|a| matches!(a.ty, Ty::Num | Ty::Bool))
             .map(|a| a.reg)
             .collect(),
-        _ => Vec::new(),
+        Opcode::IterItem { idx, .. } => vec![*idx],
+        // Listed one by one (no `_` arm), so a new instruction must say what it reads: native
+        // code keeps numbers in machine registers and stores only these before `exec_slow`.
+        Opcode::Jump { .. }
+        | Opcode::JumpIfFalse { .. }
+        | Opcode::JumpIfTrue { .. }
+        | Opcode::JumpIfNot { .. }
+        | Opcode::ForStep { .. }
+        | Opcode::Return { .. }
+        | Opcode::ReturnTupu
+        | Opcode::ListLen { .. }
+        | Opcode::ListMov { .. }
+        | Opcode::ListFromVal { .. }
+        | Opcode::ListToVal { .. }
+        | Opcode::ConstVal { .. }
+        | Opcode::ValMov { .. }
+        | Opcode::UnboxNum { .. }
+        | Opcode::UnboxBool { .. }
+        | Opcode::ValBinary { .. }
+        | Opcode::ValUnary { .. }
+        | Opcode::ValIndex { .. }
+        | Opcode::ValLen { .. }
+        | Opcode::Unwrap { .. }
+        | Opcode::ListMutate(_)
+        | Opcode::ListMethod(_)
+        | Opcode::IterItems { .. }
+        | Opcode::Jaribu { .. }
+        | Opcode::Cast { .. }
+        | Opcode::MakeList { .. }
+        | Opcode::CallBuiltin(_)
+        | Opcode::CallMethod(_)
+        | Opcode::MutMethod(_)
+        | Opcode::MakeStruct { .. }
+        | Opcode::Field { .. }
+        | Opcode::FieldNum { .. }
+        | Opcode::MakeEnum { .. }
+        | Opcode::MatchPattern { .. }
+        | Opcode::MakeMap { .. }
+        | Opcode::CheckDepth => Vec::new(),
+        // The debugger reads the numeric locals it shows.
+        Opcode::Line { binds, .. } => binds
+            .iter()
+            .filter(|(_, op)| matches!(op.ty, Ty::Num | Ty::Bool))
+            .map(|(_, op)| op.reg)
+            .collect(),
     }
 }
 
@@ -156,10 +341,57 @@ pub(crate) fn num_writes(op: &Opcode) -> Vec<Reg> {
         | Opcode::ListGet { dst, .. }
         | Opcode::ListLen { dst, .. }
         | Opcode::UnboxNum { dst, .. }
+        | Opcode::FieldNum { dst, .. }
         | Opcode::UnboxBool { dst, .. }
-        | Opcode::ValLen { dst, .. } => vec![*dst],
+        | Opcode::ValLen { dst, .. }
+        | Opcode::MatchPattern { dst, .. } => vec![*dst],
         Opcode::Call(call) if matches!(call.dst.ty, Ty::Num | Ty::Bool) => vec![call.dst.reg],
-        _ => Vec::new(),
+        Opcode::ListMethod(call) if matches!(call.dst.ty, Ty::Num | Ty::Bool) => {
+            vec![call.dst.reg]
+        }
+        // Exhaustive, like `num_reads`. (Jumps, `ForStep` and returns never reach `exec_slow`.)
+        Opcode::Call(_)
+        | Opcode::Jump { .. }
+        | Opcode::JumpIfFalse { .. }
+        | Opcode::JumpIfTrue { .. }
+        | Opcode::JumpIfNot { .. }
+        | Opcode::ForStep { .. }
+        | Opcode::Return { .. }
+        | Opcode::ReturnTupu
+        | Opcode::MakeNumList { .. }
+        | Opcode::ListRepeat { .. }
+        | Opcode::ListGetTokeo { .. }
+        | Opcode::ListSet { .. }
+        | Opcode::ListPush { .. }
+        | Opcode::ListRemove { .. }
+        | Opcode::ListRemoveVal { .. }
+        | Opcode::ListMov { .. }
+        | Opcode::ListFromVal { .. }
+        | Opcode::ListToVal { .. }
+        | Opcode::ConstVal { .. }
+        | Opcode::ValMov { .. }
+        | Opcode::BoxNum { .. }
+        | Opcode::BoxBool { .. }
+        | Opcode::ValBinary { .. }
+        | Opcode::ValUnary { .. }
+        | Opcode::ValIndex { .. }
+        | Opcode::Unwrap { .. }
+        | Opcode::ListMutate(_)
+        | Opcode::ListMethod(_)
+        | Opcode::IterItems { .. }
+        | Opcode::IterItem { .. }
+        | Opcode::Jaribu { .. }
+        | Opcode::Cast { .. }
+        | Opcode::MakeList { .. }
+        | Opcode::CallBuiltin(_)
+        | Opcode::CallMethod(_)
+        | Opcode::MutMethod(_)
+        | Opcode::MakeStruct { .. }
+        | Opcode::Field { .. }
+        | Opcode::MakeEnum { .. }
+        | Opcode::MakeMap { .. }
+        | Opcode::CheckDepth
+        | Opcode::Line { .. } => Vec::new(),
     }
 }
 
@@ -175,7 +407,68 @@ pub(crate) fn list_writes(op: &Opcode) -> Vec<Reg> {
         | Opcode::ListRemoveVal { list, .. } => vec![*list],
         Opcode::ListMutate(call) => vec![call.recv],
         Opcode::Call(call) if call.dst.ty == Ty::List => vec![call.dst.reg],
-        _ => Vec::new(),
+        Opcode::ListMethod(call) if call.dst.ty == Ty::List => vec![call.dst.reg],
+        // Exhaustive, like `num_reads`.
+        Opcode::Call(_)
+        | Opcode::Mov { .. }
+        | Opcode::Add { .. }
+        | Opcode::Sub { .. }
+        | Opcode::Mul { .. }
+        | Opcode::Div { .. }
+        | Opcode::Rem { .. }
+        | Opcode::Pow { .. }
+        | Opcode::BitAnd { .. }
+        | Opcode::BitOr { .. }
+        | Opcode::BitXor { .. }
+        | Opcode::Shl { .. }
+        | Opcode::Shr { .. }
+        | Opcode::Neg { .. }
+        | Opcode::BitNot { .. }
+        | Opcode::Not { .. }
+        | Opcode::Floor { .. }
+        | Opcode::Ceil { .. }
+        | Opcode::Trunc { .. }
+        | Opcode::Cmp { .. }
+        | Opcode::Jump { .. }
+        | Opcode::JumpIfFalse { .. }
+        | Opcode::JumpIfTrue { .. }
+        | Opcode::JumpIfNot { .. }
+        | Opcode::ForStep { .. }
+        | Opcode::Return { .. }
+        | Opcode::ReturnTupu
+        | Opcode::ListGet { .. }
+        | Opcode::ListGetTokeo { .. }
+        | Opcode::ListSet { .. }
+        | Opcode::ListLen { .. }
+        | Opcode::ListToVal { .. }
+        | Opcode::ConstVal { .. }
+        | Opcode::ValMov { .. }
+        | Opcode::BoxNum { .. }
+        | Opcode::BoxBool { .. }
+        | Opcode::UnboxNum { .. }
+        | Opcode::UnboxBool { .. }
+        | Opcode::ValBinary { .. }
+        | Opcode::ValUnary { .. }
+        | Opcode::ValIndex { .. }
+        | Opcode::ValLen { .. }
+        | Opcode::Unwrap { .. }
+        | Opcode::IterItems { .. }
+        | Opcode::IterItem { .. }
+        | Opcode::Jaribu { .. }
+        | Opcode::Cast { .. }
+        | Opcode::MakeList { .. }
+        | Opcode::CallBuiltin(_)
+        | Opcode::CallMethod(_)
+        | Opcode::ListMethod(_)
+        | Opcode::MutMethod(_)
+        | Opcode::MakeStruct { .. }
+        | Opcode::Field { .. }
+        | Opcode::FieldNum { .. }
+        | Opcode::MakeEnum { .. }
+        | Opcode::MatchPattern { .. }
+        | Opcode::MakeMap { .. }
+        | Opcode::CheckDepth
+        | Opcode::Line { .. } => Vec::new(),
     }
 }
 
@@ -247,12 +540,6 @@ impl NumFact {
         self.int && !self.nan && !self.neg_zero && self.lo > -EXACT && self.hi < EXACT
     }
 
-    /// Whole numbers without NaN/-0.0 whose range is not bounded by ±2^53: native code may keep
-    /// them as `i64` if every write checks the bound and deoptimizes when it fails.
-    pub fn int_like(&self) -> bool {
-        self.int && !self.nan && !self.neg_zero
-    }
-
     fn join(self, other: NumFact) -> NumFact {
         NumFact {
             lo: self.lo.min(other.lo),
@@ -308,7 +595,161 @@ pub(crate) struct NumAnalysis {
     /// Join of every value each numeric register can hold.
     pub regs: Vec<NumFact>,
     /// `ListGet`/`ListSet` instructions whose index is proven in bounds.
-    pub safe_index: std::collections::HashSet<usize>,
+    pub safe_index: asili_parser::FxHashSet<usize>,
+    /// Per list register: how native code stores its elements (see `NumList`) — integers of
+    /// the narrowest width holding every element it can ever hold when all are exact integers
+    /// (within ±2^53), else `f64` bits.
+    pub list_kinds: Vec<Kind>,
+}
+
+/// A loop accumulator ("reset, then add"): `reg` is set (by `Mov`) right before the guard of a
+/// counted loop (`ForStep` over `ctr` up to `end`) and only ever increased inside it, by `Add`s
+/// of other registers. Every write of `reg` is either such an increment or a `Mov` (`writes`).
+struct Accumulator {
+    reg: Reg,
+    /// The loop's entry test `JumpIfNot { Lt, ctr, end }`.
+    guard: usize,
+    ctr: Reg,
+    end: Reg,
+    /// `(pc, operand)` of each increment.
+    adds: Vec<(usize, Reg)>,
+    /// `(pc, source)` of each `Mov` into `reg`, the reset before `guard` among them.
+    movs: Vec<(usize, Reg)>,
+    reset: (usize, Reg),
+}
+
+/// Find the loop accumulators of `code` (structure only; [`accumulator_caps`] bounds them).
+fn accumulators(
+    code: &[Opcode],
+    params: &asili_parser::FxHashSet<Reg>,
+    leaders: &std::collections::BTreeSet<usize>,
+) -> Vec<Accumulator> {
+    use asili_parser::FxHashMap as HashMap;
+    let mut writes: HashMap<Reg, Vec<usize>> = HashMap::default();
+    for (pc, op) in code.iter().enumerate() {
+        for r in num_writes(op) {
+            writes.entry(r).or_default().push(pc);
+        }
+    }
+    // The last write of `r` before `pc` in `pc`'s block.
+    let last_write = |r: Reg, pc: usize| -> Option<usize> {
+        let mut i = pc;
+        while i > 0 && !leaders.contains(&i) {
+            i -= 1;
+            if num_writes(&code[i]).contains(&r) {
+                return Some(i);
+            }
+        }
+        None
+    };
+    let mut found = Vec::new();
+    for (f_pc, op) in code.iter().enumerate() {
+        let Opcode::ForStep { ctr, end, target } = *op else {
+            continue;
+        };
+        let (head, guard) = (target as usize, (target as usize).wrapping_sub(1));
+        let guarded = matches!(code.get(guard), Some(Opcode::JumpIfNot { op: CmpOp::Lt, a, b, target: exit })
+            if *a == ctr && *b == end && *exit as usize == f_pc + 1);
+        // No way into the body except through the guard (and the back edge).
+        let entered_inside = code.iter().enumerate().any(|(pc, op)| {
+            jump_target(op).is_some_and(|t| t > head && t <= f_pc && !(guard..=f_pc).contains(&pc))
+        });
+        // Each increment runs at most once per iteration (no inner loop), and only `ForStep`
+        // moves the counter or the bound.
+        let simple_body = (head..f_pc).all(|pc| {
+            jump_target(&code[pc]).is_none_or(|t| t > pc)
+                && !num_writes(&code[pc]).iter().any(|w| *w == ctr || *w == end)
+        });
+        if !guarded || entered_inside || !simple_body {
+            continue;
+        }
+        for (&reg, pcs) in &writes {
+            // A parameter starts as anything; only what this code writes is bounded.
+            if reg == ctr || reg == end || params.contains(&reg) {
+                continue;
+            }
+            let (mut adds, mut movs, mut ok) = (Vec::new(), Vec::new(), true);
+            for &pc in pcs {
+                match code[pc] {
+                    Opcode::Add { dst, a, b } if (head..=f_pc).contains(&pc) && dst == reg => {
+                        let x = if a == reg { b } else { a };
+                        if (a == reg) == (b == reg) {
+                            ok = false;
+                        }
+                        adds.push((pc, x));
+                    }
+                    Opcode::Mov { src, .. } if !(head..=f_pc).contains(&pc) => movs.push((pc, src)),
+                    _ => ok = false,
+                }
+            }
+            let reset =
+                last_write(reg, guard).and_then(|pc| movs.iter().copied().find(|m| m.0 == pc));
+            if let (true, false, Some(reset)) = (ok, adds.is_empty(), reset) {
+                found.push(Accumulator {
+                    reg,
+                    guard,
+                    ctr,
+                    end,
+                    adds,
+                    movs,
+                    reset,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Bounds for accumulators from facts proven by a completed pass: at most the reset value plus
+/// every increment's largest value times the loop's trip count, and within every value it is
+/// ever set to (and the 0 it holds before its first write). Only non-negative whole increments
+/// over a finite trip count give a bound; it is a proof from proven facts, not a guess.
+fn accumulator_caps(
+    accs: &[Accumulator],
+    before: &dyn Fn(usize) -> Option<Vec<NumFact>>,
+) -> asili_parser::FxHashMap<Reg, NumFact> {
+    let mut caps = asili_parser::FxHashMap::default();
+    for acc in accs {
+        let Some(at_guard) = before(acc.guard) else {
+            continue;
+        };
+        let (ctr, end) = (at_guard[acc.ctr as usize], at_guard[acc.end as usize]);
+        if !(ctr.exact_int() && end.exact_int() && ctr.lo.is_finite() && end.hi.is_finite()) {
+            continue;
+        }
+        let trips = (end.hi - ctr.lo).max(0.0);
+        let fact_at = |pc: usize, r: Reg| before(pc).map(|s| s[r as usize]);
+        let mut grow = 0.0;
+        let mut ok = true;
+        for &(pc, x) in &acc.adds {
+            match fact_at(pc, x) {
+                Some(f) if f.exact_int() && f.lo >= 0.0 && f.hi.is_finite() => grow += f.hi,
+                _ => ok = false,
+            }
+        }
+        let (mut lo, mut hi) = (0.0f64, 0.0f64);
+        for &(pc, src) in &acc.movs {
+            match fact_at(pc, src) {
+                Some(f) if f.exact_int() => {
+                    lo = lo.min(f.lo);
+                    hi = hi.max(f.hi);
+                }
+                _ => ok = false,
+            }
+        }
+        let base = fact_at(acc.reset.0, acc.reset.1).map_or(f64::INFINITY, |f| f.hi);
+        hi = hi.max(base + grow * trips);
+        if ok && lo.is_finite() && hi < 9_007_199_254_740_992.0 {
+            let cap = NumFact::int_range(lo, hi);
+            caps.entry(acc.reg)
+                .and_modify(|c: &mut NumFact| {
+                    c.lo = c.lo.max(cap.lo);
+                    c.hi = c.hi.min(cap.hi);
+                })
+                .or_insert(cap);
+        }
+    }
+    caps
 }
 
 pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis {
@@ -318,23 +759,32 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
     let give_up = || NumAnalysis {
         regs: vec![NumFact::TOP; nregs],
         safe_index: Default::default(),
+        list_kinds: vec![Kind::F64; f.list_regs as usize],
     };
     let code = &f.code;
     let Some(leaders) = leaders(code) else {
         return give_up();
     };
-    let starts: Vec<usize> = leaders.into_iter().filter(|&l| l < code.len()).collect();
-    let block_of = |pc: usize| starts.partition_point(|&s| s <= pc) - 1;
-
     // Frame entry: constants, parameters, and zero for everything else.
-    let consts: std::collections::HashMap<Reg, f64> = f.num_consts.iter().copied().collect();
-    let params: std::collections::HashSet<Reg> = f
+    let consts: asili_parser::FxHashMap<Reg, f64> = f.num_consts.iter().copied().collect();
+    let num_params: asili_parser::FxHashSet<Reg> = f
         .params
         .iter()
         .filter(|p| matches!(p.ty, Ty::Num | Ty::Bool))
         .map(|p| p.reg)
         .collect();
-    let list_params: std::collections::HashSet<Reg> = f
+    let accs = accumulators(code, &num_params, &leaders);
+    let mut caps: asili_parser::FxHashMap<Reg, NumFact> = Default::default();
+    let mut cap_rounds = 0;
+    let starts: Vec<usize> = leaders.into_iter().filter(|&l| l < code.len()).collect();
+    let block_of = |pc: usize| starts.partition_point(|&s| s <= pc) - 1;
+    let params: asili_parser::FxHashSet<Reg> = f
+        .params
+        .iter()
+        .filter(|p| matches!(p.ty, Ty::Num | Ty::Bool))
+        .map(|p| p.reg)
+        .collect();
+    let list_params: asili_parser::FxHashSet<Reg> = f
         .params
         .iter()
         .filter(|p| p.ty == Ty::List)
@@ -383,21 +833,20 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
     }
     thresholds.sort_by(f64::total_cmp);
     thresholds.dedup();
+    // The largest threshold at or below `lo`, and the smallest at or above `hi` (binary
+    // searches: `thresholds` is sorted).
     let widen = |m: &mut NumFact, o: &NumFact| {
         if m.lo < o.lo {
-            m.lo = thresholds
-                .iter()
-                .rev()
-                .find(|t| **t <= m.lo)
-                .copied()
-                .unwrap_or(f64::NEG_INFINITY);
+            let i = thresholds.partition_point(|t| *t <= m.lo);
+            m.lo = if i > 0 {
+                thresholds[i - 1]
+            } else {
+                f64::NEG_INFINITY
+            };
         }
         if m.hi > o.hi {
-            m.hi = thresholds
-                .iter()
-                .find(|t| **t >= m.hi)
-                .copied()
-                .unwrap_or(f64::INFINITY);
+            let i = thresholds.partition_point(|t| *t < m.hi);
+            m.hi = thresholds.get(i).copied().unwrap_or(f64::INFINITY);
         }
     };
     for _outer in 0..32 {
@@ -413,10 +862,14 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
             if steps > 100_000 {
                 return give_up();
             }
-            let mut state = in_states[b].clone().expect("queued blocks have a state");
+            let Some(mut state) = in_states[b].clone() else {
+                continue; // queued blocks always have a state
+            };
             let end = starts.get(b + 1).copied().unwrap_or(code.len());
             let mut edges: Vec<(usize, Vec<NumFact>)> = Vec::new();
             let mut falls_through = true;
+            // `(dst, x)`: `dst` holds `x * x` (both unchanged since, within this block).
+            let mut squares: Vec<(Reg, Reg)> = Vec::new();
             for (pc, op) in code.iter().enumerate().take(end).skip(starts[b]) {
                 for (list, fact) in list_transfer(op, &state, &lists) {
                     if fact.is_bottom() {
@@ -441,11 +894,32 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
                     || matches!(op, Opcode::ListGet { list, .. } if lists[*list as usize].is_none());
                 for (dst, fact) in transfer(op, &state, &lists) {
                     state[dst as usize] = if bottom_input { NumFact::BOTTOM } else { fact };
+                    squares.retain(|(d, x)| *d != dst && *x != dst);
+                }
+                if let Opcode::Mul { dst, a, b } = op {
+                    if a == b && dst != a {
+                        squares.push((*dst, *a));
+                    }
                 }
                 for (slot, fact) in len_transfer(op, &state, nregs) {
                     state[slot] = fact;
                 }
                 let next = pc + 1;
+                // A bound on `x * x` from a comparison bounds `x` too (`i * i <= n`).
+                let roots = |mut s: Vec<NumFact>| {
+                    for (sq, x) in &squares {
+                        let hi = s[*sq as usize].hi;
+                        if hi.is_finite() && hi >= 0.0 {
+                            // The product was rounded: one more keeps the bound sound.
+                            let r = hi.sqrt().floor() + 1.0;
+                            let f = &mut s[*x as usize];
+                            f.lo = f.lo.max(-r);
+                            f.hi = f.hi.min(r);
+                            f.nan = false;
+                        }
+                    }
+                    s
+                };
                 match op {
                     Opcode::Jump { target } => {
                         edges.push((*target as usize, state.clone()));
@@ -458,10 +932,10 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
                     }
                     Opcode::JumpIfNot { op, a, b, target } => {
                         if let Some(s) = refine(&state, *op, *a, *b, true) {
-                            edges.push((next, s));
+                            edges.push((next, roots(s)));
                         }
                         if let Some(s) = refine(&state, *op, *a, *b, false) {
-                            edges.push((*target as usize, s));
+                            edges.push((*target as usize, roots(s)));
                         }
                         falls_through = false;
                     }
@@ -486,33 +960,74 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
                     continue;
                 }
                 let t = block_of(target_pc);
-                let merged = match &in_states[t] {
-                    None => out,
-                    Some(old) => {
-                        let mut merged: Vec<NumFact> =
-                            old.iter().zip(&out).map(|(a, b)| a.join(*b)).collect();
-                        if merged == *old {
-                            continue;
-                        }
-                        // Widen only registers that keep growing at this block.
-                        for (r, (m, o)) in merged.iter_mut().zip(old).enumerate() {
-                            if m != o {
-                                visits[t][r] += 1;
-                                if visits[t][r] > 4 {
-                                    widen(m, o);
-                                }
-                            }
-                        }
-                        merged
-                    }
+                let Some(old) = &mut in_states[t] else {
+                    in_states[t] = Some(out);
+                    work.insert(t);
+                    continue;
                 };
-                in_states[t] = Some(merged);
-                work.insert(t);
+                // Join in place, register by register.
+                let mut changed = false;
+                for (r, (o, b)) in old.iter_mut().zip(&out).enumerate() {
+                    let mut m = o.join(*b);
+                    if m == *o {
+                        continue;
+                    }
+                    // Widen only registers that keep growing at this block.
+                    visits[t][r] += 1;
+                    if visits[t][r] > 4 {
+                        widen(&mut m, o);
+                        // Never below the old state: the iteration must only grow to
+                        // terminate.
+                        if let Some(cap) = caps.get(&(r as Reg)) {
+                            m.lo = m.lo.max(cap.lo.min(o.lo));
+                            m.hi = m.hi.min(cap.hi.max(o.hi));
+                        }
+                    }
+                    if m != *o {
+                        *o = m;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    work.insert(t);
+                }
+            }
+        }
+        if !lists_changed && !accs.is_empty() && cap_rounds < 3 {
+            // Bound loop accumulators from this pass's proven facts, then run again with them.
+            let before = |pc: usize| -> Option<Vec<NumFact>> {
+                let b = block_of(pc);
+                let mut state = in_states[b].clone()?;
+                for op in &code[starts[b]..pc] {
+                    let bottom_input = num_reads(op).iter().any(|r| state[*r as usize].is_bottom());
+                    for (dst, fact) in transfer(op, &state, &lists) {
+                        state[dst as usize] = if bottom_input { NumFact::BOTTOM } else { fact };
+                    }
+                    for (slot, fact) in len_transfer(op, &state, nregs) {
+                        state[slot] = fact;
+                    }
+                }
+                Some(state)
+            };
+            let mut next = accumulator_caps(&accs, &before);
+            // Keep every bound already proven (each round's facts already respect them).
+            for (r, old) in &caps {
+                next.entry(*r)
+                    .and_modify(|c| {
+                        c.lo = c.lo.max(old.lo);
+                        c.hi = c.hi.min(old.hi);
+                    })
+                    .or_insert(*old);
+            }
+            cap_rounds += 1;
+            if next != caps {
+                caps = next;
+                continue;
             }
         }
         if !lists_changed {
             // Summarize from the converged block states only.
-            let mut safe_index = std::collections::HashSet::new();
+            let mut safe_index = asili_parser::FxHashSet::default();
             for (b, in_state) in in_states.iter().enumerate() {
                 let Some(mut state) = in_state.clone() else {
                     continue;
@@ -543,6 +1058,15 @@ pub(crate) fn analyze_numbers(f: &crate::bytecode::BytecodeFunc) -> NumAnalysis 
             return NumAnalysis {
                 regs: defs,
                 safe_index,
+                list_kinds: lists
+                    .iter()
+                    .map(|l| match l {
+                        Some(f) if f.is_bottom() => Kind::I64,
+                        Some(f) if f.exact_int() => Kind::for_range(f.lo, f.hi),
+                        Some(_) => Kind::F64,
+                        None => Kind::I64,
+                    })
+                    .collect(),
             };
         }
     }
@@ -578,6 +1102,11 @@ fn len_transfer(op: &Opcode, state: &[NumFact], nregs: usize) -> Vec<(usize, Num
         Opcode::ListMov { dst, src } => vec![(slot(dst), state[slot(src)])],
         Opcode::ListFromVal { dst, .. } => vec![(slot(dst), unknown)],
         Opcode::ListMutate(call) => vec![(slot(&call.recv), unknown)],
+        // `kata`, `geuza`, `panga`, `kipekee`, `clona`: never longer than the source.
+        Opcode::ListMethod(call) if call.dst.ty == Ty::List => {
+            let l = state[slot(&call.list)];
+            vec![(slot(&call.dst.reg), NumFact::int_range(0.0, l.hi))]
+        }
         Opcode::Call(call) if call.dst.ty == Ty::List => vec![(slot(&call.dst.reg), unknown)],
         _ => Vec::new(),
     }
@@ -681,6 +1210,13 @@ fn list_transfer(op: &Opcode, facts: &[NumFact], lists: &[Option<NumFact>]) -> V
             .unwrap_or_default(),
         Opcode::ListFromVal { dst, .. } => vec![(*dst, NumFact::TOP)],
         Opcode::ListMutate(call) => vec![(call.recv, NumFact::TOP)],
+        // Its elements are some of the source list's.
+        Opcode::ListMethod(call) if call.dst.ty == Ty::List => {
+            vec![(
+                call.dst.reg,
+                lists[call.list as usize].unwrap_or(NumFact::TOP),
+            )]
+        }
         Opcode::Call(call) if call.dst.ty == Ty::List => vec![(call.dst.reg, NumFact::TOP)],
         _ => Vec::new(),
     }
@@ -894,6 +1430,7 @@ fn transfer(op: &Opcode, facts: &[NumFact], lists: &[Option<NumFact>]) -> Vec<(R
             (*dst, int_result(0.0, EXACT - 1.0))
         }
         Opcode::UnboxBool { dst, .. } => (*dst, int_result(0.0, 1.0)),
+        Opcode::ListMethod(call) if call.dst.ty == Ty::Bool => (call.dst.reg, int_result(0.0, 1.0)),
         // Reads return a stored element (out-of-range reads leave the function).
         Opcode::ListGet { dst, list, .. } => (*dst, lists[*list as usize].unwrap_or(NumFact::TOP)),
         other => {
@@ -904,4 +1441,51 @@ fn transfer(op: &Opcode, facts: &[NumFact], lists: &[Option<NumFact>]) -> Vec<(R
         }
     };
     vec![fact]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::analyze_numbers;
+
+    /// Facts for `kuu`'s registers in `source`.
+    fn facts(source: &str) -> Vec<super::NumFact> {
+        let tokens = asili_lexer::tokenize(source).expect("tokenize");
+        let module = asili_parser::parse_tokens(&tokens).expect("parse");
+        let program = crate::bytecode::compile_module(&module).expect("bytecode");
+        analyze_numbers(program.find_function("kuu").expect("kuu")).regs
+    }
+
+    /// A nested loop whose counters are bounded only through `i * i <= n` and a loop
+    /// accumulator: the analysis must converge and prove every register an integer, since
+    /// native code no longer guesses (a register it cannot prove stays a float).
+    #[test]
+    fn sieve_counters_are_proven_integers() {
+        let regs = facts(
+            "kazi kuu() -> Tupu {
+                weka n: Namba = 5000000
+                weka p: Orodha<Namba> = orodha_rudia(1, n + 1)
+                p[0] = 0
+                p[1] = 0
+                weka i: Namba = 2
+                wakati i * i <= n {
+                    ikiwa p[i] == 1 {
+                        weka j = i * i
+                        wakati j <= n {
+                            p[j] = 0
+                            j += i
+                        }
+                    }
+                    i += 1
+                }
+                weka hesabu: Namba = 0
+                kwa k kutoka 0 hadi n + 1 {
+                    hesabu += p[k]
+                }
+                chapisha(hesabu kama Neno)
+            }",
+        );
+        for (r, fact) in regs.iter().enumerate() {
+            assert!(fact.exact_int(), "r{r}: {fact:?}");
+        }
+    }
 }

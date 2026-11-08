@@ -12,6 +12,11 @@ weka namba = orodha(10, 20, 30)       # list of three numbers
 weka maneno = orodha("a", "b", "c")   # list of strings
 weka mseto = [1, 2, 3]                # list literal syntax
 weka sifuri = orodha_rudia(0, 9)      # list containing nine zeroes
+weka bafa = [0; 9]                    # the same: nine zeroes (`[thamani; idadi]`)
+weka mistari = [
+    "moja",
+    "mbili",                          # a trailing comma is allowed
+]
 ```
 
 ### Njia (Methods)
@@ -25,6 +30,15 @@ weka sifuri = orodha_rudia(0, 9)      # list containing nine zeroes
 | `a.ongeza(x)`      | Append `x` to end                                |
 | `a.ondoa(i)`       | Remove element at index `i`; returns `Chaguo<T>` |
 | `a.kila_mmoja(cb)` | Iterate with callback (no-op if no callback)     |
+| `a.panga()` / `a.panga_kwa(f)` | Sorted copy (stable) / sorted by the key function `f` gives |
+| `a.geuza()` / `a.kata(i, j)` | Reversed copy / elements `i` up to (not including) `j` |
+| `a.ina(x)` / `a.tafuta(x)` | Whether an element `==` `x` / index of the first (`Chaguo`) |
+| `a.kubwa()` / `a.ndogo()` / `a.jumla()` | Largest / smallest (`Chaguo`) / sum of numbers |
+| `a.kipekee()`      | Without repeats, first occurrences in order      |
+| `a.kwanza()` / `a.mwisho()` / `a.tupu()` | First / last (`Chaguo`), whether empty |
+| `a.ongeza_zote(b)` / `a.futa_zote()` | Append all of `b` / remove everything |
+
+Full signatures and edge cases: [08-njia-za-aina.md](08-njia-za-aina.md#orodha--list-methods).
 
 ```asili
 weka a = orodha(5, 10, 15)
@@ -72,6 +86,9 @@ type — `{"jina": "Amara", "umri": 30}` mixes `Neno` and `Namba` values and fai
 | `m.ingiza(k, v)`  | Insert or update key `k` with value `v` |
 | `m.pata(k)`       | Returns `Chaguo<V>` (Hamna if missing) |
 | `m.pata(k).angu(default)` | Returns value or `default`   |
+| `m.ondoa(k)`      | Remove `k`; returns its old value as `Chaguo<V>` |
+| `m.funguo()` / `m.thamani()` / `m.vipengele()` | Keys / values / `Jozi` entries as lists |
+| `m.idadi()` / `m.futa_zote()` | Entry count / remove every entry |
 
 ```asili
 weka m = kamusi_tupu()
@@ -143,6 +160,8 @@ weka ilitolewa = s.ondoa(1) # Ukweli: kweli ikiwa ilikuwepo
 weka idadi_w = s.urefu()    # Namba
 weka orodha_w = s.orodha()  # badilisha kuwa Orodha<T>
 weka nakala = s.clona()
+weka u = s.muungano(t)      # muungano (union); pia makutano, tofauti
+weka ndani = s.ni_sehemu_ya(t)  # Ukweli: kila mwanachama wa s yumo kwenye t
 ```
 
 **Mpangilio wa uorodheshaji haujabainishwa** — `Seti` hutumia `HashSet` ya Rust ndani, hivyo
@@ -169,6 +188,12 @@ umbo Mtu {
 ```asili
 weka m = Mtu { jina: "Baraka", umri: 30, hai: kweli }
 ```
+
+**Builtin `umbo`s.** A few `umbo`s come with the standard library — `OmbiHttp`, `JibuHttp` and
+`ChaguoHttp` (`mfumo`) — and are used without declaring them; a program's own `umbo` of the same
+name takes the builtin's place. Their fields marked `?` in `lib/std/mfumo.asi` (every
+`ChaguoHttp` field, `JibuHttp`'s `sababu`, `anwani`, ...) may be left out of a literal, and then
+hold `Hamna`: `ChaguoHttp { muda: 5 }`.
 
 ### Kupata Vipande (Field Access)
 

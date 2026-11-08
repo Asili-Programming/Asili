@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 
 use asili_evaluator::{
-    eval_expr, execute_tests, execute_tests_with_timeout, run_function, run_function_with_metrics,
-    run_function_with_telemetry, run_main, run_test_with_coverage, run_test_with_fixtures,
-    run_test_with_module, Value,
+    execute_tests, execute_tests_with_timeout, run_function, run_main, run_test_with_coverage,
+    run_test_with_fixtures, run_test_with_module, Value,
 };
 use asili_lexer::tokenize;
 use asili_parser::{parse_tokens, semantic_check_with_env, FnContract, Module, ValueType};
@@ -31,6 +30,7 @@ fn test_extern_env() -> (HashMap<String, FnContract>, HashMap<String, ValueType>
         FnContract {
             params: vec![],
             ret: ValueType::Orodha(Box::new(ValueType::Unknown)),
+            ..Default::default()
         },
     );
     fns.insert(
@@ -38,6 +38,7 @@ fn test_extern_env() -> (HashMap<String, FnContract>, HashMap<String, ValueType>
         FnContract {
             params: vec![],
             ret: ValueType::Kamusi(Box::new(ValueType::Unknown), Box::new(ValueType::Unknown)),
+            ..Default::default()
         },
     );
     fns.insert(
@@ -45,11 +46,13 @@ fn test_extern_env() -> (HashMap<String, FnContract>, HashMap<String, ValueType>
         FnContract {
             params: vec![ValueType::Unknown, ValueType::Unknown],
             ret: ValueType::Jozi(Box::new(ValueType::Unknown), Box::new(ValueType::Unknown)),
+            ..Default::default()
         },
     );
     let neno_tupu = FnContract {
         params: vec![ValueType::Neno],
         ret: ValueType::Tupu,
+        ..Default::default()
     };
     fns.insert("chapisha".to_string(), neno_tupu.clone());
     fns.insert("onyo".to_string(), neno_tupu.clone());
@@ -60,6 +63,7 @@ fn test_extern_env() -> (HashMap<String, FnContract>, HashMap<String, ValueType>
         FnContract {
             params: vec![ValueType::Neno],
             ret: ValueType::Neno,
+            ..Default::default()
         },
     );
     let mut consts = HashMap::new();
@@ -85,6 +89,7 @@ fn parse_only(src: &str) -> Module {
 fn asb_is_deterministic() {
     use asili_evaluator::emit_asb;
     let module = Module {
+        exprs: Default::default(),
         imports: vec![],
         constants: vec![],
         enums: vec![],
@@ -93,39 +98,19 @@ fn asb_is_deterministic() {
         traits: vec![],
         impls: vec![],
     };
-    let a = emit_asb(&module, "abc");
-    let b = emit_asb(&module, "abc");
+    let a = emit_asb(&module, "abc").expect("bytecode");
+    let b = emit_asb(&module, "abc").expect("bytecode");
     assert_eq!(a, b, "emit_asb bytes deterministic");
 }
 
 #[test]
 fn asb_roundtrip() {
-    use asili_evaluator::{emit_asb, load_asb};
+    use asili_evaluator::{emit_asb, load_asb_bytecode};
     let module = parse_and_check("kazi kuu(hoja: Orodha<Neno>) -> Tupu { }");
-    let bytes = emit_asb(&module, "source");
-    let loaded = load_asb(&bytes).expect("load_asb");
-    assert_eq!(module.functions.len(), loaded.functions.len());
-}
-
-#[test]
-fn eval_expr_literals_and_arithmetic() {
-    let module = parse_and_check(
-        "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }
-         kazi add() -> Namba { rejesha 2 + 3 }",
-    );
-    let mut env = asili_evaluator::Env::new();
-    let v = eval_expr(
-        &asili_parser::Expr::Binary {
-            left: Box::new(asili_parser::Expr::Number("2".into())),
-            op: asili_parser::BinaryOp::Add,
-            right: Box::new(asili_parser::Expr::Number("3".into())),
-            line: 1,
-        },
-        &mut env,
-        &module,
-    )
-    .expect("eval");
-    assert_eq!(v, Value::Namba(5.0));
+    let bytes = emit_asb(&module, "source").expect("bytecode");
+    let loaded = load_asb_bytecode(&bytes).expect("load_asb_bytecode");
+    let ast = loaded.ast.expect("the syntax tree it carries");
+    assert_eq!(module.functions.len(), ast.functions.len());
 }
 
 #[test]
@@ -136,35 +121,6 @@ fn run_function_returns_value() {
     );
     let v = run_function(&module, "seven", vec![]).expect("run");
     assert_eq!(v, Value::Namba(7.0));
-}
-
-#[test]
-fn run_function_with_telemetry_returns_peak_depth() {
-    let module = parse_and_check(
-        "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }
-         kazi seven() -> Namba { rejesha 7 }",
-    );
-    let (v, peak) = run_function_with_telemetry(&module, "seven", vec![]).expect("run");
-    assert_eq!(v, Value::Namba(7.0));
-    assert!(peak > 0, "peak depth should be tracked");
-}
-
-#[test]
-fn run_function_with_metrics_counts_hot_path_operations() {
-    let module = parse_and_check(
-        "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }
-         kazi hot() -> Namba {
-             weka a = [1, 2, 3]
-             weka x = a[1]?
-             rejesha x + a.urefu()
-         }",
-    );
-    let (value, metrics) = run_function_with_metrics(&module, "hot", vec![]).expect("run");
-    assert_eq!(value, Value::Namba(5.0));
-    assert!(metrics.expressions > 0);
-    assert!(metrics.statements > 0);
-    assert!(metrics.index_reads >= 1);
-    assert!(metrics.method_calls >= 1);
 }
 
 #[test]
@@ -592,73 +548,34 @@ fn execute_tests_with_timeout_continues_past_a_timed_out_test() {
     assert!(by_name["baada_yake"].passed);
 }
 
+// Verifies: REQ-RUN-2
 #[test]
 fn recursion_depth_limit_eval() {
-    use asili_parser::{Block, Expr, Function, Module, Stmt, TypeExpr};
-    // Exceed MAX_EVAL_DEPTH (1000) so we get "undani mno" before stack overflow
-    let mut inner = Expr::Number("1".into());
-    for _ in 0..1001 {
-        inner = Expr::Group(Box::new(inner));
-    }
-    let block = Block {
-        statements: vec![Stmt::Expr {
-            expr: inner,
-            line: 1,
-        }],
-    };
-    let deep_fn = Function {
-        name: "deep".into(),
-        params: vec![],
-        return_type: TypeExpr {
-            name: "Namba".into(),
-        },
-        body: block,
-        is_test: false,
-        is_public: false,
-        line: 1,
-        column: 1,
-        attrs: vec![],
-    };
-    let kuu = Function {
-        name: "kuu".into(),
-        params: vec![asili_parser::Param {
-            name: "hoja".into(),
-            ty: TypeExpr {
-                name: "Orodha<Neno>".into(),
-            },
-            line: 1,
-            column: 1,
-        }],
-        return_type: TypeExpr {
-            name: "Tupu".into(),
-        },
-        body: Block { statements: vec![] },
-        is_test: false,
-        is_public: false,
-        line: 1,
-        column: 1,
-        attrs: vec![],
-    };
-    let module = Module {
-        imports: vec![],
-        constants: vec![],
-        enums: vec![],
-        functions: vec![kuu, deep_fn],
-        structs: vec![],
-        traits: vec![],
-        impls: vec![],
-    };
-    let result = run_function(&module, "deep", vec![]);
-    assert!(
-        result.is_err(),
-        "eval should fail when recursion depth exceeded"
+    // The limit counts `kazi` calls (10,000, as in native code), not nesting: deeply nested
+    // expressions evaluate (the stack grows on demand), runaway recursion fails cleanly.
+    let nested = format!("{}1{}", "(".repeat(900), ")".repeat(900));
+    let source = format!(
+        "kazi kina() -> Namba {{ rejesha {nested} }}
+        kazi chini(n: Namba) -> Namba {{
+            ikiwa n == 0 {{ rejesha 0 }}
+            rejesha 1 + chini(n - 1)
+        }}
+        kazi hakuna_mwisho(n: Namba) -> Namba {{ rejesha hakuna_mwisho(n + 1) }}
+        kazi kuu(hoja: Orodha<Neno>) -> Tupu {{ }}"
     );
-    let err = result.unwrap_err();
-    let msg = err.to_string();
+    let module = parse_only(&source);
+    assert_eq!(
+        run_function(&module, "kina", vec![]).unwrap(),
+        Value::Namba(1.0)
+    );
+    assert_eq!(
+        run_function(&module, "chini", vec![Value::Namba(9000.0)]).unwrap(),
+        Value::Namba(9000.0)
+    );
+    let err = run_function(&module, "hakuna_mwisho", vec![Value::Namba(0.0)]).unwrap_err();
     assert!(
-        msg.contains("undani mno"),
-        "expected 'undani mno' in error, got: {}",
-        msg
+        err.to_string().contains("undani mno"),
+        "expected 'undani mno' in error, got: {err}"
     );
 }
 
@@ -790,8 +707,8 @@ fn kipeo_and_mizizi() {
 fn cast_to_biti8_fallible() {
     let module = parse_only(
         "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }
-         kazi cast_ok() -> Namba { rejesha 100 kama Biti8 }
-         kazi cast_fail() -> Namba { rejesha 1000 kama Biti8 }",
+         kazi cast_ok() -> Chaguo<Namba> { rejesha 100 kama Biti8 }
+         kazi cast_fail() -> Chaguo<Namba> { rejesha 1000 kama Biti8 }",
     );
     let v = run_function(&module, "cast_ok", vec![]).expect("run");
     assert_eq!(v, Value::Chaguo(Some(Box::new(Value::Namba(100.0)))));
@@ -860,10 +777,10 @@ fn neno_unganisha_kata_tafuta() {
     );
     let v = run_function(&module, "join", vec![]).expect("run");
     // String content is "a", separator "-"; unganisha yields "a" + "-" = "a-"
-    assert_eq!(v, Value::Neno("a-".to_string()));
+    assert_eq!(v, Value::neno("a-".to_string()));
     let v = run_function(&module, "slice", vec![]).expect("run");
     // "hello" content; kata(1, 4) => bytes 1..4 => "ell"
-    assert_eq!(v, Value::Neno("ell".to_string()));
+    assert_eq!(v, Value::neno("ell".to_string()));
     let v = run_function(&module, "find_ok", vec![]).expect("run");
     // "hello".tafuta("hello") finds at index 0
     assert_eq!(v, Value::Namba(0.0));
@@ -894,7 +811,7 @@ fn struct_literal_and_field_access() {
     let v = run_function(&module, "get_x", vec![]).expect("run");
     assert_eq!(v, Value::Namba(3.0));
     let v = run_function(&module, "get_y", vec![]).expect("run");
-    assert_eq!(v, Value::Neno("hi".to_string())); // string literal content is "hi"
+    assert_eq!(v, Value::neno("hi".to_string())); // string literal content is "hi"
 }
 
 #[test]
@@ -943,7 +860,7 @@ fn orodha_index_returns_element_and_question_mark_returns_tokeo() {
     let v = run_function(&module, "propagated", vec![]).expect("run");
     assert!(matches!(v, Value::Tokeo(Err(_))));
     if let Value::Tokeo(Err(inner)) = v {
-        assert!(matches!(*inner, Value::Struct(ref n, _) if n == "KosaMipaka"));
+        assert!(matches!(*inner, Value::Struct(ref n, _) if &**n == "KosaMipaka"));
     }
 }
 

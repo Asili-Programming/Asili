@@ -2,7 +2,6 @@ use asili_evaluator::Value;
 use asili_lexer::tokenize;
 use asili_parser::{parse_tokens, semantic_check_with_env, FnContract, ValueType};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 #[test]
 fn kamusi_iteration() {
@@ -18,6 +17,16 @@ fn kamusi_iteration() {
             }
             chapisha(jumla)
         }
+        kazi jumla_ya_kamusi() -> Namba {
+            weka k = kamusi_tupu()
+            k.ingiza("a", 1.0)
+            k.ingiza("b", 2.0)
+            weka jumla = 0.0
+            kwa j katika k {
+                jumla = jumla + j.pili()
+            }
+            rejesha jumla
+        }
     "#;
     let toks = tokenize(src).expect("tokenize");
     let module = parse_tokens(&toks).expect("parse");
@@ -27,6 +36,7 @@ fn kamusi_iteration() {
         FnContract {
             params: vec![],
             ret: ValueType::Kamusi(Box::new(ValueType::Neno), Box::new(ValueType::Namba)),
+            ..Default::default()
         },
     );
     fns.insert(
@@ -38,6 +48,7 @@ fn kamusi_iteration() {
                 ValueType::Namba,
             ],
             ret: ValueType::Tupu,
+            ..Default::default()
         },
     );
     fns.insert(
@@ -48,6 +59,7 @@ fn kamusi_iteration() {
                 Box::new(ValueType::Namba),
             )],
             ret: ValueType::Namba,
+            ..Default::default()
         },
     );
     fns.insert(
@@ -55,34 +67,12 @@ fn kamusi_iteration() {
         FnContract {
             params: vec![ValueType::Namba],
             ret: ValueType::Tupu,
+            ..Default::default()
         },
     );
 
     semantic_check_with_env(&module, true, fns, HashMap::new()).expect("semantic");
 
-    // Mock chapisha
-    let output = Arc::new(Mutex::new(0.0));
-    let output_clone = output.clone();
-    let chapisha = Box::new(move |args: &[Value]| {
-        if let Some(Value::Namba(n)) = args.first() {
-            let mut o = output_clone.lock().unwrap();
-            *o = *n;
-        }
-        Ok(Value::Tupu)
-    });
-
-    let mut builtins = asili_evaluator::builtins::builtins();
-    builtins.insert("chapisha".to_string(), chapisha);
-
-    let result = asili_evaluator::run_function_with_builtins(
-        &module,
-        "kuu",
-        vec![Value::Orodha(vec![])],
-        builtins,
-    )
-    .expect("eval");
-
-    let final_output = *output.lock().unwrap();
-    assert_eq!(final_output, 3.0);
-    assert_eq!(result, Value::Tupu);
+    let total = asili_evaluator::run_function(&module, "jumla_ya_kamusi", vec![]).expect("run");
+    assert_eq!(total, Value::Namba(3.0));
 }

@@ -1,11 +1,11 @@
 ---
 name: update-wiki
-description: Update the Asili GitHub wiki (github.com/victorKariuki/Asili/wiki) to reflect a change just made in this repo, AND keep the matching docs/ file(s) in step — this is a two-sided sync, not a one-way copy. Use whenever a change touches something the wiki documents — CLI commands/flags (pata/cli/commands/*.md, pata/cli/src/commands/*.rs), stdlib modules/builtins (core/evaluator/src/builtins/*.rs), language syntax/keywords, LSP/Mwalimu features, the linter's rule set (pata/lint/src/rules/*.rs), the formatter, package management, examples/*, the roadmap/implementation status, or CONTRIBUTING.md/SECURITY.md/CODE_OF_CONDUCT.md/CHANGELOG.md. Also use when the user says "update the wiki" or "sync the wiki", or when editing a wiki page directly reveals that docs/ is stale.
+description: Update the Asili GitHub wiki (github.com/Asili-Programming/Asili/wiki) to reflect a change just made in this repo, AND keep the matching docs/ file(s) in step — this is a two-sided sync, not a one-way copy. Use whenever a change touches something the wiki documents — CLI commands/flags (pata/cli/commands/*.md, pata/cli/src/commands/*.rs), stdlib modules/builtins (core/evaluator/src/builtins/*.rs), language syntax/keywords, LSP/Mwalimu features, the linter's rule set (pata/lint/src/rules/*.rs), the formatter, package management, examples/*, the roadmap/implementation status, or CONTRIBUTING.md/SECURITY.md/CODE_OF_CONDUCT.md/CHANGELOG.md. Also use when the user says "update the wiki" or "sync the wiki", or when editing a wiki page directly reveals that docs/ is stale.
 ---
 
 # Update the Asili wiki — and keep docs/ in step
 
-The wiki is a **separate git repository** from this project — `github.com/victorKariuki/Asili.wiki.git` — not a folder inside this repo. It is not cloned anywhere persistent by default; clone it fresh into the scratchpad each time.
+The wiki is a **separate git repository** from this project — `github.com/Asili-Programming/Asili.wiki.git` — not a folder inside this repo. It is not cloned anywhere persistent by default; clone it fresh into the scratchpad each time.
 
 **This is a two-sided sync.** Every wiki page (except FAQ, which is synthesized) has a specific
 `docs/` file or repo file it's derived from — see the table below. Whichever side changed first,
@@ -40,11 +40,11 @@ The right column is the file (or files) to update **in the same pass** — never
 | Standard-Library | Module table: msingi, mfumo, majira, matumizi, faili, hisabati, runtime, syscall, kiungo, sambamba | `docs/spec/05-standard-library.md`, `README.md`'s stdlib table |
 | Concurrency-and-Async | `tenda`/`njia`/`fungo` (implemented), `sawia`/`subiri` (not implemented) | `docs/design/concurrency-design.md`, `concurrency-async-design.md` |
 | CLI-Reference | Every `pata` subcommand, flags, examples — **update whenever a CLI flag changes** | `pata/cli/commands/*.md`, `docs/howto/0{1,3,4,5,6}-*.md`, `README.md`'s CLI table |
-| Editor-Support | Mwalimu (LSP) capabilities, VS Code extension, REPL help | `docs/design/mwalimu-design.md`, `docs/howto/02-use-lsp.md`, `06-use-repl.md`, `extensions/vscode/README.md` |
+| Editor-Support | Mwalimu (LSP) capabilities, VS Code extension, REPL help | `docs/design/mwalimu-design.md`, `docs/howto/02-use-lsp.md`, `06-use-repl.md`, the `asili-vscode` repository's `README.md` |
 | Formatting-and-Linting | `pata nadhifu`, `pata-lint`'s rule set, `pata thibitisha`'s checks — **update whenever a lint rule or thibitisha check is added/removed** | `docs/howto/03-format-code.md`, `04-validate-docs.md`, `pata/cli/commands/thibitisha.md` |
 | Package-Management | `pata.toml` schema, `pata ongeza`, path/vendored deps, lockfile | `docs/design/package-manager-design.md`, `docs/spec/06-tooling-and-ecosystem.md`, `docs/howto/05-add-dependency.md` |
 | Architecture | Workspace/crate layout, execution pipeline, file/artifact conventions | `docs/spec/02-architecture-and-files.md`, `README.md`'s Layout table |
-| Performance | Execution tiers (tree-walker, register VM, LLVM AOT), range analysis/deopt, Sudoku benchmark numbers, plan status — **update whenever the benchmark figures or an engine changes** | `docs/design/performance.md` |
+| Performance | Execution (`nguvu` native code only: machine code, wasm in the browser), range analysis, Sudoku benchmark numbers, plan status — **update whenever the benchmark figures or an engine changes** | `docs/design/performance.md` |
 | Macros | Kielelezo! (design-stage, not implemented) | `docs/design/kielelezo-macros-design.md`, `docs/spec/06-tooling-and-ecosystem.md` |
 | Data-Shapes-and-Memory | Seti, Namba_Kuu/Sahihi, Kasha_GC, Faili/Mkondo/Kumbukumbu, ownership | `docs/design/data-shapes-design.md`, `kasha-gc-design.md`, `faili-mkondo-design.md` |
 | Wasm-Driver | `driver/wasm` dual-target build | `docs/design/wasm-driver-design.md` |
@@ -90,7 +90,7 @@ The right column is the file (or files) to update **in the same pass** — never
 
 1. **Clone the wiki fresh** into the scratchpad (never assume a stale local copy is current — someone else may have edited via the GitHub web UI):
    ```bash
-   git clone https://github.com/victorKariuki/Asili.wiki.git <scratchpad>/Asili.wiki
+   git clone https://github.com/Asili-Programming/Asili.wiki.git <scratchpad>/Asili.wiki
    ```
 2. **Identify affected pages AND their docs/ counterparts** using the table above. A single code
    change often touches 2+ wiki pages (e.g. a new CLI flag → CLI-Reference, possibly

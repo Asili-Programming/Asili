@@ -19,6 +19,7 @@ fn parses_main() {
         FnContract {
             params: vec![ValueType::Neno],
             ret: ValueType::Tupu,
+            ..Default::default()
         },
     );
     semantic_check_with_env(&module, true, extern_fns, HashMap::new()).expect("semantics");
@@ -178,9 +179,9 @@ fn parses_method_call() {
             method_name,
             args,
             ..
-        } = value
+        } = &module[*value]
         {
-            if let Expr::Ident { name: r, .. } = &**receiver {
+            if let Expr::Ident { name: r, .. } = &module[*receiver] {
                 assert_eq!(r, "x");
             } else {
                 panic!("expected Ident receiver");
@@ -223,14 +224,14 @@ fn parses_bitwise_and_shift() {
     let module = parse_tokens(&toks).expect("parse");
     let kuu = module.functions.iter().find(|f| f.name == "kuu").unwrap();
     let stmt = &kuu.body.statements[0];
-    if let Stmt::Let {
-        value: Expr::Binary {
-            op: BinaryOp::BitAnd,
-            ..
-        },
-        ..
-    } = stmt
-    {
+    if let Stmt::Let { value, .. } = stmt {
+        assert!(matches!(
+            &module[*value],
+            Expr::Binary {
+                op: BinaryOp::BitAnd,
+                ..
+            }
+        ));
     } else {
         panic!("expected Let with na_biti (BitAnd)");
     }
@@ -300,6 +301,7 @@ fn unconsumed_tokeo_emits_sem048() {
         FnContract {
             params: vec![ValueType::Namba, ValueType::Namba],
             ret: ValueType::Tokeo(Box::new(ValueType::Namba), Box::new(ValueType::Neno)),
+            ..Default::default()
         },
     );
     let result = semantic_check_with_env(&module, true, extern_fns, HashMap::new());
@@ -330,15 +332,178 @@ fn method_call_type_checking_is_implemented() {
             method_name,
             args,
             ..
-        } = value
+        } = &module[*value]
         {
             assert_eq!(method_name, "urefu");
             assert!(args.is_empty());
-            assert!(matches!(receiver.as_ref(), Expr::Ident { .. }));
+            assert!(matches!(&module[*receiver], Expr::Ident { .. }));
         } else {
             panic!("expected MethodCall");
         }
     } else {
         panic!("expected Let with method call");
     }
+}
+
+#[test]
+fn umbo_names_resolve_inside_generic_types() {
+    // `n` is a `Nukta` (not an unknown or a `Namba`), so `n.x` checks.
+    let src = r#"
+umbo Nukta {
+    x: Namba,
+    y: Namba,
+}
+kazi jumla_ya(ns: Orodha<Nukta>) -> Namba {
+    weka s: Namba = 0
+    kwa n katika ns {
+        s += n.x + n.y
+    }
+    rejesha s
+}
+kazi kuu(hoja: Orodha<Neno>) -> Tupu {
+    weka ns: Orodha<Nukta> = []
+    ns.ongeza(Nukta { x: 1, y: 2 })
+    chapisha(jumla_ya(ns) kama Neno)
+}
+"#;
+    let module = parse_tokens(&tokenize(src).unwrap()).unwrap();
+    semantic_check(&module).expect("fields of a umbo inside Orodha<...>");
+}
+
+#[test]
+fn trailing_commas_semicolons_and_repeat_lists() {
+    let src = r#"
+umbo Nukta {
+    x: Namba,
+    y: Namba,
+}
+jenum Rangi {
+    Nyekundu,
+    Kijani,
+}
+kazi jumla(
+    a: Namba,
+    b: Namba,
+) -> Namba {
+    rejesha a + b
+}
+kazi kuu(hoja: Orodha<Neno>) -> Tupu {
+    weka a = [1, 2, 3,]
+    weka b = 5; weka c = 6;
+    weka m = { "x": 1, "y": 2, }
+    weka p = Nukta { x: 1, y: 2, }
+    weka sifuri: Orodha<Namba> = [0; 500];
+    chapisha(jumla(
+        p.x,
+        p.y,
+    ) kama Neno);
+};
+"#;
+    let module = parse_tokens(&tokenize(src).unwrap()).expect("parses");
+    semantic_check(&module).expect("checks");
+    let kuu = module.functions.iter().find(|f| f.name == "kuu").unwrap();
+    // `;` separates statements but adds none.
+    assert_eq!(kuu.body.statements.len(), 7);
+    // `[0; 500]` is `orodha_rudia(0, 500)`.
+    let Stmt::Let { value, .. } = &kuu.body.statements[5] else {
+        panic!("expected a weka");
+    };
+    match &module[*value] {
+        Expr::Call { callee, args, .. } => {
+            assert!(matches!(&module[*callee], Expr::Ident { name, .. } if name == "orodha_rudia"));
+            assert_eq!(args.len(), 2);
+        }
+        other => panic!("expected orodha_rudia call, got {other:?}"),
+    }
+    let Stmt::Let { value, .. } = &kuu.body.statements[0] else {
+        panic!("expected a weka");
+    };
+    match &module[*value] {
+        Expr::List { elements, .. } => assert_eq!(elements.len(), 3),
+        other => panic!("expected a list, got {other:?}"),
+    }
+}
+
+#[test]
+fn one_syntax_error_per_mistake() {
+    // Each broken function is reported once; the parser resumes at the next item instead of
+    // flagging every remaining token.
+    let src = "kazi mbaya() -> Namba {\n    weka a = (1 + \n    rejesha a\n}\n\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    weka b = 5 +* 3\n    chapisha(\"x\")\n}\n";
+    let errors = parse_tokens(&tokenize(src).unwrap()).unwrap_err();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+}
+
+#[test]
+fn deep_nesting_needs_no_machine_stack() {
+    // The parser keeps nesting on heap stacks: 900 nested brackets and 900 nested blocks parse
+    // on a thread with a 512 KiB stack (a recursive descent parser needs megabytes for this).
+    let depth = 900;
+    let expr = format!("{}1{}", "[(".repeat(depth / 2), ")]".repeat(depth / 2));
+    let blocks = format!(
+        "{}weka y = 2{}",
+        "ikiwa kweli {\n".repeat(depth),
+        "}\n".repeat(depth)
+    );
+    let src = format!("kazi kuu(hoja: Orodha<Neno>) -> Tupu {{\n weka x = {expr}\n {blocks}\n}}\n");
+    let parsed = std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let module = parse_tokens(&tokenize(&src).unwrap()).map(|m| m.functions.len());
+            // Dropping the deep tree is recursive (a property of the tree, not the parser).
+            std::mem::forget(src);
+            module
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(parsed, Ok(1));
+}
+
+#[test]
+fn recovery_reports_each_broken_block_and_resumes_after_semicolon() {
+    // An error skips to the end of its own block (or the next `;`), not the whole function.
+    let src = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    ikiwa kweli {\n        weka a = 1 +* 2\n        chapisha(a)\n    }\n    weka b = (3\n    chapisha(b)\n}\n\nkazi f() -> Tupu { weka c = +; weka d = 1 +* 2 }\n";
+    let errors = parse_tokens(&tokenize(src).unwrap()).unwrap_err();
+    let codes: Vec<_> = errors.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["PAR071", "PAR070", "PAR071", "PAR071"],
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn input_ending_mid_expression_is_an_error_not_a_crash() {
+    for src in [
+        "kazi f() -> Tupu { weka x = g(",
+        "kazi f() -> Tupu { weka x = a.",
+        "kazi f() -> Tupu { weka x = [1, ",
+        "kazi f() -> Tupu { linganisha x { Jenum::A(",
+        "kazi f() -> Tupu { weka x = ikiwa a { 1 } vinginevyo",
+    ] {
+        assert!(parse_tokens(&tokenize(src).unwrap()).is_err(), "{src}");
+    }
+}
+
+#[test]
+fn unknown_builtin_method_is_a_compile_error() {
+    let check = |body: &str| {
+        let src = format!(
+            "kazi kuu(hoja: Orodha<Neno>) -> Tupu {{\n    weka a: Orodha<Namba> = [3, 1]\n    {body}\n}}\n"
+        );
+        let tokens = tokenize(&src).expect("tokenize");
+        let module = parse_tokens(&tokens).expect("parse");
+        semantic_check(&module)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.code, d.message))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        check("weka b = a.pangilia()"),
+        vec![("SEM040", "njia 'pangilia' haipo kwa 'Orodha'".to_string())]
+    );
+    assert!(check("weka n = a.urefu()").is_empty());
+    assert!(check("a.ongeza(2)").is_empty());
 }
