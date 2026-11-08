@@ -29,7 +29,7 @@ subcommand except `fuatilia` is on CLI Reference.
 Since the measurement, the Asili repo replaced the `pata-lint` and `pata-fmt` binaries with
 `pata kagua` and `pata nadhifu` (`4bfe016`) and gave the debugger stepping, pause, evaluate,
 set-variable and restart (`9e76e6f`). A wiki commit describing both (`140599a`: CLI Reference,
-Formatting and Linting, Editor Support and others) exists locally and is not pushed yet.
+Formatting and Linting, Editor Support and others) was pushed on 8 November 2026.
 
 Goals:
 
@@ -54,7 +54,7 @@ What must exist; "Page" is the target page (new pages in bold).
 
 | Feature set | Count | Page | Status |
 | --- | --- | --- | --- |
-| `pata` subcommands | 12 (including `kagua`) | CLI Reference | 11 of 12 once `140599a` is pushed (missing `fuatilia`) |
+| `pata` subcommands | 12 (including `kagua`) | CLI Reference | 11 of 12 (missing `fuatilia`) |
 | Their flags | All in `pata <amri> --msaada` | CLI Reference | Partial (missing `--fuatilia`, `--chanjo` in user terms) |
 | Standalone tools: `pata-lsp`, `pata-dap`, `tenda` | 3 | CLI Reference (new section "Zana za pekee") | `pata-lsp` mentioned once; `pata-dap` and the standalone `tenda` runner not documented |
 | Tracing (`--fuatilia`, `pata fuatilia`) | 1 feature | **Tracing** | Missing |

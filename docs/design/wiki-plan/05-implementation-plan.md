@@ -29,7 +29,7 @@ flowchart LR
 | 3 | Testing page: `#[jaribio]`, `jaribu` flags including `--chanjo`, `--chuja`, `--orodha`, `--json` | Testing; `docs/howto/01-run-tests.md` | WK-3 | 0 | Not started |
 | 4 | Playground page: what runs in the browser, sharing, self-hosting | Playground; playground README | WK-3 | 0 | Not started |
 | 5 | REPL page from `docs/repl/` topics, including `namba-kuu-sahihi` | REPL; `docs/howto/06-use-repl.md` | WK-3 | 0 | Not started |
-| 6 | CLI Reference: `pata fuatilia`, all missing flags, "standalone tools" section (`pata-lsp`, `pata-dap`, `tenda`); push wiki commit `140599a` (`pata kagua`) | CLI Reference; `pata/cli/commands/*.md` | WK-1, WK-2 | 0 | Not started |
+| 6 | CLI Reference: `pata fuatilia`, all missing flags, "standalone tools" section (`pata-lsp`, `pata-dap`, `tenda`); `pata kagua` is already documented (wiki `140599a`) | CLI Reference; `pata/cli/commands/*.md` | WK-1, WK-2 | 0 | Not started |
 | 7 | Editor Support: inlay hints; every VS Code command and setting | Editor Support; `docs/howto/02-use-lsp.md` | WK-4 | 0 | Not started |
 | 8 | Standard Library: `ruwaza` and `usimbaji` | Standard Library; `docs/spec/05-standard-library.md` | WK-5 | 0 | Not started |
 | 9 | Build targets `native`, `wasm`, `cortex-m` with examples | CLI Reference, Hardware and Data; `docs/howto/07-build-for-cortex-m.md` | WK-1 | 0 | Not started |
