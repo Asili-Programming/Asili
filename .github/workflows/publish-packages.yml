@@ -1,0 +1,76 @@
+name: Publish packages
+
+# Publishes the browser build of Asili (driver/wasm) to GitHub Packages' npm registry as
+# @asili-programming/asili-wasm. Manual only: run it from the Actions tab. The default
+# (dry_run: true) builds the package and lists what would be published without uploading it.
+#
+# Auth: the job's own GITHUB_TOKEN with `packages: write`. No personal access token is needed.
+# Publishing a version that already exists fails on purpose; bump driver/wasm/Cargo.toml first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and list the package without publishing it"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  npm-asili-wasm:
+    name: "@asili-programming/asili-wasm"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Build the wasm package
+        run: |
+          wasm-pack build driver/wasm --target web --out-dir "$RUNNER_TEMP/wasm-pkg" \
+            --no-typescript --release -- --features wasm-browser
+
+      - name: Name, scope and point the package at GitHub Packages
+        working-directory: ${{ runner.temp }}/wasm-pkg
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.name = "@asili-programming/asili-wasm";
+            pkg.description = "Asili language in the browser: runs programs as native code compiled to wasm";
+            pkg.license = "GPL-2.0-only";
+            pkg.repository = { type: "git", url: "git+https://github.com/Asili-Programming/Asili.git" };
+            pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          cat package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@asili-programming"
+
+      - name: Dry run (list the tarball contents)
+        if: inputs.dry_run
+        working-directory: ${{ runner.temp }}/wasm-pkg
+        run: npm publish --dry-run
+
+      - name: Publish to GitHub Packages
+        if: ${{ !inputs.dry_run }}
+        working-directory: ${{ runner.temp }}/wasm-pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
