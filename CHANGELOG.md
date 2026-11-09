@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with the C interface built into its IR — no wrapper call, no register file in memory — and a
   function taking lists gets a direct entry on a device (`lower::Ctx::direct_lists`). Constant
   shifts are inline, comparisons branch directly, and an unrolled loop's index checks are one
-  check. On a real ESP32 (240 MHz, `gcc -O2` C as reference) the controller example runs at the
+  check. On a real ESP32 (160 MHz, ESP-IDF's default clock; `gcc -O2` C as reference) the controller example runs at the
   speed of the same functions in C: `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20,
   in 48 and 64 bytes of stack. See `docs/howto/08-build-for-esp32.md`.
 - **`examples/habari-esp32`**: hello world on an ESP32 — a strict `fibonacci` built with

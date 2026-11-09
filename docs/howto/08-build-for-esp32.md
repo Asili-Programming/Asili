@@ -102,7 +102,7 @@ bit.
 ## Not yet
 
 - **Faster doubles than C.** Double arithmetic is the GCC runtime's software routines (about
-  0.37 µs per addition on a 240 MHz ESP32), the same ones C calls, so float-heavy code runs at
+  0.37 µs per addition on an ESP32 at ESP-IDF's default 160 MHz), the same ones C calls, so float-heavy code runs at
   C's speed and no faster: the controller example matches the same functions in C (`gcc -O2`)
   — `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20. Values live in the three
   register pairs a call preserves (`a2`–`a7`) or in stack slots shared by values never live
