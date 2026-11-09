@@ -64,11 +64,12 @@ const ARG0: u8 = 10;
 
 /// The runtime functions compiled from IR into the object itself (`device::helper_func`), once
 /// each, and called like external functions: their index here names them.
-pub const HELPERS: [RtFn; 4] = [
+pub const HELPERS: [RtFn; 5] = [
     RtFn::Floor,
     RtFn::Ceil,
     RtFn::FloatToIntSat,
     RtFn::ShiftAmount,
+    RtFn::BoardWait,
 ];
 
 /// Index of `target` in [`HELPERS`].
@@ -1083,6 +1084,28 @@ impl<'f> Gen<'f> {
                 self.element_address(b, i);
                 self.st64(s, T, 0)?;
             }
+            // Peripheral registers: one word each, ordered by `memw` as GCC orders volatile
+            // accesses on this core.
+            Inst::IoLoad { dst, addr } => {
+                let a = self.address(*addr, T2)?;
+                let d = self.target(*dst, S2);
+                self.asm.word(xt32::MEMW);
+                self.emit(xt32::l32i(d.0, a, 0))?;
+                self.emit(xt32::movi(d.1, 0))?;
+                self.put(*dst, d)?;
+            }
+            Inst::IoStore { src, addr } => {
+                let a = self.address(*addr, T2)?;
+                let s = self.operand(*src, S0)?;
+                self.asm.word(xt32::MEMW);
+                self.emit(xt32::s32i(s.0, a, 0))?;
+            }
+            Inst::CycleCount { dst } => {
+                let d = self.target(*dst, S2);
+                self.asm.word(xt32::rsr(d.0, xt32::CCOUNT));
+                self.emit(xt32::movi(d.1, 0))?;
+                self.put(*dst, d)?;
+            }
             Inst::StackPointer { dst } => {
                 let d = self.target(*dst, S2);
                 self.asm.word(xt32::mov(d.0, SP));
@@ -1310,6 +1333,9 @@ pub struct ThunkSpec {
     /// registers, see `lower::Ctx::direct_lists`): `(host, nums)` in, the number back in
     /// registers with status 0, so no `Return` needs finding.
     pub direct: bool,
+    /// The firmware's entry point, `void app_main(void)` (the program's `kuu`): no arguments
+    /// read, nothing returned (`params` and `returns` are empty).
+    pub entry_point: bool,
 }
 
 /// Status kind in the high word of a function's return value meaning "returned"
@@ -1393,6 +1419,12 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
     a.word(xt32::add(ARG0 + 2, SP, T));
     a.word(xt32::mov(ARG0 + 3, SP));
     pool.call_direct(&mut a, 0);
+    if spec.entry_point {
+        a.word(xt32::RETW);
+        let mut code = pool.finish(a)?;
+        code.frame = frame;
+        return Ok(code);
+    }
     // a11 = status kind, a10 = the pc of the `Return` reached.
     let fail = a.new_label();
     let done = a.new_label();

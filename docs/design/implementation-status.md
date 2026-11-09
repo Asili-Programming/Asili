@@ -154,8 +154,13 @@ Researched, decided, not built.
       still a stub (`FIXME(Phase IV)`, returns `Anuani(0)`). See
       [wazi-hardware-design.md](wazi-hardware-design.md).
 - [x] **Virtual board `ubao`** (`core/evaluator/src/ubao.rs`, `builtins/ubao.rs`): pins and a clock
-      in the host, with the pin calls gated by `#[wazi]`. Not a device driver; see
+      in the host, with the pin calls gated by `#[wazi]`; see
       [peripheral-io-design.md](peripheral-io-design.md).
+- [x] **`ubao` on the ESP32** (`nguvu/device.rs`, `PinWrite`/`PinRead`/`BoardWait`): the same
+      calls drive GPIO pins and wait in real time, and a `#[wazi] kuu` is the firmware's entry
+      point (`app_main`), so a firmware needs no C (`examples/blink-esp32`, verified on a board).
+      `ubao_saa`, Cortex-M, and a flash image without ESP-IDF are not done
+      ([docs/howto/08-build-for-esp32.md](../howto/08-build-for-esp32.md)).
 - [ ] `kiungo` (FFI) is a documented stub: `core/evaluator/src/builtins/kiungo.rs`
       unconditionally returns `Err` from both exported functions, with a `TODO(Phase IV)`
       comment about `libloading`. Correctly scoped to this phase, not a surprise gap.

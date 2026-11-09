@@ -787,6 +787,9 @@ impl<'f> Gen<'f> {
                     }
                 }
             }
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                return Err("nguvu: pini na saa za ubao hazipatikani kwa Cortex-M bado".into())
+            }
             Inst::StackPointer { dst } => {
                 let d = self.int_target(*dst, S0);
                 self.asm.addw(d.0, SP, 0);

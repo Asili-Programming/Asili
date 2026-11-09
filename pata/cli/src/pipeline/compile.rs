@@ -368,23 +368,34 @@ fn write_device(
 ) -> Result<(), CliError> {
     let program =
         asili_evaluator::compile_module_explained(module).map_err(|e| CliError::new(e, 1))?;
-    let strict: Vec<usize> = module
+    // Exports: the strict functions and the `#[wazi]` ones (pins, clock) but `kuu`; a `#[wazi]
+    // kuu` is the firmware's entry point on the ESP32. An ordinary `kuu` stays on the host.
+    let wazi = |f: &asili_parser::Function| f.attrs.iter().any(|a| a.name == "wazi");
+    let index =
+        |f: &asili_parser::Function| program.functions.iter().position(|g| g.name == f.name);
+    let exports: Vec<usize> = module
         .functions
         .iter()
-        .filter(|f| asili_evaluator::salama::is_strict(f))
-        .filter_map(|f| program.functions.iter().position(|g| g.name == f.name))
+        .filter(|f| f.name != "kuu" && (asili_evaluator::salama::is_strict(f) || wazi(f)))
+        .filter_map(index)
         .collect();
-    if strict.is_empty() {
+    let kuu = module
+        .functions
+        .iter()
+        .find(|f| f.name == "kuu" && wazi(f))
+        .and_then(index);
+    if exports.is_empty() && kuu.is_none() {
         return Err(CliError::new(
             format!(
-                "hakuna kazi salama ya kujenga kwa {} (weka #[salama] juu ya kazi)",
+                "hakuna kazi ya kujenga kwa {} (weka #[salama] au #[wazi] juu ya kazi)",
                 lengo.jina()
             ),
             1,
         ));
     }
-    let built = asili_evaluator::nguvu::device::build_for(lengo, &program, &strict, name)
-        .map_err(|e| CliError::new(e, 1))?;
+    let built =
+        asili_evaluator::nguvu::device::build_firmware(lengo, &program, &exports, kuu, name)
+            .map_err(|e| CliError::new(e, 1))?;
     let write = |file: String, bytes: &[u8]| -> Result<PathBuf, CliError> {
         let path = target.join(file);
         fs::write(&path, bytes).map_err(|e| {

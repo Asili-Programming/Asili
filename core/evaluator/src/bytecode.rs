@@ -242,6 +242,20 @@ pub enum Opcode {
         dst: Reg,
         src: Reg,
     },
+    /// `ubao_andika(pin, level)` on a number and a truth value: drive the board's pin.
+    PinWrite {
+        pin: Reg,
+        level: Reg,
+    },
+    /// `dst = ubao_soma(pin)` on a number: the pin's level, a truth value.
+    PinRead {
+        dst: Reg,
+        pin: Reg,
+    },
+    /// `ubao_subiri(ms)` on a number: wait on the board's clock.
+    BoardWait {
+        ms: Reg,
+    },
     /// `dst = (a op b) as 0.0/1.0`.
     Cmp {
         op: CmpOp,
@@ -1277,6 +1291,8 @@ impl<'a> FunctionCompiler<'a> {
                         && !self.program.functions.contains_key(name.as_str())
                     {
                         Ty::Num
+                    } else if self.board_call(name, args, &[Ty::Num]) && name == "ubao_soma" {
+                        Ty::Bool
                     } else {
                         // The program's own `kazi` first: it shadows a builtin. A `sawia kazi`
                         // gives an `Ahadi`.
@@ -1904,7 +1920,37 @@ impl<'a> FunctionCompiler<'a> {
     }
 
     /// An expression evaluated for its side effects only.
+    /// Whether `name(args)` calls the board builtin `name` (not shadowed by a local or the
+    /// program's own `kazi`) with arguments of exactly the types `want`.
+    fn board_call(&self, name: &str, args: &[ExprId], want: &[Ty]) -> bool {
+        self.program.builtins.contains_key(name)
+            && self.lookup(name).is_none()
+            && !self.program.functions.contains_key(name)
+            && args.len() == want.len()
+            && args
+                .iter()
+                .zip(want)
+                .all(|(a, &ty)| self.infer(self.node(*a)) == ty)
+    }
+
     fn expr_stmt(&mut self, expr: &Expr) -> Option<()> {
+        // Statement-level board calls on typed values: instructions of their own, so native code
+        // (and a device, which has no host) runs them without boxing.
+        if let Expr::Call { callee, args, .. } = expr {
+            if let Expr::Ident { name, .. } = self.node(*callee) {
+                if name == "ubao_andika" && self.board_call(name, args, &[Ty::Num, Ty::Bool]) {
+                    let pin = self.expr_as(self.node(args[0]), Ty::Num)?.reg;
+                    let level = self.expr_as(self.node(args[1]), Ty::Bool)?.reg;
+                    self.emit(Opcode::PinWrite { pin, level });
+                    return Some(());
+                }
+                if name == "ubao_subiri" && self.board_call(name, args, &[Ty::Num]) {
+                    let ms = self.expr_as(self.node(args[0]), Ty::Num)?.reg;
+                    self.emit(Opcode::BoardWait { ms });
+                    return Some(());
+                }
+            }
+        }
         if let Expr::MethodCall {
             receiver,
             method_name,
@@ -2674,6 +2720,15 @@ impl<'a> FunctionCompiler<'a> {
                 });
                 return Some(Operand {
                     ty: Ty::Num,
+                    reg: out,
+                });
+            }
+            if name == "ubao_soma" && self.board_call(name, args, &[Ty::Num]) {
+                let pin = self.expr_as(self.node(args[0]), Ty::Num)?.reg;
+                let out = self.dst_or_temp(dst, Ty::Bool).reg;
+                self.emit(Opcode::PinRead { dst: out, pin });
+                return Some(Operand {
+                    ty: Ty::Bool,
                     reg: out,
                 });
             }

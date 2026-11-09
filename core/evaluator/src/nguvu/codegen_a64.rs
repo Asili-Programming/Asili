@@ -722,6 +722,10 @@ impl<'f> Gen<'f> {
                     }
                 }
             }
+            // Made only by the ESP32's runtime inlining (`device::inline_runtime`).
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                unreachable!("device-only instruction in host code")
+            }
             Inst::StackPointer { dst } => {
                 let d = self.int_target(*dst, S0);
                 self.asm.add_imm(d, SP, 0, false);

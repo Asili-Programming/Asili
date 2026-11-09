@@ -1,0 +1,2 @@
+# `kuu` never returns: the idle task never runs, so its watchdog stays off.
+CONFIG_ESP_TASK_WDT_INIT=n

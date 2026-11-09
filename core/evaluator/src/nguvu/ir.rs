@@ -102,6 +102,13 @@ pub enum RtFn {
     BoxBool = 16,
     ValMov = 17,
     ConstVal = 18,
+    /// Device code only (the host's runtime table has no such entry; `lower::Ctx::device`):
+    /// drive pin `args[0]` (a double) to `args[1] != 0` (an integer).
+    PinWrite = 19,
+    /// Device code only: the level, 0 or 1, of pin `args[0]` (a double).
+    PinRead = 20,
+    /// Device code only: wait `args[0]` milliseconds (an integer; not at all when not positive).
+    BoardWait = 21,
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +266,21 @@ pub enum Inst {
     StackPointer {
         dst: VReg,
     },
+    /// Device code: read the 32-bit memory-mapped register at address `addr` (its low word),
+    /// zero-extended. Never removed, merged or moved: reading a register can have effects.
+    IoLoad {
+        dst: VReg,
+        addr: VReg,
+    },
+    /// Device code: write the low word of `src` to the memory-mapped register at `addr`.
+    IoStore {
+        src: VReg,
+        addr: VReg,
+    },
+    /// Device code: the CPU's cycle counter (32 bits, zero-extended).
+    CycleCount {
+        dst: VReg,
+    },
     /// Address of this function's call buffer (`Func::call_buffer` bytes in its frame), where
     /// direct calls pass the callee's registers.
     CallBuffer {
@@ -390,6 +412,9 @@ impl Inst {
                 | Inst::StoreIndex { .. }
                 | Inst::Call { .. }
                 | Inst::CallDirect { .. }
+                | Inst::IoLoad { .. }
+                | Inst::IoStore { .. }
+                | Inst::CycleCount { .. }
         )
     }
 
@@ -422,7 +447,11 @@ impl Inst {
             } => vec![*src, *base, *index],
             Inst::Call { table, args, .. } => std::iter::once(*table).chain(args.clone()).collect(),
             Inst::CallDirect { args, .. } => args.clone(),
-            Inst::StackPointer { .. } | Inst::CallBuffer { .. } => vec![],
+            Inst::IoLoad { addr, .. } => vec![*addr],
+            Inst::IoStore { src, addr } => vec![*src, *addr],
+            Inst::StackPointer { .. } | Inst::CallBuffer { .. } | Inst::CycleCount { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -457,7 +486,11 @@ impl Inst {
                 std::iter::once(table).chain(args.iter_mut()).collect()
             }
             Inst::CallDirect { args, .. } => args.iter_mut().collect(),
-            Inst::StackPointer { .. } | Inst::CallBuffer { .. } => vec![],
+            Inst::IoLoad { addr, .. } => vec![addr],
+            Inst::IoStore { src, addr } => vec![src, addr],
+            Inst::StackPointer { .. } | Inst::CallBuffer { .. } | Inst::CycleCount { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -488,7 +521,11 @@ impl Inst {
             Inst::Store { .. } | Inst::StoreIndex { .. } => vec![],
             Inst::Call { dst, .. } => dst.iter().copied().collect(),
             Inst::CallDirect { dst, result, .. } => vec![*dst, *result],
-            Inst::StackPointer { dst } | Inst::CallBuffer { dst } => vec![*dst],
+            Inst::StackPointer { dst }
+            | Inst::CallBuffer { dst }
+            | Inst::IoLoad { dst, .. }
+            | Inst::CycleCount { dst } => vec![*dst],
+            Inst::IoStore { .. } => vec![],
         }
     }
 }

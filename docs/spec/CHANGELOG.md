@@ -4,6 +4,9 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Standard library ([05-standard-library.md](05-standard-library.md)): `ubao` drives an ESP32's
+  GPIO pins and waits in real time there (pin `n` is GPIO `n`, a constant; `ubao_saa` not yet on
+  the device), and a `#[wazi] kuu` is the firmware's entry point.
 - Standard library ([05-standard-library.md](05-standard-library.md)): the virtual board `ubao`
   (`ubao_andika`, `ubao_soma`, `ubao_subiri`, `ubao_saa`); pin calls need a `#[wazi]` grant.
 - Project structure ([02-architecture-and-files.md](02-architecture-and-files.md)): the VS Code

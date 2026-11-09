@@ -6,8 +6,12 @@ using Asili's own backend (`nguvu`) — no external compiler is involved in prod
 result is an object file and a C header that an ESP-IDF firmware links like any other library.
 The exports have the same C interface as the Cortex-M target (`docs/howto/07-build-for-cortex-m.md`).
 
-For the smallest complete example — an ESP-IDF project that prints what an Asili function
-computes — see `examples/habari-esp32` (its `firmware/` links the build output directly).
+It also builds `#[wazi]` functions, which drive the chip's pins and wait in real time through
+`ubao` ("Pins, the clock, and firmware in Asili only" below), and a `#[wazi] kuu` as the
+firmware's entry point, so a firmware can be written with no C at all.
+
+For the smallest complete examples see `examples/habari-esp32` (an ESP-IDF project that prints
+what an Asili function computes) and `examples/blink-esp32` (an LED blinking, in Asili only).
 
 ## Build
 
@@ -80,7 +84,54 @@ the call failed (`matokeo` then not written), lists passed by reference.
 
 The same subset as Cortex-M: exported functions take only `Namba`, `Ukweli` and `Orodha<Namba>`
 parameters, there is no allocation, and anything else fails the build naming the function and the
-reason (`kazi salama 'f' haiwezi kujengwa kwa ESP32: ...`).
+reason (`kazi 'f' haiwezi kujengwa kwa ESP32: ...`). The exports are the `#[salama]` functions and
+the `#[wazi]` ones (other than `kuu`); a function `kuu` calls must return a `Namba` or an
+`Ukweli`, so it can be called directly.
+
+## Pins, the clock, and firmware in Asili only
+
+`ubao` (`docs/spec/05-standard-library.md`) is the same interface on every target: the virtual
+board on the build machine and in the browser, the chip's hardware here. On the ESP32:
+
+| Call | Compiles to |
+|---|---|
+| `ubao_andika(n, hali)` | GPIO `n` put in GPIO function (IO_MUX), routed from `GPIO_OUT` and enabled as an output, then its bit written to the set or clear register |
+| `ubao_soma(n)` | GPIO `n` put in GPIO function with its input enabled, then its bit of `GPIO_IN` |
+| `ubao_subiri(ms)` | a wait on the cycle counter, one millisecond at a time, at the clock the chip runs (read from its clock registers: 80/160/240 MHz on the PLL, or the 40 MHz crystal's) |
+
+Every register access is preceded by `memw`, as GCC orders volatile accesses on this core. Pin
+`n` is GPIO `n` and must be a constant the build can see (a literal or a `thabiti`); a pin the
+chip does not have, one of the flash's (6-11), or an input-only pin (34-39) written is a build
+error. `ubao_saa` is not available on the device yet.
+
+A `#[wazi] kuu` (its `hoja` unused) is built as `void app_main(void)`, which ESP-IDF calls at
+start-up, so the firmware needs no C source: its `main` component only links the object.
+
+```
+# src/kuu.as
+leta ubao
+
+#[wazi]
+kazi kuu(hoja: Orodha<Neno>) -> Tupu {
+    wakati kweli {
+        ubao_andika(2, kweli)
+        ubao_subiri(500)
+        ubao_andika(2, si_kweli)
+        ubao_subiri(500)
+    }
+}
+```
+
+```cmake
+# firmware/main/CMakeLists.txt
+idf_component_register()
+target_link_libraries(${COMPONENT_LIB} INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../../kilele/blink-esp32.o")
+```
+
+A `kuu` that never returns keeps ESP-IDF's idle task from running, so set
+`CONFIG_ESP_TASK_WDT_INIT=n` (`sdkconfig.defaults`). On a real ESP32, a pin written reads back
+the level written and `ubao_subiri(1000)` takes 1000.3 ms. Cortex-M has no `ubao` yet: a function
+using it fails that build.
 
 ## Results are the same as on the build machine
 
@@ -109,4 +160,6 @@ bit.
   together; constants are rebuilt where read; a list element feeding a double operation is
   loaded straight into its argument registers; an unrolled loop's index checks are one check
   of the largest index (the call fails the same way whichever index is out of range).
-- Start-up code, RTOS integration and peripherals are the firmware's: the object is a library.
+- **No ESP-IDF at all.** ESP-IDF's bootloader and start-up (and FreeRTOS) still run before
+  `kuu`; a complete flash image of Asili's own is planned. Peripherals beyond GPIO and the clock
+  (serial output, timers, buses) are the firmware's.

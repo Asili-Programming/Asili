@@ -255,17 +255,24 @@ Typed hardware handles may be provided to model hardware state safely:
 
 ### Ubao (virtual board)
 
-A host-side board for teaching and tests: pins and a clock that exist only in the process, so a
-run is reproducible. `leta ubao` brings in:
+Pins and a clock. On the build machine and in the browser they are a virtual board that exists
+only in the process, so a run is reproducible; on an ESP32 (`pata jenga --lengo esp32`) they are
+the chip's GPIO pins and real time. `leta ubao` brings in:
 
 - `ubao_andika(pini: Namba, hali: Ukweli) -> Tupu` — drive a pin. Requires a `#[wazi]` grant.
-- `ubao_soma(pini: Namba) -> Ukweli` — read a pin from the scenario's scripted levels (`false`
-  where the scenario says nothing). Requires a `#[wazi]` grant.
-- `ubao_subiri(ms: Namba) -> Tupu` — advance the board clock by `ms` milliseconds. No wall time.
-- `ubao_saa() -> Namba` — the board clock in milliseconds, starting at 0 for each run.
+- `ubao_soma(pini: Namba) -> Ukweli` — read a pin: on the virtual board from the scenario's
+  scripted levels (`false` where the scenario says nothing), on an ESP32 from the GPIO input.
+  Requires a `#[wazi]` grant.
+- `ubao_subiri(ms: Namba) -> Tupu` — wait `ms` milliseconds (truncated toward zero; nothing when
+  not positive): the virtual board advances its clock without waiting, an ESP32 waits.
+- `ubao_saa() -> Namba` — the virtual board's clock in milliseconds, starting at 0 for each run
+  (not yet on an ESP32).
 
-Every pin write, pin read and clock step is recorded as an event (number, kind, pin, level, time).
-The clock is per thread. A negative pin number, or a non-`Ukweli` level, is an error.
+On the virtual board every pin write, pin read and clock step is recorded as an event (number,
+kind, pin, level, time), and the clock is per thread. A negative or fractional pin number, or a
+non-`Ukweli` level, is an error. On an ESP32 pin `n` is GPIO `n`, and must be a constant the build
+can see: a pin the chip lacks, one of the flash's (6-11), or an input-only pin (34-39) written is a
+build error. A `#[wazi] kuu` is the firmware's entry point there (`app_main`).
 
 ## Error model
 

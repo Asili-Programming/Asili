@@ -79,8 +79,17 @@ fn check_classes(func: &Func, inst: &Inst) -> Result<(), String> {
         }
     };
     match inst {
-        Inst::IConst { dst, .. } | Inst::StackPointer { dst } | Inst::CallBuffer { dst } => {
-            want(*dst, I)
+        Inst::IConst { dst, .. }
+        | Inst::StackPointer { dst }
+        | Inst::CallBuffer { dst }
+        | Inst::CycleCount { dst } => want(*dst, I),
+        Inst::IoLoad { dst, addr } => {
+            want(*dst, I)?;
+            want(*addr, I)
+        }
+        Inst::IoStore { src, addr } => {
+            want(*src, I)?;
+            want(*addr, I)
         }
         Inst::FConst { dst, .. } => want(*dst, F),
         Inst::Mov { dst, src } => want(*src, func.class(*dst)),

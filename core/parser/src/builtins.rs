@@ -18,8 +18,8 @@ pub fn ambient_module_names() -> impl Iterator<Item = &'static str> {
 }
 
 pub const BUILTIN_MODULE_NAMES: &[&str] = &[
-    "msingi", "mfumo", "majira", "matumizi", "faili", "hisabati", "runtime", "syscall", "kiungo", "ubao",
-    "sambamba", "kasha_gc", "ruwaza", "usimbaji",
+    "msingi", "mfumo", "majira", "matumizi", "faili", "hisabati", "runtime", "syscall", "kiungo",
+    "ubao", "sambamba", "kasha_gc", "ruwaza", "usimbaji",
 ];
 
 /// The language's built-in type names, as written in source — the one list editors (LSP
@@ -432,12 +432,12 @@ pub const BUILTIN_MODULES: &[BuiltinModule] = &[
     },
     BuiltinModule {
         name: "ubao",
-        doc: "Ubao: bodi pepe yenye pini na saa. Kazi za pini zinahitaji `#[wazi]`.",
+        doc: "Ubao: pini na saa — bodi pepe kwenye kompyuta na kivinjari, pini na saa halisi kwenye ESP32. Kazi za pini zinahitaji `#[wazi]`.",
         functions: &[
-            ("ubao_andika(pini: Namba, hali: Ukweli) -> Tupu", "Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`."),
-            ("ubao_soma(pini: Namba) -> Ukweli", "Soma hali ya pini (kweli au si_kweli) kutoka ratiba ya pembejeo ya bodi; lazima kazi iwe `#[wazi]`."),
-            ("ubao_subiri(ms: Namba) -> Tupu", "Sogeza saa ya bodi mbele kwa milisekunde ms; haitumii saa halisi."),
-            ("ubao_saa() -> Namba", "Saa ya bodi kwa milisekunde, kuanzia 0 kila mwanzo wa mpango."),
+            ("ubao_andika(pini: Namba, hali: Ukweli) -> Tupu", "Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`. Kwenye ESP32 pini ni GPIO ya namba hiyo, namba thabiti."),
+            ("ubao_soma(pini: Namba) -> Ukweli", "Soma hali ya pini (kweli au si_kweli): kwenye bodi pepe kutoka ratiba ya pembejeo, kwenye ESP32 kutoka GPIO; lazima kazi iwe `#[wazi]`."),
+            ("ubao_subiri(ms: Namba) -> Tupu", "Subiri milisekunde ms: bodi pepe husogeza saa yake bila kusubiri, ESP32 husubiri kweli."),
+            ("ubao_saa() -> Namba", "Saa ya bodi pepe kwa milisekunde, kuanzia 0 kila mwanzo wa mpango (bado haipo kwa ESP32)."),
         ],
         constants: &[],
         structs: &[],

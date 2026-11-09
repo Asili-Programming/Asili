@@ -29,6 +29,10 @@ pub struct Ctx<'a> {
     /// called by its export. An index out of range then fails the call with the status a
     /// device's runtime gives, without the host's message.
     pub direct_lists: bool,
+    /// Device code (`nguvu::device`): the board's pins and clock become runtime calls with
+    /// their operands (`RtFn::PinWrite`, ...), which each device target implements or rejects,
+    /// instead of instructions handed to the host.
+    pub device: bool,
 }
 
 /// Whether a function's shape allows a direct entry: numbers in, a number out, and no list or
@@ -1511,6 +1515,24 @@ impl<'a> Lower<'a> {
                 self.b.terminate(Term::Return(v));
             }
             Opcode::ReturnTupu => self.ret_status(STATUS_RETURN, pc),
+            // The board on a device: its operands as values (a pin as a double, so a constant
+            // stays one the target can check), the work to the target.
+            Opcode::PinWrite { pin, level } if self.ctx.device => {
+                let p = self.get_f(*pin);
+                let l = self.get_i(*level);
+                self.call(RtFn::PinWrite, vec![p, l], None, false);
+            }
+            Opcode::PinRead { dst, pin } if self.ctx.device => {
+                let p = self.get_f(*pin);
+                let v = self
+                    .call(RtFn::PinRead, vec![p], Some(Class::Int), false)
+                    .expect("result");
+                self.set_flag(*dst, v);
+            }
+            Opcode::BoardWait { ms } if self.ctx.device => {
+                let m = self.get_i(*ms);
+                self.call(RtFn::BoardWait, vec![m], None, false);
+            }
             other => self.slow(pc, other),
         }
     }

@@ -49,8 +49,12 @@ impl Lengo {
     fn runtime_symbol(self, target: RtFn) -> Option<&'static str> {
         match self {
             Lengo::CortexM => codegen_t32::runtime_symbol(target),
-            Lengo::Esp32 => codegen_t32::runtime_symbol(target)
-                .map(|_| codegen_xt::runtime_symbol(target).unwrap_or("")),
+            Lengo::Esp32 => match target {
+                // The board's pins (inlined) and clock (a helper).
+                RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait => Some(""),
+                _ => codegen_t32::runtime_symbol(target)
+                    .map(|_| codegen_xt::runtime_symbol(target).unwrap_or("")),
+            },
         }
     }
 }
@@ -88,30 +92,59 @@ pub fn build_for(
     functions: &[usize],
     jina: &str,
 ) -> Result<Kifaa, String> {
+    build_firmware(lengo, program, functions, None, jina)
+}
+
+/// [`build_for`], with function `kuu` (the program's `#[wazi] kuu`) also built as the
+/// firmware's entry point, `void app_main(void)`, which ESP-IDF calls at start-up (ESP32 only).
+pub fn build_firmware(
+    lengo: Lengo,
+    program: &BytecodeProgram,
+    functions: &[usize],
+    kuu: Option<usize>,
+    jina: &str,
+) -> Result<Kifaa, String> {
     for &i in functions {
         let f = &program.functions[i];
         signature(f).map_err(|e| kosa(lengo, f, &e))?;
     }
+    if kuu.is_some() && lengo != Lengo::Esp32 {
+        return Err(format!(
+            "kuu ya #[wazi] hujengwa kama mwanzo wa programu kwa ESP32 pekee, si {}",
+            lengo.jina()
+        ));
+    }
     // A strict function calling one that takes a list would go through the host: on a device
     // the callee's body is inlined instead (strict code has no recursion, so this ends).
     let mut inlined = program.clone();
-    for &i in functions {
+    for &i in functions.iter().chain(&kuu) {
         inline_list_calls(&mut inlined, i).map_err(|e| kosa(lengo, &program.functions[i], &e))?;
     }
     crate::bytecode_verify::verify(&inlined).map_err(|e| format!("kosa la ndani: {e}"))?;
     let program = &inlined;
     let (object, stack) = match lengo {
         Lengo::CortexM => (object_t32(program, functions)?, Vec::new()),
-        Lengo::Esp32 => object_xt(program, functions)?,
+        Lengo::Esp32 => object_xt(program, functions, kuu)?,
     };
+    let mut header = header(lengo, program, functions, jina);
+    let mut exports: Vec<String> = functions
+        .iter()
+        .map(|&i| program.functions[i].name.clone())
+        .collect();
+    if kuu.is_some() {
+        if let Some(end) = header.rfind("\n#endif") {
+            header.insert_str(
+                end,
+                "\n/* kuu ya programu imejengwa kama app_main: ESP-IDF huiita yenyewe. */\n",
+            );
+        }
+        exports.push("kuu (app_main)".into());
+    }
     Ok(Kifaa {
         object,
         stack,
-        header: header(lengo, program, functions, jina),
-        exports: functions
-            .iter()
-            .map(|&i| program.functions[i].name.clone())
-            .collect(),
+        header,
+        exports,
     })
 }
 
@@ -136,6 +169,7 @@ fn units<C>(
             direct,
             entry_direct,
             direct_lists: lengo == Lengo::Esp32,
+            device: true,
         };
         let func = compile(lengo, index, &ctx).map_err(|e| kosa(lengo, f, &e))?;
         let code = generate(&func).map_err(|e| kosa(lengo, f, &e))?;
@@ -209,6 +243,7 @@ fn object_t32(program: &BytecodeProgram, functions: &[usize]) -> Result<Vec<u8>,
 fn object_xt(
     program: &BytecodeProgram,
     functions: &[usize],
+    kuu: Option<usize>,
 ) -> Result<(Vec<u8>, Vec<(String, u32)>), String> {
     // An export whose function has a direct entry is that entry with the C interface built in
     // (`export_interface`); failing that, a thunk calls the direct entry (lists in its register
@@ -223,6 +258,7 @@ fn object_xt(
             direct: &direct,
             entry_direct: true,
             direct_lists: true,
+            device: true,
         };
         let mut func = compile(Lengo::Esp32, i, &ctx).map_err(|e| kosa(Lengo::Esp32, f, &e))?;
         if export_interface(&mut func, f) {
@@ -240,6 +276,8 @@ fn object_xt(
         own.values()
             .flat_map(|c| c.calls.iter().map(|&(_, f)| (f as usize, true))),
     );
+    // The entry point runs `kuu`'s ordinary entry (it returns nothing, so it has no direct one).
+    roots.extend(kuu.map(|k| (k, false)));
     roots.sort_unstable();
     roots.dedup();
     let units = units(
@@ -304,6 +342,27 @@ fn object_xt(
             code.bytes.len() - code.entry,
         ));
         thunk_frames.push((f.name.clone(), i, export_direct(i), code.frame));
+    }
+    // `void app_main(void)`: zero `kuu`'s frame, run it, return.
+    if let Some(k) = kuu {
+        let f = &program.functions[k];
+        let spec = codegen_xt::ThunkSpec {
+            params: Vec::new(),
+            returns: Vec::new(),
+            entry_point: true,
+            ..thunk_spec(f, false)
+        };
+        let code = codegen_xt::thunk(&spec).map_err(|e| kosa(Lengo::Esp32, f, &e))?;
+        let base = place(&code, &mut text, &mut relocs);
+        for &(at, _) in &code.calls {
+            calls.push((base + at, k, false));
+        }
+        symbols.push((
+            "app_main".to_string(),
+            base + code.entry,
+            code.bytes.len() - code.entry,
+        ));
+        thunk_frames.push(("kuu".to_string(), k, false, code.frame));
     }
     let mut placed: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
     for (index, entry_direct, code) in &units {
@@ -382,7 +441,7 @@ fn object_xt(
     }
     let mut memo = Default::default();
     let mut stack = Vec::new();
-    for &i in functions {
+    for &i in functions.iter().chain(&kuu) {
         let name = &program.functions[i].name;
         if let Some(code) = own.get(&i) {
             let mut deepest = 0;
@@ -488,6 +547,7 @@ fn export_interface(func: &mut Func, f: &BytecodeFunc) -> bool {
 fn thunk_spec(f: &BytecodeFunc, direct: bool) -> codegen_xt::ThunkSpec {
     codegen_xt::ThunkSpec {
         direct,
+        entry_point: false,
         num_regs: f.num_regs,
         list_regs: f.list_regs,
         num_consts: f
@@ -830,7 +890,7 @@ fn inline_at(
 
 fn kosa(lengo: Lengo, f: &BytecodeFunc, e: &str) -> String {
     format!(
-        "kazi salama '{}' haiwezi kujengwa kwa {}: {e}",
+        "kazi '{}' haiwezi kujengwa kwa {}: {e}",
         f.name,
         lengo.jina()
     )
@@ -876,6 +936,253 @@ fn compile(lengo: Lengo, index: usize, ctx: &lower::Ctx) -> Result<Func, String>
     Ok(func)
 }
 
+// ----- ESP32 GPIO and clock (registers from ESP-IDF's `soc/esp32` headers) -----------------
+
+/// `GPIO_OUT_W1TS_REG` and the other GPIO registers (`DR_REG_GPIO_BASE` 0x3FF44000); the `1`
+/// registers serve pins 32 and up.
+const GPIO_OUT_W1TS: u32 = 0x3FF4_4008;
+const GPIO_OUT_W1TC: u32 = 0x3FF4_400C;
+const GPIO_OUT1_W1TS: u32 = 0x3FF4_4014;
+const GPIO_OUT1_W1TC: u32 = 0x3FF4_4018;
+const GPIO_ENABLE_W1TS: u32 = 0x3FF4_4024;
+const GPIO_ENABLE1_W1TS: u32 = 0x3FF4_4030;
+const GPIO_IN: u32 = 0x3FF4_403C;
+const GPIO_IN1: u32 = 0x3FF4_4040;
+/// `GPIO_FUNCn_OUT_SEL_CFG_REG` = this + 4n; 0x100 (`SIG_GPIO_OUT_IDX`) routes `GPIO_OUT`.
+const GPIO_FUNC0_OUT_SEL_CFG: u32 = 0x3FF4_4530;
+const SIG_GPIO_OUT: i64 = 0x100;
+/// `DR_REG_IO_MUX_BASE`, and each pin's register offset from it (`GPIO_PIN_MUX_REG`; 0: no
+/// such pin).
+const IO_MUX_BASE: u32 = 0x3FF4_9000;
+const IO_MUX_OFFSET: [u8; 40] = [
+    0x44, 0x88, 0x40, 0x84, 0x48, 0x6c, 0x60, 0x64, 0x68, 0x54, // 0-9
+    0x58, 0x5c, 0x34, 0x38, 0x30, 0x3c, 0x4c, 0x50, 0x70, 0x74, // 10-19
+    0x78, 0x7c, 0x80, 0x8c, 0x00, 0x24, 0x28, 0x2c, 0x00, 0x00, // 20-29
+    0x00, 0x00, 0x1c, 0x20, 0x14, 0x18, 0x04, 0x08, 0x0c, 0x10, // 30-39
+];
+/// An IO_MUX register selecting the GPIO function (`MCU_SEL` = `PIN_FUNC_GPIO` 2), default
+/// drive (`FUN_DRV` 2) and the input enabled (`FUN_IE`), no pulls.
+const IO_MUX_GPIO: i64 = (2 << 12) | (2 << 10) | (1 << 9);
+/// `RTC_CNTL_CLK_CONF_REG` (`SOC_CLK_SEL`, bits 27-28: 0 crystal, 1 PLL), `DPORT_CPU_PER_CONF_REG`
+/// (`CPUPERIOD_SEL`, bits 0-1: 80/160/240 MHz on the PLL) and `APB_CTRL_SYSCLK_CONF_REG`
+/// (`PRE_DIV_CNT`, bits 0-9: the crystal's divider).
+const RTC_CNTL_CLK_CONF: u32 = 0x3FF4_8070;
+const DPORT_CPU_PER_CONF: u32 = 0x3FF0_003C;
+const APB_CTRL_SYSCLK_CONF: u32 = 0x3FF6_6000;
+
+/// The GPIO number `n` (a constant), checked for the ESP32: an existing pin, not one of the
+/// flash's (6-11), and for writing not an input-only one (34-39).
+fn gpio_pin(n: Option<f64>, write: bool) -> Result<u32, String> {
+    let n =
+        n.ok_or("pini ya ubao lazima iwe namba thabiti kwa ESP32 (mfano: ubao_andika(2, kweli))")?;
+    let pin = n as u32;
+    if n.fract() != 0.0 || !(0.0..40.0).contains(&n) || IO_MUX_OFFSET[pin as usize] == 0 {
+        return Err(format!("ESP32 haina pini {n}"));
+    }
+    if (6..=11).contains(&pin) {
+        return Err(format!("pini {pin} ya ESP32 imeunganishwa na flash"));
+    }
+    if write && pin >= 34 {
+        return Err(format!("pini {pin} ya ESP32 ni ya kusoma tu"));
+    }
+    Ok(pin)
+}
+
+/// The wait helper: `args` milliseconds (an integer, nothing when not positive), counted on
+/// the cycle counter one millisecond at a time (so its 32-bit wrap never matters), at the clock
+/// the chip runs: the PLL's 80/160/240 MHz, or the 40 MHz crystal divided by `PRE_DIV_CNT + 1`.
+fn board_wait_func() -> Func {
+    use super::ir::Block;
+    let mut classes = vec![Class::Int, Class::Int];
+    let mut blocks: Vec<BlockData> = Vec::new();
+    let (lo, hi) = (VReg(0), VReg(1));
+    // Entry: the count, and cycles per millisecond.
+    let mut out = Vec::new();
+    let mut e = Emit {
+        classes: &mut classes,
+        out: &mut out,
+    };
+    let high = e.int();
+    e.push(Inst::IntImm {
+        op: IntOp::Shl,
+        dst: high,
+        a: hi,
+        imm: 32,
+    });
+    let n = e.int();
+    e.push(Inst::Int {
+        op: IntOp::Or,
+        dst: n,
+        a: high,
+        b: lo,
+    });
+    let field = |e: &mut Emit, addr: u32, shift: i32, mask: i64| {
+        let a = e.iconst(addr as i64);
+        let w = e.int();
+        e.push(Inst::IoLoad { dst: w, addr: a });
+        let s = e.int();
+        e.push(Inst::IntImm {
+            op: IntOp::Sar,
+            dst: s,
+            a: w,
+            imm: shift,
+        });
+        let f = e.int();
+        e.push(Inst::IntImm {
+            op: IntOp::And,
+            dst: f,
+            a: s,
+            imm: mask as i32,
+        });
+        f
+    };
+    let source = field(&mut e, RTC_CNTL_CLK_CONF, 27, 3);
+    let period = field(&mut e, DPORT_CPU_PER_CONF, 0, 3);
+    let divider = field(&mut e, APB_CTRL_SYSCLK_CONF, 0, 0x3FF);
+    // PLL: 80 * (period + 1) MHz; crystal: 40 / (divider + 1) MHz.
+    let p1 = e.int();
+    e.push(Inst::IntImm {
+        op: IntOp::Add,
+        dst: p1,
+        a: period,
+        imm: 1,
+    });
+    let pll = e.int();
+    e.push(Inst::IntImm {
+        op: IntOp::Mul,
+        dst: pll,
+        a: p1,
+        imm: 80_000,
+    });
+    let d1 = e.int();
+    e.push(Inst::IntImm {
+        op: IntOp::Add,
+        dst: d1,
+        a: divider,
+        imm: 1,
+    });
+    let forty = e.iconst(40_000);
+    let xtal = e.int();
+    e.push(Inst::Int {
+        op: IntOp::UDiv,
+        dst: xtal,
+        a: forty,
+        b: d1,
+    });
+    let on_pll = e.int();
+    e.push(Inst::ICmpImm {
+        cond: ICond::Eq,
+        dst: on_pll,
+        a: source,
+        imm: 1,
+    });
+    let per_ms = e.int();
+    e.push(Inst::Select {
+        dst: per_ms,
+        cond: on_pll,
+        a: pll,
+        b: xtal,
+    });
+    let zero = e.iconst(0);
+    blocks.push(BlockData {
+        insts: out,
+        term: Term::Jump(Block(1)),
+    });
+    // 1: while n > 0
+    let mut out = Vec::new();
+    let mut e = Emit {
+        classes: &mut classes,
+        out: &mut out,
+    };
+    let more = e.int();
+    e.push(Inst::ICmpImm {
+        cond: ICond::Gt,
+        dst: more,
+        a: n,
+        imm: 0,
+    });
+    blocks.push(BlockData {
+        insts: out,
+        term: Term::Branch {
+            cond: more,
+            then_: Block(2),
+            else_: Block(5),
+        },
+    });
+    // 2: start = ccount
+    let mut out = Vec::new();
+    let mut e = Emit {
+        classes: &mut classes,
+        out: &mut out,
+    };
+    let start = e.int();
+    e.push(Inst::CycleCount { dst: start });
+    blocks.push(BlockData {
+        insts: out,
+        term: Term::Jump(Block(3)),
+    });
+    // 3: until (ccount - start) mod 2^32 reaches a millisecond's cycles
+    let mut out = Vec::new();
+    let mut e = Emit {
+        classes: &mut classes,
+        out: &mut out,
+    };
+    let now = e.int();
+    e.push(Inst::CycleCount { dst: now });
+    let diff = e.int();
+    e.push(Inst::Int {
+        op: IntOp::Sub,
+        dst: diff,
+        a: now,
+        b: start,
+    });
+    let low = e.iconst(0xFFFF_FFFF);
+    let elapsed = e.int();
+    e.push(Inst::Int {
+        op: IntOp::And,
+        dst: elapsed,
+        a: diff,
+        b: low,
+    });
+    let waiting = e.int();
+    e.push(Inst::ICmp {
+        cond: ICond::Ult,
+        dst: waiting,
+        a: elapsed,
+        b: per_ms,
+    });
+    blocks.push(BlockData {
+        insts: out,
+        term: Term::Branch {
+            cond: waiting,
+            then_: Block(3),
+            else_: Block(4),
+        },
+    });
+    // 4: n -= 1
+    blocks.push(BlockData {
+        insts: vec![Inst::IntImm {
+            op: IntOp::Sub,
+            dst: n,
+            a: n,
+            imm: 1,
+        }],
+        term: Term::Jump(Block(1)),
+    });
+    // 5: done
+    blocks.push(BlockData {
+        insts: vec![],
+        term: Term::Return(zero),
+    });
+    Func {
+        classes,
+        cold: vec![false; blocks.len()],
+        blocks,
+        call_buffer: 0,
+        args: super::ir::HELPER_ARGS,
+    }
+}
+
 /// Status of a call that cannot be made on a device (`native::STATUS_FAIL << 32`).
 const STATUS_FAIL: i64 = 2 << 32;
 /// What `exec` returns on a device: the call fails (`native::STATUS_FAIL`); it is only reached
@@ -890,6 +1197,22 @@ const EXEC_FAIL: i64 = 2;
 /// `driver/kifaa` computes, which is what the host's runtime computes.
 fn inline_runtime(func: &mut Func) -> Result<(), String> {
     let consts = iconsts(func);
+    // Registers defined once by a constant, as numbers (a pin must be one).
+    let numbers: std::collections::HashMap<u32, f64> = func
+        .homes()
+        .iter()
+        .enumerate()
+        .filter_map(|(v, h)| match h {
+            super::ir::Home::Const(bits) => Some((
+                v as u32,
+                match func.classes[v] {
+                    Class::Int => *bits as f64,
+                    Class::Float => f64::from_bits(*bits as u64),
+                },
+            )),
+            _ => None,
+        })
+        .collect();
     let mut classes = std::mem::take(&mut func.classes);
     for block in &mut func.blocks {
         let mut out = Vec::with_capacity(block.insts.len());
@@ -949,6 +1272,14 @@ fn inline_runtime(func: &mut Func) -> Result<(), String> {
                         b: mask,
                     });
                 }
+                (RtFn::PinWrite, None) => {
+                    let n = gpio_pin(numbers.get(&args[0].0).copied(), true)?;
+                    e.pin_write(n, args[1]);
+                }
+                (RtFn::PinRead, Some(d)) => {
+                    let n = gpio_pin(numbers.get(&args[0].0).copied(), false)?;
+                    e.pin_read(n, *d);
+                }
                 _ => out.push(inst),
             }
         }
@@ -962,6 +1293,9 @@ fn inline_runtime(func: &mut Func) -> Result<(), String> {
 /// arrives as two words ([`super::ir::HELPER_ARGS`]), its 64-bit result (a double's bits or an
 /// integer) is returned.
 fn helper_func(target: RtFn) -> Func {
+    if target == RtFn::BoardWait {
+        return board_wait_func();
+    }
     let mut classes = vec![Class::Int, Class::Int];
     let mut out = Vec::new();
     let mut e = Emit {
@@ -1016,6 +1350,71 @@ struct Emit<'a> {
 impl Emit<'_> {
     fn push(&mut self, inst: Inst) {
         self.out.push(inst);
+    }
+
+    /// `[addr] = value`, a peripheral register.
+    fn io_store(&mut self, addr: u32, value: VReg) {
+        let a = self.iconst(addr as i64);
+        self.push(Inst::IoStore {
+            src: value,
+            addr: a,
+        });
+    }
+
+    /// GPIO `n` driven to `level != 0`: the pin in GPIO function, routed from `GPIO_OUT` and
+    /// enabled as an output (each time: idempotent, and no state to keep), then set or cleared.
+    fn pin_write(&mut self, n: u32, level: VReg) {
+        let mux = self.iconst(IO_MUX_GPIO);
+        self.io_store(IO_MUX_BASE + IO_MUX_OFFSET[n as usize] as u32, mux);
+        let sel = self.iconst(SIG_GPIO_OUT);
+        self.io_store(GPIO_FUNC0_OUT_SEL_CFG + 4 * n, sel);
+        let (enable, set, clear) = if n < 32 {
+            (GPIO_ENABLE_W1TS, GPIO_OUT_W1TS, GPIO_OUT_W1TC)
+        } else {
+            (GPIO_ENABLE1_W1TS, GPIO_OUT1_W1TS, GPIO_OUT1_W1TC)
+        };
+        let bit = self.iconst(1 << (n % 32));
+        self.io_store(enable, bit);
+        let on = self.int();
+        self.push(Inst::ICmpImm {
+            cond: ICond::Ne,
+            dst: on,
+            a: level,
+            imm: 0,
+        });
+        let set = self.iconst(set as i64);
+        let clear = self.iconst(clear as i64);
+        let addr = self.int();
+        self.push(Inst::Select {
+            dst: addr,
+            cond: on,
+            a: set,
+            b: clear,
+        });
+        self.push(Inst::IoStore { src: bit, addr });
+    }
+
+    /// `dst` = GPIO `n`'s level (0/1): the pin in GPIO function with its input enabled, then its
+    /// bit of `GPIO_IN`.
+    fn pin_read(&mut self, n: u32, dst: VReg) {
+        let mux = self.iconst(IO_MUX_GPIO);
+        self.io_store(IO_MUX_BASE + IO_MUX_OFFSET[n as usize] as u32, mux);
+        let a = self.iconst(if n < 32 { GPIO_IN } else { GPIO_IN1 } as i64);
+        let word = self.int();
+        self.push(Inst::IoLoad { dst: word, addr: a });
+        let shifted = self.int();
+        self.push(Inst::IntImm {
+            op: IntOp::Sar,
+            dst: shifted,
+            a: word,
+            imm: (n % 32) as i32,
+        });
+        self.push(Inst::IntImm {
+            op: IntOp::And,
+            dst,
+            a: shifted,
+            imm: 1,
+        });
     }
 
     fn fresh(&mut self, class: Class) -> VReg {
@@ -1251,6 +1650,9 @@ fn check_host_calls(lengo: Lengo, func: &Func, function: &BytecodeFunc) -> Resul
                 "kuunda orodha (kifaa hakitengi kumbukumbu)".to_string()
             }
             Some(op) => format!("agizo `{}`", op.name()),
+            None if matches!(target, RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait) => {
+                "pini na saa za ubao (kwa sasa ESP32 pekee inaziendesha)".to_string()
+            }
             None => format!("huduma ya mwenyeji `{target:?}`"),
         };
         return Err(format!("inahitaji mwenyeji kwa {what}"));

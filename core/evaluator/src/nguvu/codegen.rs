@@ -1109,6 +1109,10 @@ impl<'f> Gen<'f> {
                 }
             }
             Inst::StackPointer { dst } => self.put_int(*dst, Rsp),
+            // Made only by the ESP32's runtime inlining (`device::inline_runtime`).
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                unreachable!("device-only instruction in host code")
+            }
             Inst::CallBuffer { dst } => {
                 let d = self.int_target(*dst, Rax);
                 self.asm.lea(d, self.call_buffer());

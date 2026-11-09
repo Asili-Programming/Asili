@@ -47,7 +47,7 @@ mod ruwaza;
 pub(crate) mod sambamba;
 mod seti;
 mod syscall;
-mod ubao;
+pub(crate) mod ubao;
 mod usimbaji;
 
 use std::collections::HashMap;

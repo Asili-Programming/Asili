@@ -739,6 +739,19 @@ impl<'p> Host<'p> {
                     hook.should_pause(*line as usize);
                 }
             }
+            // The board builtins' own work (`builtins::ubao`), on typed registers.
+            Opcode::PinWrite { pin, level } => {
+                if let Err(e) =
+                    crate::builtins::ubao::andika(n[*pin as usize], n[*level as usize] != 0.0)
+                {
+                    fail!(e);
+                }
+            }
+            Opcode::PinRead { dst, pin } => match crate::builtins::ubao::soma(n[*pin as usize]) {
+                Ok(level) => n[*dst as usize] = if level { 1.0 } else { 0.0 },
+                Err(e) => fail!(e),
+            },
+            Opcode::BoardWait { ms } => crate::builtins::ubao::subiri(n[*ms as usize]),
             Opcode::ListRepeat { dst, value, count } => {
                 let count = n[*count as usize];
                 if !(count.is_finite() && count >= 0.0 && count.fract() == 0.0) {

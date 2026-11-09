@@ -664,7 +664,7 @@ fn what_a_device_cannot_run_is_a_build_error() {
     )
     .unwrap_err();
     assert!(
-        e.contains("kazi salama 'f' haiwezi kujengwa kwa Cortex-M")
+        e.contains("kazi 'f' haiwezi kujengwa kwa Cortex-M")
             && e.contains("inayoandika kwenye orodha"),
         "{e}"
     );
@@ -715,4 +715,104 @@ fn esp32_objects_need_no_runtime_and_keep_small_frames() {
     // task stack (3.5 KB).
     assert_eq!(built.stack.len(), 1);
     assert!(built.stack[0].1 <= 1024, "stack: {:?}", built.stack);
+}
+
+/// The program's functions named in `names`, by index.
+fn indices(program: &asili_evaluator::BytecodeProgram, names: &[&str]) -> Vec<usize> {
+    names
+        .iter()
+        .map(|n| {
+            program
+                .functions
+                .iter()
+                .position(|g| g.name == *n)
+                .expect("compiled")
+        })
+        .collect()
+}
+
+fn bytecode(source: &str) -> asili_evaluator::BytecodeProgram {
+    let tokens = asili_lexer::tokenize(source).expect("tokenize");
+    let module = asili_parser::parse_tokens(&tokens).expect("parse");
+    compile_module_explained(&module).expect("bytecode")
+}
+
+// Verifies: REQ-TGT-2
+#[test]
+fn esp32_drives_pins_and_waits() {
+    // `#[wazi]` code on the ESP32: a pin written through the GPIO registers and a wait on the
+    // cycle counter, giving what native code (on the virtual board) gives.
+    let source = r#"
+        leta ubao
+        #[wazi]
+        kazi washa(hali: Ukweli, ms: Namba) -> Namba {
+            ubao_andika(2, hali)
+            ubao_subiri(ms)
+            rejesha ms * 2
+        }
+    "#;
+    let program = bytecode(source);
+    let exports = indices(&program, &["washa"]);
+    let calls: Vec<(&str, Vec<Arg>)> = vec![
+        ("washa", vec![n(1.0), n(3.0)]),
+        ("washa", vec![n(0.0), n(0.0)]),
+        ("washa", vec![n(1.0), n(-4.0)]),
+        ("washa", vec![n(0.0), n(1.5)]),
+    ];
+    let library = nguvu::compile(&program).expect("native code");
+    let mut expected = String::new();
+    for (f, args) in &calls {
+        expected.push_str(&host_result(&library, &program, f, args));
+        expected.push('\n');
+    }
+    agree_esp32("ubao", &program, &exports, &expected, source, &calls);
+}
+
+#[test]
+fn board_calls_a_device_cannot_make_are_build_errors() {
+    let esp32 = |source: &str| {
+        let program = bytecode(source);
+        let f = indices(&program, &["f"]);
+        device::build_for(device::Lengo::Esp32, &program, &f, "t").map(|_| ())
+    };
+    let pin = |p: &str| {
+        format!("leta ubao\n#[wazi]\nkazi f() -> Namba {{\n    ubao_andika({p}, kweli)\n    rejesha 0\n}}\n")
+    };
+    // A pin the build cannot see.
+    let e = esp32("leta ubao\n#[wazi]\nkazi f(p: Namba) -> Namba {\n    ubao_andika(p, kweli)\n    rejesha 0\n}\n").unwrap_err();
+    assert!(e.contains("namba thabiti"), "{e}");
+    // The flash's pins, a pin that does not exist, an input-only pin written.
+    assert!(esp32(&pin("6")).unwrap_err().contains("flash"));
+    assert!(esp32(&pin("24")).unwrap_err().contains("haina pini 24"));
+    assert!(esp32(&pin("2.5")).unwrap_err().contains("haina pini"));
+    assert!(esp32(&pin("35")).unwrap_err().contains("kusoma tu"));
+    // ...which may still be read.
+    esp32("leta ubao\n#[wazi]\nkazi f() -> Ukweli {\n    rejesha ubao_soma(35)\n}\n").unwrap();
+    // Cortex-M has no board yet.
+    let program = bytecode(&pin("2"));
+    let e = device::build(&program, &indices(&program, &["f"]), "t")
+        .map(|_| ())
+        .unwrap_err();
+    assert!(e.contains("ESP32 pekee"), "{e}");
+}
+
+#[test]
+fn a_wazi_kuu_is_the_esp32_entry_point() {
+    let program = bytecode(
+        "leta ubao\n#[wazi]\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    wakati kweli {\n        \
+         ubao_andika(2, kweli)\n        ubao_subiri(500)\n        ubao_andika(2, si_kweli)\n        \
+         ubao_subiri(500)\n    }\n}\n",
+    );
+    let kuu = indices(&program, &["kuu"])[0];
+    let built = device::build_firmware(device::Lengo::Esp32, &program, &[], Some(kuu), "t")
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(built.object.windows(8).any(|w| w == b"app_main"));
+    assert_eq!(built.exports, ["kuu (app_main)"]);
+    assert_eq!(built.stack.len(), 1);
+    assert!(built.header.contains("app_main"));
+    // Only on the ESP32.
+    let e = device::build_firmware(device::Lengo::CortexM, &program, &[], Some(kuu), "t")
+        .map(|_| ())
+        .unwrap_err();
+    assert!(e.contains("ESP32 pekee"), "{e}");
 }

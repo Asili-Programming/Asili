@@ -27,6 +27,14 @@ fn rri8(op0: u32, r: u32, s: u8, t: u8, imm8: u8) -> u32 {
 pub fn add(ar: u8, as_: u8, at: u8) -> u32 {
     rrr(0x8, 0, ar, as_, at)
 }
+/// `memw`: every load and store before it completes first (peripheral registers).
+pub const MEMW: u32 = 0x0020c0;
+/// Special register number of the cycle counter (`rsr at, CCOUNT`).
+pub const CCOUNT: u8 = 234;
+/// `rsr at, sr`: read special register `sr`.
+pub fn rsr(at: u8, sr: u8) -> u32 {
+    0x030000 | ((sr as u32) << 8) | ((at as u32) << 4)
+}
 /// `addx8 ar, as, at`: `ar = 8 * as + at`
 pub fn addx8(ar: u8, as_: u8, at: u8) -> u32 {
     rrr(0xB, 0, ar, as_, at)
@@ -426,6 +434,9 @@ mod tests {
     fn register_forms_match_the_assembler() {
         assert_eq!(add(2, 3, 4), 0x802340);
         assert_eq!(addx8(2, 3, 4), 0xb02340);
+        assert_eq!(MEMW, 0x0020c0);
+        assert_eq!(rsr(8, CCOUNT), 0x03ea80);
+        assert_eq!(rsr(3, CCOUNT), 0x03ea30);
         assert_eq!(sub(2, 3, 4), 0xc02340);
         assert_eq!(and(2, 3, 4), 0x102340);
         assert_eq!(or(2, 3, 4), 0x202340);
