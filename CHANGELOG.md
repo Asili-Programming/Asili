@@ -51,15 +51,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
-- **`tenda-msingi`, a runner without networking**: the `mtandao` feature (on by default) of
-  `asili-evaluator` and `asili-runner` gates sockets, TLS, DNS and HTTP; built without it
-  (`cargo build -p asili-runner --no-default-features`, or `make runners`), the runner is about a
-  third the size (3.9 MB against 11.8 MB stripped). `pata jenga --namna release` builds a program
-  that calls no networking builtin (`asili_evaluator::builtins::needs_network`) on `tenda-msingi`
-  when one sits beside `pata` (or `ASILI_TENDA_MSINGI` names one): the Sudoku example's standalone
-  executable drops from 18.6 MB to 6.1 MB. Both runners register the same builtin names (stubs
-  without networking), since a program's builtin calls are indices into that list;
-  `tests/builtin_names.rs` checks it in both configurations.
+- **Smaller standalone executables: runners with fewer builtins**: builtin groups that need
+  large libraries are optional features of `asili-evaluator` and `asili-runner`, on by default —
+  `mtandao` (sockets, TLS, DNS, HTTP) and `ruwaza` (regular expressions). A runner carries the list
+  of features it was built with (`tenda --uwezo` prints it), and `pata jenga --namna release`
+  builds each program on the smallest runner beside `pata` that has every feature the program
+  uses (`asili_evaluator::uwezo`). `make runners` builds three: `tenda` (both; 11.8 MB stripped),
+  `tenda-msingi` (no networking; 3.9 MB) and `tenda-ndogo` (neither). The Sudoku example's
+  executable drops from 18.6 MB to 3.8 MB. Every build registers the same builtin names (stubs
+  without a feature, failing with a message), since a program's builtin calls are indices into
+  that list; `tests/builtin_names.rs` checks it in every configuration CI builds.
 
 ### Changed
 

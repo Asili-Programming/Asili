@@ -40,8 +40,23 @@ fn run() -> i32 {
         eprintln!("matumizi: tenda <path.asb | path.build.manifest> [hoja za kuu...]");
         return 2;
     }
+    // The optional features this runner was built with, read from its own marker (which this
+    // keeps in the file, where `pata` looks for it).
+    if args[1] == "--uwezo" {
+        let alama = std::hint::black_box(asili_evaluator::uwezo::UWEZO_ALAMA);
+        let uwezo = asili_evaluator::uwezo::ya_tenda(alama).unwrap_or_default();
+        println!(
+            "{}",
+            if uwezo.is_empty() {
+                "msingi".to_string()
+            } else {
+                uwezo.join(", ")
+            }
+        );
+        return 0;
+    }
     if args[1] == "--help" || args[1] == "-h" || args[1] == "--msaada" {
-        println!("matumizi: tenda <path.asb | path.build.manifest> [hoja za kuu...]\n\nTenda kilele bila kujenga. Hoja za kuu zinapewa kwa kuu(hoja: Orodha<Neno>).\nASILI_FUATILIA=mti|json|binari:<faili> hufuatilia utekelezaji.");
+        println!("matumizi: tenda <path.asb | path.build.manifest> [hoja za kuu...]\n\nTenda kilele bila kujenga. Hoja za kuu zinapewa kwa kuu(hoja: Orodha<Neno>).\nASILI_FUATILIA=mti|json|binari:<faili> hufuatilia utekelezaji.\n--uwezo huonyesha vipengele vya hiari ambavyo tenda hii imejengwa navyo (mtandao, ruwaza).");
         return 0;
     }
     if let Err(e) = run_artifact(Path::new(&args[1]), args[2..].to_vec()) {

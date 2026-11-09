@@ -22,7 +22,7 @@ parking_lot = "0.12"
 lock_api = "0.4"
 foldhash = "0.2"
 # `ruwaza` (regular expressions) and `usimbaji` (hashes and base64): pure Rust, on every target.
-regex = "1"
+regex = { version = "1", optional = true }
 # `njia` channels: blocking and async receive (a `sawia` task waits without blocking its thread).
 flume = "0.11"
 sha2 = "0.11"
@@ -66,7 +66,7 @@ rcgen = "0.13"
 rustls-pki-types = "1"
 
 [features]
-default = ["mtandao"]
+default = ["mtandao", "ruwaza"]
 # Networking: sockets, TLS, DNS and HTTP (the `mkondo_*`, `http_*` and `ws_*` builtins). Without it
 # (a runner for programs that use none of them) those builtins are stubs that fail with a message,
 # as in the browser, and their crates are not linked. See build.rs (the `net` cfg).
@@ -79,6 +79,8 @@ mtandao = [
   "dep:cookie_store",
   "dep:encoding_rs",
 ]
+# Regular expressions (the `ruwaza_*` builtins). Without it they are stubs that fail with a message.
+ruwaza = ["dep:regex"]
 # Browser wasm32 target: route I/O builtins (chapisha, onyo, makosa) to `console.log`/`console.error`
 # via wasm-bindgen instead of the default silent no-op, and load native code (a wasm module) through
 # the page. Mutually meaningful only on wasm32; a

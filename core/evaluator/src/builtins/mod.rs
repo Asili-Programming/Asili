@@ -44,7 +44,7 @@ mod mfumo;
 pub(crate) mod mkondo;
 mod msingi;
 mod runtime;
-mod ruwaza;
+pub(crate) mod ruwaza;
 pub(crate) mod sambamba;
 mod seti;
 mod syscall;
@@ -68,9 +68,8 @@ pub const MODULE_BUILTINS: [&str; 4] =
 #[cfg_attr(net, allow(dead_code))] // the stubs, built only without networking
 pub(crate) const BILA_MTANDAO: &str = "haipatikani hapa: programu hii inaendeshwa bila mtandao";
 
-/// The builtins that need networking (the `mtandao` feature): a program calling none of them runs
-/// on a runner built without it. Every one is registered either way (as a stub without it), so
-/// builtin indices do not depend on the build.
+/// The builtins that need networking (the `mtandao` feature; see [`crate::uwezo`]). Every one is
+/// registered either way (as a stub without it), so builtin indices do not depend on the build.
 pub const NETWORK_BUILTINS: [&str; 9] = [
     "http_ombi",
     "mkondo_sikiliza",
@@ -82,18 +81,6 @@ pub const NETWORK_BUILTINS: [&str; 9] = [
     "udp_fungua",
     "ws_unganisha",
 ];
-
-/// Whether `program` calls a networking builtin ([`NETWORK_BUILTINS`]), so it needs a runner
-/// with networking. Builtins are only reached through `CallBuiltin`.
-pub fn needs_network(program: &crate::bytecode::BytecodeProgram) -> bool {
-    let names = builtin_names();
-    program.functions.iter().flat_map(|f| &f.code).any(|op| {
-        matches!(op, crate::bytecode::Opcode::CallBuiltin(call)
-            if names
-                .get(call.builtin as usize)
-                .is_some_and(|n| NETWORK_BUILTINS.contains(&n.as_str())))
-    })
-}
 
 /// Every builtin module's registrations: the single list of what exists.
 /// Argument `i` as a `Neno` (empty when missing or not text) — the lenient string-argument

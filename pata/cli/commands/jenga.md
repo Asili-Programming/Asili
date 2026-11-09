@@ -45,13 +45,15 @@ Success:
 - `--namna release` also writes a standalone executable `<pato>/<name>` (`<name>.exe` on
   Windows), printing `programu huru: <path>`: a runner with the artifact and its native image
   appended, so `./kilele/<name> [hoja...]` runs the program directly with no other files and no
-  `pata`. A program that calls no networking builtin (`http_ombi`, `mkondo_*`, `tafuta_anwani`,
-  `tls_sanidi`, `udp_fungua`, `ws_unganisha`) gets `tenda-msingi`, the runner built without
-  networking (about a third the size), and the line ends `(tenda-msingi: bila mtandao)`; any other
-  program, or any program when there is no `tenda-msingi`, gets `tenda`. Each runner is the one
-  beside `pata` (`make install` puts both there) or the one its variable names (`ASILI_TENDA_MSINGI`,
-  `ASILI_TENDA`); without one the build prints `programu huru haikujengwa: ...` and still
-  succeeds
+  `pata`. The runner is the smallest one that has every optional feature the program uses:
+  `mtandao` (networking: `http_ombi`, `mkondo_*`, `tafuta_anwani`, `tls_sanidi`, `udp_fungua`,
+  `ws_unganisha`) and `ruwaza` (the `ruwaza_*` regular expressions). `make install` puts three
+  beside `pata`: `tenda` (both), `tenda-msingi` (no networking: about a third the size) and
+  `tenda-ndogo` (neither); any `tenda-*` there, and the runners `ASILI_TENDA` and
+  `ASILI_TENDA_MSINGI` name, are candidates, each read for the features it carries (`tenda --uwezo`
+  prints them). A smaller runner is named in the output, e.g. `(tenda-ndogo: bila mtandao,
+  ruwaza)`. Without a runner that covers the program the build prints `programu huru haikujengwa:
+  ...` and still succeeds
 
 Failures:
 - syntax/type/ownership diagnostics

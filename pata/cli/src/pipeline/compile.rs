@@ -423,39 +423,70 @@ fn write_device(
 
 /// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): a runner with
 /// the artifact and its native image appended (`asili_evaluator::bundle`), which runs directly.
-/// A program calling no networking builtin gets `tenda-msingi`, the runner built without
-/// networking (about a third the size), when there is one; any other gets `tenda`. Each comes
-/// from its variable (`ASILI_TENDA_MSINGI`, `ASILI_TENDA`) or sits beside `pata`; without a runner
-/// the build only notes that the executable was skipped.
+/// The runner is the smallest one that has every optional feature the program uses
+/// (`asili_evaluator::uwezo`): the runners beside `pata` (`tenda`, `tenda-msingi`, ...), and those
+/// `ASILI_TENDA` and `ASILI_TENDA_MSINGI` name. Without one the build only notes that the
+/// executable was skipped.
 fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliError> {
-    let beside = |var: &str, file: &str| {
-        let exe = format!("{file}{}", std::env::consts::EXE_SUFFIX);
-        std::env::var_os(var)
-            .map(PathBuf::from)
-            .or_else(|| Some(std::env::current_exe().ok()?.parent()?.join(exe)))
-            .filter(|p| p.is_file())
-    };
-    let offline = asili_evaluator::load_asb_bytecode(asb)
-        .is_ok_and(|p| !asili_evaluator::builtins::needs_network(&p));
-    let small = offline
-        .then(|| beside("ASILI_TENDA_MSINGI", "tenda-msingi"))
-        .flatten();
-    let (runner, note) = match small {
-        Some(r) => (r, " (tenda-msingi: bila mtandao)"),
-        None => match beside("ASILI_TENDA", "tenda") {
-            Some(r) => (r, ""),
-            None => {
-                println!(
-                    "programu huru haikujengwa: `tenda{}` haipatikani kando ya pata (au weka \
-                     ASILI_TENDA)",
-                    std::env::consts::EXE_SUFFIX
-                );
-                return Ok(());
+    use asili_evaluator::uwezo;
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let mut paths: Vec<PathBuf> = ["ASILI_TENDA", "ASILI_TENDA_MSINGI"]
+        .iter()
+        .filter_map(|v| std::env::var_os(v).map(PathBuf::from))
+        .collect();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let stem = file.strip_suffix(suffix).unwrap_or(&file);
+                let variant = stem
+                    .strip_prefix("tenda")
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'));
+                if variant && (suffix.is_empty() || file.ends_with(suffix)) {
+                    paths.push(entry.path());
+                }
             }
-        },
+        }
+    }
+    let program = asili_evaluator::load_asb_bytecode(asb).ok();
+    let needed = program.as_ref().map(uwezo::needed);
+    // (bytes, path, features it lacks): the smallest runner with every feature needed.
+    let mut best: Option<(Vec<u8>, PathBuf, Vec<String>)> = None;
+    for path in paths.into_iter().filter(|p| p.is_file()) {
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let has = uwezo::ya_tenda(&bytes);
+        let all: Vec<String> = uwezo::VIPENGELE
+            .iter()
+            .map(|(f, _)| f.to_string())
+            .collect();
+        let has = has.unwrap_or_else(|| all.clone());
+        let covers = match &needed {
+            Some(needed) => needed.iter().all(|f| has.iter().any(|h| h == f)),
+            None => has.len() == all.len(), // unreadable artifact: only a full runner
+        };
+        if covers && best.as_ref().is_none_or(|(b, _, _)| bytes.len() < b.len()) {
+            let lacks = all.into_iter().filter(|f| !has.contains(f)).collect();
+            best = Some((bytes, path, lacks));
+        }
+    }
+    let Some((runner, runner_path, lacks)) = best else {
+        println!(
+            "programu huru haikujengwa: hakuna `tenda{suffix}` kando ya pata yenye uwezo wote \
+             unaohitajika (au weka ASILI_TENDA)"
+        );
+        return Ok(());
     };
-    let runner = fs::read(&runner)
-        .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", runner.display()), 1))?;
+    let note = if lacks.is_empty() {
+        String::new()
+    } else {
+        let file = runner_path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned());
+        format!(" ({}: bila {})", file.unwrap_or_default(), lacks.join(", "))
+    };
     let image = fs::read(target.join(asili_evaluator::nguvu::image_file_name(name))).ok();
     let path = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     fs::write(

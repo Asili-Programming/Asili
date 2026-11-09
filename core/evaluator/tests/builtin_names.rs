@@ -30,20 +30,48 @@ fn every_network_builtin_exists() {
 }
 
 #[test]
-fn needs_network_sees_the_programs_that_use_it() {
-    let program = |source: &str| {
-        let tokens = asili_lexer::tokenize(source).expect("tokenize");
+fn needed_names_the_features_a_program_uses() {
+    use asili_evaluator::uwezo::needed;
+    let program = |body: &str| {
+        let source = format!("kazi kuu(hoja: Orodha<Neno>) -> Tupu {{\n{body}\n}}\n");
+        let tokens = asili_lexer::tokenize(&source).expect("tokenize");
         let module = asili_parser::parse_tokens(&tokens).expect("parse");
         asili_evaluator::compile_module_explained(&module).expect("bytecode")
     };
-    let plain = program("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    chapisha(\"habari\")\n}\n");
-    assert!(!asili_evaluator::builtins::needs_network(&plain));
-    let fetch = program(
-        "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    weka j = http_ombi(\"GET\", \"http://example.com\")\n    chapisha(\"x\")\n}\n",
+    assert!(needed(&program("    chapisha(\"habari\")")).is_empty());
+    assert_eq!(
+        needed(&program(
+            "    weka j = http_ombi(\"GET\", \"http://example.com\")"
+        )),
+        ["mtandao"]
     );
-    assert!(asili_evaluator::builtins::needs_network(&fetch));
-    let resolve = program(
-        "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    weka a = tafuta_anwani(\"localhost\")\n}\n",
+    assert_eq!(
+        needed(&program("    weka a = tafuta_anwani(\"localhost\")")),
+        ["mtandao"]
     );
-    assert!(asili_evaluator::builtins::needs_network(&resolve));
+    assert_eq!(
+        needed(&program("    weka r = ruwaza_inalingana(\"a+\", \"aaa\")")),
+        ["ruwaza"]
+    );
+    assert_eq!(
+        needed(&program(
+            "    weka r = ruwaza_tafuta(\"a\", \"a\")\n    weka j = http_ombi(\"GET\", \"x\")"
+        )),
+        ["mtandao", "ruwaza"]
+    );
+}
+
+#[test]
+fn a_runner_says_what_it_can_run() {
+    use asili_evaluator::uwezo::{ya_tenda, UWEZO, UWEZO_ALAMA};
+    // The marker as built into this crate, amid other bytes (and a stray, unterminated prefix).
+    let mut file = b"\x7fELF...\0ASILI-UWEZO:\x01\x02junk".to_vec();
+    file.extend_from_slice(UWEZO_ALAMA);
+    file.extend_from_slice(b"...more");
+    assert_eq!(ya_tenda(&file).expect("marker"), UWEZO);
+    assert_eq!(
+        ya_tenda(b"\0ASILI-UWEZO:;").expect("marker"),
+        Vec::<String>::new()
+    );
+    assert_eq!(ya_tenda(b"an old runner"), None);
 }

@@ -14,17 +14,20 @@ build-release:
 test:
 	cargo test
 
-# The two standalone runners in target/release: `tenda-msingi`, built without networking (for
-# programs that use none: about a third the size), then `tenda`, the full one. The first build
-# is copied aside before the second replaces target/release/tenda.
+# The standalone runners in target/release, each built with fewer optional features (see
+# `asili_evaluator::uwezo`) and copied aside before the next build replaces target/release/tenda:
+# `tenda-ndogo` (no networking, no regular expressions), `tenda-msingi` (no networking), then
+# `tenda` (everything). `pata jenga --namna release` uses the smallest that covers a program.
 runners:
 	cargo build --release -p asili-runner --no-default-features
+	cp target/release/tenda target/release/tenda-ndogo
+	cargo build --release -p asili-runner --no-default-features --features ruwaza
 	cp target/release/tenda target/release/tenda-msingi
 	cargo build --release -p asili-runner
 
-# Install pata, pata-lsp, pata-lint and the standalone runners `tenda` and `tenda-msingi` to
-# DESTDIR. The runners sit beside `pata` so `pata jenga --namna release` can build standalone
-# executables from them (the smaller one for a program that uses no networking).
+# Install pata, pata-lsp, pata-lint and the standalone runners to DESTDIR. The runners sit beside
+# `pata` so `pata jenga --namna release` can build standalone executables from them (the smallest
+# that covers each program).
 # Usage: make install [DESTDIR=~/.local/bin]
 DESTDIR ?= /usr/local/bin
 install: runners build-release
@@ -34,3 +37,4 @@ install: runners build-release
 	install -m 755 target/release/pata-lint "$(DESTDIR)/pata-lint"
 	install -m 755 target/release/tenda "$(DESTDIR)/tenda"
 	install -m 755 target/release/tenda-msingi "$(DESTDIR)/tenda-msingi"
+	install -m 755 target/release/tenda-ndogo "$(DESTDIR)/tenda-ndogo"
