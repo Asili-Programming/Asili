@@ -1,7 +1,7 @@
 //! HTTP/3 from Asili programs: `ChaguoSeva { h3: kweli }` on the server, `ChaguoHttp { h3: kweli }`
 //! on the client.
 
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use asili_evaluator::{run_function, Value};
@@ -59,9 +59,13 @@ const SERVER: &str = r#"
     }
 "#;
 
-fn free_port() -> String {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    probe.local_addr().unwrap().to_string()
+fn free_ports() -> (String, String) {
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let control = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = server.local_addr().unwrap();
+    let control_addr = control.local_addr().unwrap();
+    assert_ne!(server_addr, control_addr);
+    (server_addr.to_string(), control_addr.to_string())
 }
 
 #[test]
@@ -76,7 +80,7 @@ fn http3_server_and_client_in_asili() {
     std::fs::write(&key, ck.key_pair.serialize_pem()).unwrap();
     let (cert, key) = (cert.display().to_string(), key.display().to_string());
 
-    let (addr, control) = (free_port(), free_port());
+    let (addr, control) = free_ports();
     let server = {
         let (addr, control, cert, key) = (addr.clone(), control.clone(), cert.clone(), key.clone());
         std::thread::spawn(move || {
@@ -92,12 +96,15 @@ fn http3_server_and_client_in_asili() {
         })
     };
     let port = addr.rsplit(':').next().unwrap().to_string();
-    for _ in 0..200 {
+    let listening = (0..200).any(|_| {
         if TcpStream::connect(&addr).is_ok() {
-            break;
+            true
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+            false
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    });
+    assert!(listening, "server did not listen on {addr}");
 
     let client = compile(&format!(
         r#"
