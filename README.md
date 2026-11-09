@@ -105,4 +105,4 @@ Root-level, project meta rather than language docs: [CONTRIBUTING.md](CONTRIBUTI
 
 ## License
 
-This project is licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE).
+This project is licensed under the **GNU General Public License v2.0** — see [LICENSE](LICENSE).

@@ -73,8 +73,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on every input (signed zeros, infinities, NaN and subnormal results included; `native_tiers`
   and the device tests cover the edges). The ESP32, where doubles are software, gains most.
   Native images are rebuilt (`IMAGE_VERSION` 10).
-- **License**: Asili is now licensed under the Apache License, Version 2.0 (previously GPL-2.0).
-  The `LICENSE` file and the README are updated to match.
+- **License**: Restored GNU GPL v2.0 (`GPL-2.0-only`) across the root license, README and Cargo
+  package metadata.
 
 ### Fixed
 

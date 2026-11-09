@@ -1,7 +1,7 @@
 [package]
 name = "asili-parser"
 version = "0.5.0"
-license = "Apache-2.0"
+license = "GPL-2.0-only"
 edition = "2021"
 
 [dependencies]

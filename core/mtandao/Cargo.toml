@@ -1,7 +1,7 @@
 [package]
 name = "asili-mtandao"
 version = "0.2.0"
-license = "Apache-2.0"
+license = "GPL-2.0-only"
 edition = "2021"
 description = "Asili's network layer: TCP, TLS and Unix streams and listeners, DNS, on tokio."
 
