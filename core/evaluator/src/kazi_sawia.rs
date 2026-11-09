@@ -33,7 +33,8 @@ pub(crate) trait Context {
     fn swap_context(&mut self, saved: &mut [u64; 2]);
     /// Call function `index` of the program.
     fn call_index(&mut self, index: usize, args: Vec<Value>) -> Result<Value, EvalError>;
-    /// A starter for another function of the program.
+    /// A starter for another function of the program (the network servers start handlers).
+    #[cfg_attr(not(net), allow(dead_code))]
     fn starter_named(&mut self, name: &str) -> Result<Starter, EvalError>;
 }
 
@@ -46,7 +47,7 @@ pub(crate) struct Starter {
 
 impl Starter {
     /// A starter for the program's function `name`, on the same host.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(not(net), allow(dead_code))]
     pub(crate) fn named(&self, name: &str) -> Result<Starter, EvalError> {
         // SAFETY: as for `start`: the host outlives every task it starts, and is used by one
         // code path at a time.
@@ -95,8 +96,8 @@ impl Task {
         self.state.borrow().is_some()
     }
 
-    /// Wait (asynchronously) until the task has finished.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Wait (asynchronously) until the task has finished (a server waiting for its handlers).
+    #[cfg(net)]
     pub(crate) async fn finished(&self) {
         loop {
             let n = self.done.notified();
@@ -343,6 +344,7 @@ mod native {
     }
 
     /// Ask every unfinished task of this thread to stop (see [`Task::cancel`]).
+    #[cfg_attr(not(net), allow(dead_code))]
     pub(crate) fn cancel_all() {
         let tasks: Vec<Rc<Task>> = runtime()
             .tasks
@@ -357,6 +359,7 @@ mod native {
 
     /// Wait up to `grace` for this thread's tasks to finish, then cancel the rest and wait for
     /// them (a server stopping).
+    #[cfg_attr(not(net), allow(dead_code))]
     pub(crate) fn drain_within(grace: std::time::Duration) {
         let rt = runtime();
         let rt2 = rt.clone();

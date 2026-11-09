@@ -44,6 +44,9 @@ pub const SYSV: Abi = Abi {
         int_caller_saved: &[6, 7, 8, 9, 10, 11], // rsi, rdi, r8–r11
         float_callee_saved: &[],
         float_caller_saved: &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        share_slots: false,
+        one_file: false,
+        remat_constants: false,
     },
     pushed: &[Gpr::Rbx, Gpr::R12, Gpr::R13, Gpr::R14, Gpr::R15],
     args: &[Gpr::Rdi, Gpr::Rsi, Gpr::Rdx, Gpr::Rcx, Gpr::R8, Gpr::R9],
@@ -59,6 +62,9 @@ pub const WIN64: Abi = Abi {
         int_caller_saved: &[8, 9, 10, 11],            // r8–r11
         float_callee_saved: &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         float_caller_saved: &[2, 3, 4, 5],
+        share_slots: false,
+        one_file: false,
+        remat_constants: false,
     },
     pushed: &[
         Gpr::Rbx,
@@ -1103,6 +1109,10 @@ impl<'f> Gen<'f> {
                 }
             }
             Inst::StackPointer { dst } => self.put_int(*dst, Rsp),
+            // Made only by the ESP32's runtime inlining (`device::inline_runtime`).
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                unreachable!("device-only instruction in host code")
+            }
             Inst::CallBuffer { dst } => {
                 let d = self.int_target(*dst, Rax);
                 self.asm.lea(d, self.call_buffer());

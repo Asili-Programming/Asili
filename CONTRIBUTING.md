@@ -87,9 +87,12 @@ The VS Code extension's own API reference is built and published from its reposi
 
 - **Optimizer fuzzing** (any change to `nguvu`'s lowering or optimizer):  
   `ASILI_FUZZ_PROGRAMS=2000 cargo test --release -p asili-evaluator --test fuzz`
-- **Cortex-M** (any change to `nguvu/t32.rs`, `codegen_t32.rs`, `device.rs` or `driver/kifaa`):  
-  `cargo test -p asili-evaluator --test kifaa` — needs `clang`, `ld.lld`, `qemu-arm-static`
-  and `rustup target add thumbv7em-none-eabihf`; skipped with a note where they are missing.
+- **Devices** (any change to `nguvu/t32.rs`, `codegen_t32.rs`, `nguvu/xt32/`, `nguvu/codegen_xt/`,
+  `nguvu/device/` or `driver/kifaa`):
+  `cargo test -p asili-evaluator --test kifaa` — Cortex-M needs `clang`, `ld.lld`,
+  `qemu-arm-static` and `rustup target add thumbv7em-none-eabihf`; the ESP32 half runs when
+  `ASILI_ESP_IDF` points to an ESP-IDF checkout with its tools (including `qemu-xtensa`)
+  installed. Each half is skipped with a note where its tools are missing.
 
 New behavior should be covered by tests where practical (parser, semantic, evaluator, or CLI tests as appropriate).
 

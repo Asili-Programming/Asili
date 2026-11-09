@@ -233,6 +233,10 @@ pub(crate) fn leaders(code: &[Opcode]) -> Option<std::collections::BTreeSet<usiz
 /// Numeric registers an instruction reads when executed by `exec_slow`.
 pub(crate) fn num_reads(op: &Opcode) -> Vec<Reg> {
     match op {
+        Opcode::PinWrite { pin, level } => vec![*pin, *level],
+        Opcode::PinRead { pin, .. } => vec![*pin],
+        Opcode::BoardWait { ms } => vec![*ms],
+        Opcode::BoardClock { .. } => vec![],
         Opcode::Mov { src, .. }
         | Opcode::Neg { src, .. }
         | Opcode::BitNot { src, .. }
@@ -319,6 +323,8 @@ pub(crate) fn num_reads(op: &Opcode) -> Vec<Reg> {
 /// Numeric registers an instruction writes when executed by `exec_slow`.
 pub(crate) fn num_writes(op: &Opcode) -> Vec<Reg> {
     match op {
+        Opcode::PinRead { dst, .. } | Opcode::BoardClock { dst } => vec![*dst],
+        Opcode::PinWrite { .. } | Opcode::BoardWait { .. } => vec![],
         Opcode::Mov { dst, .. }
         | Opcode::Add { dst, .. }
         | Opcode::Sub { dst, .. }
@@ -410,6 +416,10 @@ pub(crate) fn list_writes(op: &Opcode) -> Vec<Reg> {
         Opcode::ListMethod(call) if call.dst.ty == Ty::List => vec![call.dst.reg],
         // Exhaustive, like `num_reads`.
         Opcode::Call(_)
+        | Opcode::PinWrite { .. }
+        | Opcode::PinRead { .. }
+        | Opcode::BoardWait { .. }
+        | Opcode::BoardClock { .. }
         | Opcode::Mov { .. }
         | Opcode::Add { .. }
         | Opcode::Sub { .. }

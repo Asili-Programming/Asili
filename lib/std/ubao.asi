@@ -2,17 +2,20 @@
 # Imetengenezwa kutoka core/parser/src/builtins.rs (BUILTIN_MODULES) — usihariri faili hili;
 # badilisha jedwali, kisha: ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs
 #
-# Ubao: bodi pepe yenye pini na saa. Kazi za pini zinahitaji `#[wazi]`.
+# Ubao: pini na saa — bodi pepe kwenye kompyuta na kivinjari, pini na saa halisi kwenye ESP32.
+# Ya hiari: inahitaji `leta ubao`. Kazi za pini zinahitaji `#[wazi]`.
 
-# Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`.
+# Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`. Kwenye ESP32 pini ni GPIO
+# ya namba hiyo, namba thabiti.
 kazi ubao_andika(pini: Namba, hali: Ukweli) -> Tupu
 
-# Soma hali ya pini (kweli au si_kweli) kutoka ratiba ya pembejeo ya bodi; lazima kazi iwe
-# `#[wazi]`.
+# Soma hali ya pini (kweli au si_kweli): kwenye bodi pepe kutoka ratiba ya pembejeo, kwenye
+# ESP32 kutoka GPIO; lazima kazi iwe `#[wazi]`.
 kazi ubao_soma(pini: Namba) -> Ukweli
 
-# Sogeza saa ya bodi mbele kwa milisekunde ms; haitumii saa halisi.
+# Subiri milisekunde ms: bodi pepe husogeza saa yake bila kusubiri, ESP32 husubiri kweli.
 kazi ubao_subiri(ms: Namba) -> Tupu
 
-# Saa ya bodi kwa milisekunde, kuanzia 0 kila mwanzo wa mpango.
+# Saa ya bodi kwa milisekunde, kuanzia 0 mwanzo wa mpango: saa pepe kwenye kompyuta, saa halisi
+# kwenye ESP32.
 kazi ubao_saa() -> Namba

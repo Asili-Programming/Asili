@@ -108,7 +108,7 @@ fn to_json_depth(v: &Value, depth: usize) -> Result<serde_json::Value, EvalError
             }
             J::Object(out)
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(net)]
         Value::TlsUsanidi(_) => {
             return Err(EvalError::Coded {
                 kind: ErrorKind::BadInput,
@@ -175,7 +175,7 @@ fn variant_name(v: &Value) -> &'static str {
         Value::MkondoSikilizaji(_) => "MkondoSikilizaji",
         Value::MkondoUdp(_) => "MkondoUdp",
         Value::MkondoWs(_) => "MkondoWs",
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(net)]
         Value::TlsUsanidi(_) => "TlsUsanidi",
         Value::Faili(_) => "Faili",
         Value::Mkondo(_) => "Mkondo",

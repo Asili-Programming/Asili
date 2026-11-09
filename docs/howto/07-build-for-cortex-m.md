@@ -86,7 +86,7 @@ code. On a device, additionally:
   rejected.
 
 Anything else fails the build, naming the function and the reason
-(`kazi salama 'f' haiwezi kujengwa kwa Cortex-M: ...`).
+(`kazi 'f' haiwezi kujengwa kwa Cortex-M: ...`).
 
 ## Results are the same as on the build machine
 

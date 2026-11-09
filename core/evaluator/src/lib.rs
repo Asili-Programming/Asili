@@ -7,6 +7,7 @@ pub mod alloc;
 pub mod aot;
 mod asb;
 pub mod builtins;
+pub mod uwezo;
 pub mod bundle;
 mod bytecode;
 mod bytecode_verify;

@@ -8,17 +8,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **ESP32 device target** (`pata jenga --lengo esp32`): strict (`#[salama]`) functions compile to
+  Xtensa LX6 machine code with Asili's own backend (`nguvu::xt32` encoder, `nguvu::codegen_xt`),
+  written as `<name>-esp32.o` (ELF, windowed ABI) beside the same C header and interface as the
+  Cortex-M target. Doubles and 64-bit operations use the GCC runtime's IEEE-exact routines; calls
+  go through relocated literals, so flash code reaches ROM/IRAM. The ESP32 links no runtime
+  library of Asili's own: list access, floor/ceiling and the bitwise operators' conversions are
+  compiled into the code as exact IR (`device::inline_runtime`), leaving only the C library's
+  `fmod` and `pow`. Values never live at the same time share a stack slot, so frames stay small.
+  `tests/kifaa.rs` now also runs every case on the ESP32 under Espressif's QEMU when
+  `ASILI_ESP_IDF` is set, bit for bit against native code (the controller example, the
+  hand-written cases and 400 random programs agree), and the same images agree on a real ESP32.
+  ESP32 code uses the 16-bit code-density instructions wherever one fits, keeps values in the
+  three register pairs a call preserves (`a2`–`a7`, shared by integers and doubles; constants
+  are rebuilt where read instead of taking one, and a list element feeding a double operation is
+  loaded straight into its argument registers), and `pata jenga` prints each export's stack need
+  (`mrundikano ≤ baiti N`). An export whose function returns a number is that function itself,
+  with the C interface built into its IR — no wrapper call, no register file in memory — and a
+  function taking lists gets a direct entry on a device (`lower::Ctx::direct_lists`). Constant
+  shifts are inline, comparisons branch directly, and an unrolled loop's index checks are one
+  check. On a real ESP32 (160 MHz, ESP-IDF's default clock; `gcc -O2` C as reference) the controller example runs at the
+  speed of the same functions in C: `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20,
+  in 48 and 64 bytes of stack. See `docs/howto/08-build-for-esp32.md`.
+- **Pins and the clock on the ESP32, and firmware in Asili only**: `ubao_andika`, `ubao_soma`,
+  `ubao_subiri` and `ubao_saa` drive the chip's GPIO pins (through its registers,
+  `memw`-ordered), wait in real time (on the cycle counter, at the clock the chip runs) and read
+  real time (timer group 1's timer 0, from 0 at the program's start), and a `#[wazi] kuu` is built
+  as the firmware's entry point (`app_main`), so an ESP-IDF firmware needs no C source. Device
+  builds now also export `#[wazi]` functions, and on the ESP32 functions returning `Tupu` are
+  called directly too. Pin `n` is GPIO `n`, a build-time constant; a missing, flash (6-11) or
+  written input-only (34-39) pin is a build error. The calls on numbers are bytecode
+  instructions of their own (`PinWrite`, `PinRead`, `BoardWait`, `BoardClock`; the host runs the
+  builtins' code), so bytecode and native images are rebuilt (`BYTECODE_VERSION` 23,
+  `IMAGE_VERSION` 12). New example `examples/blink-esp32`, verified on a board: a pin written
+  reads back its level, `ubao_subiri(1000)` takes 1000.3 ms, and `ubao_saa` measures a 250 ms
+  wait as 250 ms. Cortex-M has no `ubao` yet. `ubao` is now opt-in, like `kasha_gc`: its calls
+  are in scope only after `leta ubao` (a call without it is SEM037, naming the module to import),
+  so programs that drive no board do not see it.
+- **`examples/habari-esp32`**: hello world on an ESP32 — a strict `fibonacci` built with
+  `pata jenga --lengo esp32`, and an ESP-IDF project (`firmware/`) that links it straight from
+  `kilele/` and prints the greeting and the numbers over serial. Runs on a real board.
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
+- **Smaller standalone executables: runners with fewer builtins**: builtin groups that need
+  large libraries are optional features of `asili-evaluator` and `asili-runner`, on by default —
+  `mtandao` (sockets, TLS, DNS, HTTP) and `ruwaza` (regular expressions). A runner carries the list
+  of features it was built with (`tenda --uwezo` prints it), and `pata jenga --namna release`
+  builds each program on the smallest runner beside `pata` that has every feature the program
+  uses (`asili_evaluator::uwezo`). `make runners` builds three: `tenda` (both; 11.8 MB stripped),
+  `tenda-msingi` (no networking; 3.9 MB) and `tenda-ndogo` (neither). The Sudoku example's
+  executable drops from 18.6 MB to 3.8 MB. Every build registers the same builtin names (stubs
+  without a feature, failing with a message), since a program's builtin calls are indices into
+  that list; `tests/builtin_names.rs` checks it in every configuration CI builds.
 
 ### Changed
 
+- **Native code: exact constant folds** (`nguvu::opt`): a division by a power-of-two constant
+  runs as a multiplication by its exact reciprocal; a constant integer converted to a double, and
+  a negated constant (`-10`), are folded; an eight-byte list element at a constant index (an
+  unrolled loop's) is a load or store at a constant offset, as is one through `address + k`, and
+  a repeated such load reuses the value; along a straight run of index checks that all fail the
+  same way (device code), one check of the largest index replaces them. Results are unchanged
+  on every input (signed zeros, infinities, NaN and subnormal results included; `native_tiers`
+  and the device tests cover the edges). The ESP32, where doubles are software, gains most.
+  Native images are rebuilt (`IMAGE_VERSION` 10).
 - **License**: Asili is now licensed under the Apache License, Version 2.0 (previously GPL-2.0).
   The `LICENSE` file and the README are updated to match.
 
 ### Fixed
 
+- **Sudoku benchmark portability**: use the host runner when the musl Rust target is installed
+  but its required cross-compiler is not, instead of failing while building `aws-lc-sys`.
+- **`make install`**: the Makefile had been emptied (with the move of the VS Code extension to its
+  own repository), so `make install`, which the getting-started guide and `pata jenga`'s docs
+  rely on, did nothing. It is back (without the extension target) and installs both runners.
+- **Browser build: `tls_sanidi`** had no stub without sockets, so the browser's list of builtin
+  names was one short of the native one — every name after it at a different index. The socket
+  builtins now come from one list, as functions or as stubs.
+- **Device builds from the build cache**: `pata jenga --lengo cortex-m` (and `esp32`) skipped
+  writing the device object and header when the bytecode came from the cache, so a deleted or
+  stale object was never rebuilt. Device targets now always emit.
 - **Dependencies**: `rustls` is updated from 0.23.44 to 0.23.46 in `Cargo.lock`, which clears the
   open Dependabot alerts for `rustls`. No code or public interface changes.
 

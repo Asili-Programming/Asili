@@ -12,5 +12,6 @@ Short task-based guides for working with Asili and the toolchain.
 | [05-add-dependency.md](05-add-dependency.md) | `pata ongeza`: adding a dependency, what it does and doesn't do. |
 | [06-use-repl.md](06-use-repl.md) | Using `pata repl`, and why top-level items can't be defined there. |
 | [07-build-for-cortex-m.md](07-build-for-cortex-m.md) | `pata jenga --lengo cortex-m`: strict code as a Cortex-M object and C header, linking, calling convention. |
+| [08-build-for-esp32.md](08-build-for-esp32.md) | `pata jenga --lengo esp32`: strict code as an ESP32 (Xtensa) object and C header, linking into ESP-IDF, testing under QEMU. |
 
 For the language specification and architecture, see the [spec/](../spec/) directory and [SPECIFICATION.md](../SPECIFICATION.md). For stdlib API doc templates, see [lib/docs/](../../lib/docs/).
