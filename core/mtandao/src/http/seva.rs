@@ -195,7 +195,13 @@ pub async fn serve(listener: LocalListener, mut opts: ServerOptions, handler: Ha
                 .and_then(|sock| {
                     super::h3::start(sock, cfg.clone(), handler.clone(), opts.clone())
                 });
-            started.ok()
+            match started {
+                Ok(endpoint) => Some(endpoint),
+                Err(e) => {
+                    eprintln!("seva ya HTTP/3 imeshindwa kuanza: {e}");
+                    None
+                }
+            }
         }
         _ => None,
     };
