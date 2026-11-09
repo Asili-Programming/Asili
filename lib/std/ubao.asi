@@ -16,5 +16,6 @@ kazi ubao_soma(pini: Namba) -> Ukweli
 # Subiri milisekunde ms: bodi pepe husogeza saa yake bila kusubiri, ESP32 husubiri kweli.
 kazi ubao_subiri(ms: Namba) -> Tupu
 
-# Saa ya bodi pepe kwa milisekunde, kuanzia 0 kila mwanzo wa mpango (bado haipo kwa ESP32).
+# Saa ya bodi kwa milisekunde, kuanzia 0 mwanzo wa mpango: saa pepe kwenye kompyuta, saa halisi
+# kwenye ESP32.
 kazi ubao_saa() -> Namba

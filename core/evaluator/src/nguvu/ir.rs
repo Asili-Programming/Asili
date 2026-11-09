@@ -109,6 +109,9 @@ pub enum RtFn {
     PinRead = 20,
     /// Device code only: wait `args[0]` milliseconds (an integer; not at all when not positive).
     BoardWait = 21,
+    /// Device code only: the board's clock, whole milliseconds (an integer); restarted at 0
+    /// first when `args[0]` is not 0.
+    BoardClock = 22,
 }
 
 #[derive(Clone, Debug)]

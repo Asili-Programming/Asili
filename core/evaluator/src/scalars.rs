@@ -32,6 +32,7 @@ fn val_access(op: &Opcode, f: &mut impl FnMut(Reg, Access)) {
         | Opcode::PinWrite { .. }
         | Opcode::PinRead { .. }
         | Opcode::BoardWait { .. }
+        | Opcode::BoardClock { .. }
         | Opcode::Add { .. }
         | Opcode::Sub { .. }
         | Opcode::Mul { .. }

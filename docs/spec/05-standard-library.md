@@ -265,8 +265,9 @@ the chip's GPIO pins and real time. `leta ubao` brings in:
   Requires a `#[wazi]` grant.
 - `ubao_subiri(ms: Namba) -> Tupu` — wait `ms` milliseconds (truncated toward zero; nothing when
   not positive): the virtual board advances its clock without waiting, an ESP32 waits.
-- `ubao_saa() -> Namba` — the virtual board's clock in milliseconds, starting at 0 for each run
-  (not yet on an ESP32).
+- `ubao_saa() -> Namba` — the board's clock in whole milliseconds, starting at 0 for each run:
+  the virtual board's clock (moved only by `ubao_subiri`), or real time on an ESP32, from the
+  start of a `#[wazi] kuu` (or from the first call, in a firmware whose entry point is C).
 
 On the virtual board every pin write, pin read and clock step is recorded as an event (number,
 kind, pin, level, time), and the clock is per thread. A negative or fractional pin number, or a

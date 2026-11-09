@@ -437,7 +437,7 @@ pub const BUILTIN_MODULES: &[BuiltinModule] = &[
             ("ubao_andika(pini: Namba, hali: Ukweli) -> Tupu", "Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`. Kwenye ESP32 pini ni GPIO ya namba hiyo, namba thabiti."),
             ("ubao_soma(pini: Namba) -> Ukweli", "Soma hali ya pini (kweli au si_kweli): kwenye bodi pepe kutoka ratiba ya pembejeo, kwenye ESP32 kutoka GPIO; lazima kazi iwe `#[wazi]`."),
             ("ubao_subiri(ms: Namba) -> Tupu", "Subiri milisekunde ms: bodi pepe husogeza saa yake bila kusubiri, ESP32 husubiri kweli."),
-            ("ubao_saa() -> Namba", "Saa ya bodi pepe kwa milisekunde, kuanzia 0 kila mwanzo wa mpango (bado haipo kwa ESP32)."),
+            ("ubao_saa() -> Namba", "Saa ya bodi kwa milisekunde, kuanzia 0 mwanzo wa mpango: saa pepe kwenye kompyuta, saa halisi kwenye ESP32."),
         ],
         constants: &[],
         structs: &[],

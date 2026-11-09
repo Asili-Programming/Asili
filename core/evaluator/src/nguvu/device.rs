@@ -51,7 +51,7 @@ impl Lengo {
             Lengo::CortexM => codegen_t32::runtime_symbol(target),
             Lengo::Esp32 => match target {
                 // The board's pins (inlined) and clock (a helper).
-                RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait => Some(""),
+                RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait | RtFn::BoardClock => Some(""),
                 _ => codegen_t32::runtime_symbol(target)
                     .map(|_| codegen_xt::runtime_symbol(target).unwrap_or("")),
             },
@@ -346,16 +346,27 @@ fn object_xt(
     // `void app_main(void)`: zero `kuu`'s frame, run it, return.
     if let Some(k) = kuu {
         let f = &program.functions[k];
+        // A program reading the board's clock starts it with the program.
+        let clock = codegen_xt::helper_index(RtFn::BoardClock).expect("clock helper");
+        let reads_clock = units
+            .iter()
+            .map(|(_, _, c)| c)
+            .chain(own.values())
+            .any(|c| c.helpers.iter().any(|&(_, h)| h == clock));
         let spec = codegen_xt::ThunkSpec {
             params: Vec::new(),
             returns: Vec::new(),
             entry_point: true,
+            start_clock: reads_clock.then_some(clock),
             ..thunk_spec(f, false)
         };
         let code = codegen_xt::thunk(&spec).map_err(|e| kosa(Lengo::Esp32, f, &e))?;
         let base = place(&code, &mut text, &mut relocs);
         for &(at, _) in &code.calls {
             calls.push((base + at, k, false));
+        }
+        for &(at, h) in &code.helpers {
+            helper_calls.push((base + at, h));
         }
         symbols.push((
             "app_main".to_string(),
@@ -548,6 +559,7 @@ fn thunk_spec(f: &BytecodeFunc, direct: bool) -> codegen_xt::ThunkSpec {
     codegen_xt::ThunkSpec {
         direct,
         entry_point: false,
+        start_clock: None,
         num_regs: f.num_regs,
         list_regs: f.list_regs,
         num_consts: f
@@ -988,199 +1000,250 @@ fn gpio_pin(n: Option<f64>, write: bool) -> Result<u32, String> {
     Ok(pin)
 }
 
-/// The wait helper: `args` milliseconds (an integer, nothing when not positive), counted on
-/// the cycle counter one millisecond at a time (so its 32-bit wrap never matters), at the clock
-/// the chip runs: the PLL's 80/160/240 MHz, or the 40 MHz crystal divided by `PRE_DIV_CNT + 1`.
+/// `TIMG1`'s timer 0 (`DR_REG_TIMERGROUP1_BASE` 0x3FF60000): `T0CONFIG` (bit 31 enable, 30
+/// count up, 13-28 the APB clock's divider), the latched count (`T0LO`/`T0HI`, latched by
+/// writing bit 31 of `T0UPDATE`, which clears when done) and its reload value (`T0LOADLO`/
+/// `T0LOADHI`, applied by writing `T0LOAD`); the timer group's clock and reset bit (15) in
+/// `DPORT_PERIP_CLK_EN_REG`/`DPORT_PERIP_RST_EN_REG`.
+const TIMG1_T0CONFIG: u32 = 0x3FF6_0000;
+const TIMG1_T0LO: u32 = 0x3FF6_0004;
+const TIMG1_T0HI: u32 = 0x3FF6_0008;
+const TIMG1_T0UPDATE: u32 = 0x3FF6_000C;
+const TIMG1_T0LOADLO: u32 = 0x3FF6_0018;
+const TIMG1_T0LOADHI: u32 = 0x3FF6_001C;
+const TIMG1_T0LOAD: u32 = 0x3FF6_0020;
+const DPORT_PERIP_CLK_EN: u32 = 0x3FF0_00C0;
+const DPORT_PERIP_RST_EN: u32 = 0x3FF0_00C4;
+const TIMERGROUP1_BIT: i64 = 1 << 15;
+/// Most polls of `T0UPDATE` before reading the count anyway (a model that never clears the
+/// bit must not hang the program).
+const LATCH_POLLS: i64 = 1000;
+
+/// IR for the ESP32's helpers that need control flow: a [`super::ir::Builder`] with the few
+/// operations they use.
+struct Ir(super::ir::Builder);
+
+impl Ir {
+    fn new() -> Self {
+        Ir(super::ir::Builder::new())
+    }
+
+    fn int(&mut self) -> VReg {
+        self.0.vreg(Class::Int)
+    }
+
+    fn imm(&mut self, op: IntOp, a: VReg, imm: i32) -> VReg {
+        let dst = self.int();
+        self.0.push(Inst::IntImm { op, dst, a, imm });
+        dst
+    }
+
+    fn op(&mut self, op: IntOp, a: VReg, b: VReg) -> VReg {
+        let dst = self.int();
+        self.0.push(Inst::Int { op, dst, a, b });
+        dst
+    }
+
+    fn cmp_imm(&mut self, cond: ICond, a: VReg, imm: i32) -> VReg {
+        let dst = self.int();
+        self.0.push(Inst::ICmpImm { cond, dst, a, imm });
+        dst
+    }
+
+    fn select(&mut self, cond: VReg, a: VReg, b: VReg) -> VReg {
+        let dst = self.int();
+        self.0.push(Inst::Select { dst, cond, a, b });
+        dst
+    }
+
+    fn io_load(&mut self, addr: u32) -> VReg {
+        let a = self.0.iconst(addr as i64);
+        let dst = self.int();
+        self.0.push(Inst::IoLoad { dst, addr: a });
+        dst
+    }
+
+    fn io_store(&mut self, addr: u32, src: VReg) {
+        let a = self.0.iconst(addr as i64);
+        self.0.push(Inst::IoStore { src, addr: a });
+    }
+
+    /// Bits `shift..` of the register at `addr`, masked by `mask`.
+    fn field(&mut self, addr: u32, shift: i32, mask: i32) -> VReg {
+        let w = self.io_load(addr);
+        let s = self.imm(IntOp::Sar, w, shift);
+        self.imm(IntOp::And, s, mask)
+    }
+
+    /// The helper's 64-bit argument, from its two words ([`super::ir::HELPER_ARGS`]).
+    fn arg(&mut self) -> VReg {
+        let high = self.imm(IntOp::Shl, VReg(1), 32);
+        self.op(IntOp::Or, high, VReg(0))
+    }
+
+    fn finish(self) -> Func {
+        let mut func = self.0.finish();
+        func.args = super::ir::HELPER_ARGS;
+        func
+    }
+}
+
+/// The clock the chip runs: whether the CPU is on the PLL (`SOC_CLK_SEL` 1), its frequency
+/// there (80/160/240 MHz by `CPUPERIOD_SEL`), and the crystal's (40 MHz divided by
+/// `PRE_DIV_CNT + 1`), which is also the CPU's and the APB's off the PLL.
+fn chip_clock(ir: &mut Ir) -> (VReg, VReg, VReg) {
+    let source = ir.field(RTC_CNTL_CLK_CONF, 27, 3);
+    let period = ir.field(DPORT_CPU_PER_CONF, 0, 3);
+    let divider = ir.field(APB_CTRL_SYSCLK_CONF, 0, 0x3FF);
+    let p1 = ir.imm(IntOp::Add, period, 1);
+    let pll = ir.imm(IntOp::Mul, p1, 80);
+    let d1 = ir.imm(IntOp::Add, divider, 1);
+    let forty = ir.0.iconst(40);
+    let xtal = ir.op(IntOp::UDiv, forty, d1);
+    let on_pll = ir.cmp_imm(ICond::Eq, source, 1);
+    (on_pll, pll, xtal)
+}
+
+/// The wait helper: its argument in milliseconds (nothing when not positive), counted on the
+/// cycle counter one millisecond at a time (so its 32-bit wrap never matters) at the CPU's
+/// clock ([`chip_clock`]).
 fn board_wait_func() -> Func {
-    use super::ir::Block;
-    let mut classes = vec![Class::Int, Class::Int];
-    let mut blocks: Vec<BlockData> = Vec::new();
-    let (lo, hi) = (VReg(0), VReg(1));
-    // Entry: the count, and cycles per millisecond.
-    let mut out = Vec::new();
-    let mut e = Emit {
-        classes: &mut classes,
-        out: &mut out,
-    };
-    let high = e.int();
-    e.push(Inst::IntImm {
-        op: IntOp::Shl,
-        dst: high,
-        a: hi,
-        imm: 32,
+    let mut ir = Ir::new();
+    let (entry, test, start, spin, next, done) = (
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+    );
+    ir.0.switch_to(entry);
+    let n = ir.arg();
+    let (on_pll, pll, xtal) = chip_clock(&mut ir);
+    let mhz = ir.select(on_pll, pll, xtal);
+    let per_ms = ir.imm(IntOp::Mul, mhz, 1000);
+    let zero = ir.0.iconst(0);
+    ir.0.terminate(Term::Jump(test));
+    // while n > 0
+    ir.0.switch_to(test);
+    let more = ir.cmp_imm(ICond::Gt, n, 0);
+    ir.0.terminate(Term::Branch {
+        cond: more,
+        then_: start,
+        else_: done,
     });
-    let n = e.int();
-    e.push(Inst::Int {
-        op: IntOp::Or,
-        dst: n,
-        a: high,
-        b: lo,
-    });
-    let field = |e: &mut Emit, addr: u32, shift: i32, mask: i64| {
-        let a = e.iconst(addr as i64);
-        let w = e.int();
-        e.push(Inst::IoLoad { dst: w, addr: a });
-        let s = e.int();
-        e.push(Inst::IntImm {
-            op: IntOp::Sar,
-            dst: s,
-            a: w,
-            imm: shift,
-        });
-        let f = e.int();
-        e.push(Inst::IntImm {
-            op: IntOp::And,
-            dst: f,
-            a: s,
-            imm: mask as i32,
-        });
-        f
-    };
-    let source = field(&mut e, RTC_CNTL_CLK_CONF, 27, 3);
-    let period = field(&mut e, DPORT_CPU_PER_CONF, 0, 3);
-    let divider = field(&mut e, APB_CTRL_SYSCLK_CONF, 0, 0x3FF);
-    // PLL: 80 * (period + 1) MHz; crystal: 40 / (divider + 1) MHz.
-    let p1 = e.int();
-    e.push(Inst::IntImm {
-        op: IntOp::Add,
-        dst: p1,
-        a: period,
-        imm: 1,
-    });
-    let pll = e.int();
-    e.push(Inst::IntImm {
-        op: IntOp::Mul,
-        dst: pll,
-        a: p1,
-        imm: 80_000,
-    });
-    let d1 = e.int();
-    e.push(Inst::IntImm {
-        op: IntOp::Add,
-        dst: d1,
-        a: divider,
-        imm: 1,
-    });
-    let forty = e.iconst(40_000);
-    let xtal = e.int();
-    e.push(Inst::Int {
-        op: IntOp::UDiv,
-        dst: xtal,
-        a: forty,
-        b: d1,
-    });
-    let on_pll = e.int();
-    e.push(Inst::ICmpImm {
-        cond: ICond::Eq,
-        dst: on_pll,
-        a: source,
-        imm: 1,
-    });
-    let per_ms = e.int();
-    e.push(Inst::Select {
-        dst: per_ms,
-        cond: on_pll,
-        a: pll,
-        b: xtal,
-    });
-    let zero = e.iconst(0);
-    blocks.push(BlockData {
-        insts: out,
-        term: Term::Jump(Block(1)),
-    });
-    // 1: while n > 0
-    let mut out = Vec::new();
-    let mut e = Emit {
-        classes: &mut classes,
-        out: &mut out,
-    };
-    let more = e.int();
-    e.push(Inst::ICmpImm {
-        cond: ICond::Gt,
-        dst: more,
-        a: n,
-        imm: 0,
-    });
-    blocks.push(BlockData {
-        insts: out,
-        term: Term::Branch {
-            cond: more,
-            then_: Block(2),
-            else_: Block(5),
-        },
-    });
-    // 2: start = ccount
-    let mut out = Vec::new();
-    let mut e = Emit {
-        classes: &mut classes,
-        out: &mut out,
-    };
-    let start = e.int();
-    e.push(Inst::CycleCount { dst: start });
-    blocks.push(BlockData {
-        insts: out,
-        term: Term::Jump(Block(3)),
-    });
-    // 3: until (ccount - start) mod 2^32 reaches a millisecond's cycles
-    let mut out = Vec::new();
-    let mut e = Emit {
-        classes: &mut classes,
-        out: &mut out,
-    };
-    let now = e.int();
-    e.push(Inst::CycleCount { dst: now });
-    let diff = e.int();
-    e.push(Inst::Int {
-        op: IntOp::Sub,
-        dst: diff,
-        a: now,
-        b: start,
-    });
-    let low = e.iconst(0xFFFF_FFFF);
-    let elapsed = e.int();
-    e.push(Inst::Int {
-        op: IntOp::And,
-        dst: elapsed,
-        a: diff,
-        b: low,
-    });
-    let waiting = e.int();
-    e.push(Inst::ICmp {
+    ir.0.switch_to(start);
+    let t0 = ir.int();
+    ir.0.push(Inst::CycleCount { dst: t0 });
+    ir.0.terminate(Term::Jump(spin));
+    // until (ccount - t0) mod 2^32 reaches a millisecond's cycles
+    ir.0.switch_to(spin);
+    let now = ir.int();
+    ir.0.push(Inst::CycleCount { dst: now });
+    let diff = ir.op(IntOp::Sub, now, t0);
+    let low = ir.0.iconst(0xFFFF_FFFF);
+    let elapsed = ir.op(IntOp::And, diff, low);
+    let waiting = ir.int();
+    ir.0.push(Inst::ICmp {
         cond: ICond::Ult,
         dst: waiting,
         a: elapsed,
         b: per_ms,
     });
-    blocks.push(BlockData {
-        insts: out,
-        term: Term::Branch {
-            cond: waiting,
-            then_: Block(3),
-            else_: Block(4),
-        },
+    ir.0.terminate(Term::Branch {
+        cond: waiting,
+        then_: spin,
+        else_: next,
     });
-    // 4: n -= 1
-    blocks.push(BlockData {
-        insts: vec![Inst::IntImm {
-            op: IntOp::Sub,
-            dst: n,
-            a: n,
-            imm: 1,
-        }],
-        term: Term::Jump(Block(1)),
+    ir.0.switch_to(next);
+    ir.0.push(Inst::IntImm {
+        op: IntOp::Sub,
+        dst: n,
+        a: n,
+        imm: 1,
     });
-    // 5: done
-    blocks.push(BlockData {
-        insts: vec![],
-        term: Term::Return(zero),
+    ir.0.terminate(Term::Jump(test));
+    ir.0.switch_to(done);
+    ir.0.terminate(Term::Return(zero));
+    ir.finish()
+}
+
+/// The clock helper: whole milliseconds on `TIMG1`'s timer 0, counting microseconds (the APB
+/// clock divided by its MHz). The timer holds the state: stopped means not started yet, so the
+/// first call starts it at 0 — and so does an argument other than 0 (the entry point, so a
+/// program's clock starts with it).
+fn board_clock_func() -> Func {
+    let mut ir = Ir::new();
+    let (entry, start, read, poll, done) = (
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+        ir.0.block(),
+    );
+    ir.0.switch_to(entry);
+    let restart = ir.arg();
+    let enabled = ir.field(TIMG1_T0CONFIG, 31, 1);
+    let stopped = ir.cmp_imm(ICond::Eq, enabled, 0);
+    let asked = ir.cmp_imm(ICond::Ne, restart, 0);
+    let fresh = ir.op(IntOp::Or, stopped, asked);
+    ir.0.terminate(Term::Branch {
+        cond: fresh,
+        then_: start,
+        else_: read,
     });
-    Func {
-        classes,
-        cold: vec![false; blocks.len()],
-        blocks,
-        call_buffer: 0,
-        args: super::ir::HELPER_ARGS,
-    }
+    // Start: the group's clock on and out of reset, the timer stopped, loaded with 0, started.
+    ir.0.switch_to(start);
+    let clk = ir.io_load(DPORT_PERIP_CLK_EN);
+    let clk_on = ir.imm(IntOp::Or, clk, TIMERGROUP1_BIT as i32);
+    ir.io_store(DPORT_PERIP_CLK_EN, clk_on);
+    let rst = ir.io_load(DPORT_PERIP_RST_EN);
+    let rst_off = ir.imm(IntOp::And, rst, !(TIMERGROUP1_BIT as i32));
+    ir.io_store(DPORT_PERIP_RST_EN, rst_off);
+    let (on_pll, _, xtal) = chip_clock(&mut ir);
+    let eighty = ir.0.iconst(80);
+    let apb_mhz = ir.select(on_pll, eighty, xtal);
+    let divider = ir.imm(IntOp::Shl, apb_mhz, 13);
+    let counting_up = ir.imm(IntOp::Or, divider, 1 << 30);
+    ir.io_store(TIMG1_T0CONFIG, counting_up);
+    let zero = ir.0.iconst(0);
+    ir.io_store(TIMG1_T0LOADLO, zero);
+    ir.io_store(TIMG1_T0LOADHI, zero);
+    let one = ir.0.iconst(1);
+    ir.io_store(TIMG1_T0LOAD, one);
+    let running = ir.imm(IntOp::Or, counting_up, i32::MIN); // bit 31
+    ir.io_store(TIMG1_T0CONFIG, running);
+    ir.0.terminate(Term::Jump(read));
+    // Latch the count (the timer runs in another clock domain), then read it.
+    ir.0.switch_to(read);
+    let latch = ir.0.iconst(1 << 31);
+    ir.io_store(TIMG1_T0UPDATE, latch);
+    let tries = ir.0.iconst(LATCH_POLLS);
+    ir.0.terminate(Term::Jump(poll));
+    ir.0.switch_to(poll);
+    let busy = ir.field(TIMG1_T0UPDATE, 31, 1);
+    ir.0.push(Inst::IntImm {
+        op: IntOp::Sub,
+        dst: tries,
+        a: tries,
+        imm: 1,
+    });
+    let left = ir.cmp_imm(ICond::Gt, tries, 0);
+    let again = ir.op(IntOp::And, busy, left);
+    ir.0.terminate(Term::Branch {
+        cond: again,
+        then_: poll,
+        else_: done,
+    });
+    ir.0.switch_to(done);
+    let lo = ir.io_load(TIMG1_T0LO);
+    let hi = ir.io_load(TIMG1_T0HI);
+    let high = ir.imm(IntOp::Shl, hi, 32);
+    let us = ir.op(IntOp::Or, high, lo);
+    let thousand = ir.0.iconst(1000);
+    let ms = ir.op(IntOp::UDiv, us, thousand);
+    ir.0.terminate(Term::Return(ms));
+    ir.finish()
 }
 
 /// Status of a call that cannot be made on a device (`native::STATUS_FAIL << 32`).
@@ -1293,8 +1356,10 @@ fn inline_runtime(func: &mut Func) -> Result<(), String> {
 /// arrives as two words ([`super::ir::HELPER_ARGS`]), its 64-bit result (a double's bits or an
 /// integer) is returned.
 fn helper_func(target: RtFn) -> Func {
-    if target == RtFn::BoardWait {
-        return board_wait_func();
+    match target {
+        RtFn::BoardWait => return board_wait_func(),
+        RtFn::BoardClock => return board_clock_func(),
+        _ => {}
     }
     let mut classes = vec![Class::Int, Class::Int];
     let mut out = Vec::new();
@@ -1650,7 +1715,11 @@ fn check_host_calls(lengo: Lengo, func: &Func, function: &BytecodeFunc) -> Resul
                 "kuunda orodha (kifaa hakitengi kumbukumbu)".to_string()
             }
             Some(op) => format!("agizo `{}`", op.name()),
-            None if matches!(target, RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait) => {
+            None if matches!(
+                target,
+                RtFn::PinWrite | RtFn::PinRead | RtFn::BoardWait | RtFn::BoardClock
+            ) =>
+            {
                 "pini na saa za ubao (kwa sasa ESP32 pekee inaziendesha)".to_string()
             }
             None => format!("huduma ya mwenyeji `{target:?}`"),

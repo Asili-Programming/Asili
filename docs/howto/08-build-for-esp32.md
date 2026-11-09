@@ -85,8 +85,8 @@ the call failed (`matokeo` then not written), lists passed by reference.
 The same subset as Cortex-M: exported functions take only `Namba`, `Ukweli` and `Orodha<Namba>`
 parameters, there is no allocation, and anything else fails the build naming the function and the
 reason (`kazi 'f' haiwezi kujengwa kwa ESP32: ...`). The exports are the `#[salama]` functions and
-the `#[wazi]` ones (other than `kuu`); a function `kuu` calls must return a `Namba` or an
-`Ukweli`, so it can be called directly.
+the `#[wazi]` ones (other than `kuu`). Functions call each other directly, including ones
+returning `Tupu`.
 
 ## Pins, the clock, and firmware in Asili only
 
@@ -98,11 +98,16 @@ board on the build machine and in the browser, the chip's hardware here. On the 
 | `ubao_andika(n, hali)` | GPIO `n` put in GPIO function (IO_MUX), routed from `GPIO_OUT` and enabled as an output, then its bit written to the set or clear register |
 | `ubao_soma(n)` | GPIO `n` put in GPIO function with its input enabled, then its bit of `GPIO_IN` |
 | `ubao_subiri(ms)` | a wait on the cycle counter, one millisecond at a time, at the clock the chip runs (read from its clock registers: 80/160/240 MHz on the PLL, or the 40 MHz crystal's) |
+| `ubao_saa()` | timer group 1's timer 0, counting microseconds off the APB clock, read in whole milliseconds; the timer is started at 0 by the entry point of a program that reads it (or, without one, by the first call) |
 
 Every register access is preceded by `memw`, as GCC orders volatile accesses on this core. Pin
 `n` is GPIO `n` and must be a constant the build can see (a literal or a `thabiti`); a pin the
 chip does not have, one of the flash's (6-11), or an input-only pin (34-39) written is a build
-error. `ubao_saa` is not available on the device yet.
+error.
+
+`ubao_saa` is real time on the device, where the build machine's virtual clock moves only with
+`ubao_subiri`, so a program that times its own computation reads different values on the two.
+It uses timer group 1's timer 0, which the firmware must leave to it.
 
 A `#[wazi] kuu` (its `hoja` unused) is built as `void app_main(void)`, which ESP-IDF calls at
 start-up, so the firmware needs no C source: its `main` component only links the object.
@@ -130,7 +135,8 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/..
 
 A `kuu` that never returns keeps ESP-IDF's idle task from running, so set
 `CONFIG_ESP_TASK_WDT_INIT=n` (`sdkconfig.defaults`). On a real ESP32, a pin written reads back
-the level written and `ubao_subiri(1000)` takes 1000.3 ms. Cortex-M has no `ubao` yet: a function
+the level written, `ubao_subiri(1000)` takes 1000.3 ms, and `ubao_saa` measures a 250 ms wait
+as 250 ms. Cortex-M has no `ubao` yet: a function
 using it fails that build.
 
 ## Results are the same as on the build machine

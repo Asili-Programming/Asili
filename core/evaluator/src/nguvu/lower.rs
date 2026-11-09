@@ -45,9 +45,11 @@ pub fn direct_signature(f: &BytecodeFunc) -> bool {
 /// [`Ctx::direct_lists`]).
 pub fn direct_shape(f: &BytecodeFunc, lists: bool) -> bool {
     let param = |ty: Ty| matches!(ty, Ty::Num | Ty::Bool) || (lists && ty == Ty::List);
-    (lists || f.list_regs == 0)
-        && f.val_regs == 0
-        && matches!(f.ret, Ty::Num | Ty::Bool)
+    // Device code also takes a function returning `Tupu`, and value registers nothing uses
+    // (the result register of such a call): any instruction that does use one fails the
+    // lowering instead (`Lower::slow`, and the value-register calls).
+    (lists || (f.list_regs == 0 && f.val_regs == 0))
+        && (matches!(f.ret, Ty::Num | Ty::Bool) || (lists && f.ret == Ty::Val))
         && f.params.iter().all(|p| param(p.ty))
 }
 
@@ -427,8 +429,11 @@ impl<'a> Lower<'a> {
         let index = call.function as usize;
         let callee = self.ctx.program.functions.get(index)?;
         let numeric = |ty: Ty| matches!(ty, Ty::Num | Ty::Bool);
+        // In device code a function returning `Tupu` is called directly too; its result
+        // register is never written.
+        let tupu = self.ctx.direct_lists && call.dst.ty == Ty::Val && callee.ret == Ty::Val;
         (self.ctx.direct.contains(&index)
-            && numeric(call.dst.ty)
+            && (numeric(call.dst.ty) || tupu)
             && call.args.len() == callee.params.len()
             && call.args.iter().all(|a| numeric(a.ty)))
         .then_some(callee)
@@ -547,7 +552,9 @@ impl<'a> Lower<'a> {
         self.b.terminate(Term::Return(status));
 
         self.b.switch_to(got);
-        self.set_f(call.dst.reg, result);
+        if matches!(call.dst.ty, Ty::Num | Ty::Bool) {
+            self.set_f(call.dst.reg, result);
+        }
     }
 
     fn label(&self, pc: usize) -> Block {
@@ -825,8 +832,8 @@ impl<'a> Lower<'a> {
         }
     }
 
-    /// `dst = cond` (0/1).
-    fn set_flag(&mut self, dst: Reg, cond: VReg) {
+    /// `dst = v`, an integer (a comparison's 0/1, a pin's level, the board's clock).
+    fn set_int(&mut self, dst: Reg, cond: VReg) {
         let d = self.regs[dst as usize];
         if self.int(dst) {
             self.push(Inst::Mov { dst: d, src: cond });
@@ -1233,7 +1240,7 @@ impl<'a> Lower<'a> {
                 let c = self.truthy(*src);
                 let one = self.b.iconst(1);
                 let n = self.int_op(IntOp::Xor, c, one);
-                self.set_flag(*dst, n);
+                self.set_int(*dst, n);
             }
             Opcode::Floor { dst, src } | Opcode::Ceil { dst, src } => {
                 let floor = matches!(op, Opcode::Floor { .. });
@@ -1257,7 +1264,7 @@ impl<'a> Lower<'a> {
             }
             Opcode::Cmp { op: cmp, dst, a, b } => {
                 let c = self.compare(*cmp, *a, *b);
-                self.set_flag(*dst, c);
+                self.set_int(*dst, c);
             }
             Opcode::Jump { target } => {
                 let t = self.label(*target as usize);
@@ -1440,6 +1447,15 @@ impl<'a> Lower<'a> {
                 self.b.switch_to(done);
             }
             // Value-register instructions that cannot fail: direct runtime calls.
+            // Value registers live in the host's frame, which a direct entry does not have.
+            Opcode::BoxNum { .. }
+            | Opcode::BoxBool { .. }
+            | Opcode::ValMov { .. }
+            | Opcode::ConstVal { .. }
+                if self.ctx.entry_direct =>
+            {
+                self.failed = true;
+            }
             Opcode::BoxNum { dst, src } | Opcode::BoxBool { dst, src } => {
                 let target = if matches!(op, Opcode::BoxNum { .. }) {
                     RtFn::BoxNum
@@ -1507,6 +1523,11 @@ impl<'a> Lower<'a> {
             }
             // A direct entry returns only a number: one that can return nothing has none (the
             // `ReturnTupu` every function ends with is usually unreachable).
+            // Device code: a direct entry returning `Tupu` returns 0, which no caller reads.
+            Opcode::ReturnTupu if self.ctx.entry_direct && self.ctx.direct_lists => {
+                let z = self.b.fconst(0.0);
+                self.b.terminate(Term::ReturnNum(z));
+            }
             Opcode::ReturnTupu if self.ctx.entry_direct => {
                 if self.reachable[pc] {
                     self.failed = true;
@@ -1527,11 +1548,18 @@ impl<'a> Lower<'a> {
                 let v = self
                     .call(RtFn::PinRead, vec![p], Some(Class::Int), false)
                     .expect("result");
-                self.set_flag(*dst, v);
+                self.set_int(*dst, v);
             }
             Opcode::BoardWait { ms } if self.ctx.device => {
                 let m = self.get_i(*ms);
                 self.call(RtFn::BoardWait, vec![m], None, false);
+            }
+            Opcode::BoardClock { dst } if self.ctx.device => {
+                let keep = self.b.iconst(0);
+                let v = self
+                    .call(RtFn::BoardClock, vec![keep], Some(Class::Int), false)
+                    .expect("result");
+                self.set_int(*dst, v);
             }
             other => self.slow(pc, other),
         }

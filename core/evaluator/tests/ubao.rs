@@ -141,7 +141,7 @@ fn typed_pin_calls_are_instructions_of_their_own() {
     // A number and a truth value go straight to `PinWrite`/`PinRead`/`BoardWait` (no boxing),
     // which native code on a device can run without a host; anything else stays a builtin call.
     let module = parse(
-        "leta ubao\n#[wazi]\nkazi prova(p: Namba) -> Ukweli {\n    ubao_andika(p, kweli)\n    ubao_subiri(3)\n    rejesha ubao_soma(p)\n}",
+        "leta ubao\n#[wazi]\nkazi prova(p: Namba) -> Ukweli {\n    ubao_andika(p, kweli)\n    ubao_subiri(3)\n    rejesha ubao_soma(p) || ubao_saa() < 0\n}",
     );
     let program = compile_module_explained(&module).expect("compile");
     let f = program
@@ -150,7 +150,7 @@ fn typed_pin_calls_are_instructions_of_their_own() {
         .find(|f| f.name == "prova")
         .expect("prova");
     let code = format!("{:?}", f.code);
-    for op in ["PinWrite", "BoardWait", "PinRead"] {
+    for op in ["PinWrite", "BoardWait", "PinRead", "BoardClock"] {
         assert!(code.contains(op), "{op} missing: {code}");
     }
     assert!(!code.contains("CallBuiltin"), "{code}");

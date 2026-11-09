@@ -752,6 +752,7 @@ impl<'p> Host<'p> {
                 Err(e) => fail!(e),
             },
             Opcode::BoardWait { ms } => crate::builtins::ubao::subiri(n[*ms as usize]),
+            Opcode::BoardClock { dst } => n[*dst as usize] = crate::builtins::ubao::saa(),
             Opcode::ListRepeat { dst, value, count } => {
                 let count = n[*count as usize];
                 if !(count.is_finite() && count >= 0.0 && count.fract() == 0.0) {

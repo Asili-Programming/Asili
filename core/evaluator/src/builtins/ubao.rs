@@ -46,6 +46,11 @@ pub(crate) fn subiri(ms: f64) {
     crate::ubao::subiri(ms as i64);
 }
 
+/// `ubao_saa()`, shared with the `BoardClock` instruction.
+pub(crate) fn saa() -> f64 {
+    crate::ubao::saa() as f64
+}
+
 pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
     m.insert(
         "ubao_andika".to_string(),
@@ -75,6 +80,6 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
     );
     m.insert(
         "ubao_saa".to_string(),
-        Box::new(|_args: &[Value]| Ok(Value::Namba(crate::ubao::saa() as f64))),
+        Box::new(|_args: &[Value]| Ok(Value::Namba(saa()))),
     );
 }

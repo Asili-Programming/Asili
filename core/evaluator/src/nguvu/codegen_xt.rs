@@ -64,12 +64,13 @@ const ARG0: u8 = 10;
 
 /// The runtime functions compiled from IR into the object itself (`device::helper_func`), once
 /// each, and called like external functions: their index here names them.
-pub const HELPERS: [RtFn; 5] = [
+pub const HELPERS: [RtFn; 6] = [
     RtFn::Floor,
     RtFn::Ceil,
     RtFn::FloatToIntSat,
     RtFn::ShiftAmount,
     RtFn::BoardWait,
+    RtFn::BoardClock,
 ];
 
 /// Index of `target` in [`HELPERS`].
@@ -1336,6 +1337,9 @@ pub struct ThunkSpec {
     /// The firmware's entry point, `void app_main(void)` (the program's `kuu`): no arguments
     /// read, nothing returned (`params` and `returns` are empty).
     pub entry_point: bool,
+    /// For the entry point: restart the board's clock first (the helper of this index in
+    /// [`HELPERS`], `RtFn::BoardClock`, called with 1), so a program's clock starts with it.
+    pub start_clock: Option<u32>,
 }
 
 /// Status kind in the high word of a function's return value meaning "returned"
@@ -1410,6 +1414,12 @@ pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
         let mut code = pool.finish(a)?;
         code.frame = frame;
         return Ok(code);
+    }
+    if let Some(h) = spec.start_clock {
+        a.emit(xt32::movi(ARG0, 1))?;
+        a.emit(xt32::movi(ARG0 + 1, 0))?;
+        pool.l32r(&mut a, T, Lit::Helper(h));
+        a.word(xt32::callx(8, T).expect("callx8"));
     }
     // entry(runtime: unused on a device, host, frame = list references, nums)
     a.emit(xt32::movi(ARG0, 0))?;

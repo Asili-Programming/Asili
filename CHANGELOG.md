@@ -30,17 +30,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check. On a real ESP32 (160 MHz, ESP-IDF's default clock; `gcc -O2` C as reference) the controller example runs at the
   speed of the same functions in C: `wastani` 4.25 µs against 4.19, `dhibiti` 5.32 against 5.20,
   in 48 and 64 bytes of stack. See `docs/howto/08-build-for-esp32.md`.
-- **Pins and the clock on the ESP32, and firmware in Asili only**: `ubao_andika`, `ubao_soma`
-  and `ubao_subiri` drive the chip's GPIO pins (through its registers, `memw`-ordered) and wait
-  in real time (on the cycle counter, at the clock the chip runs), and a `#[wazi] kuu` is built as
-  the firmware's entry point (`app_main`), so an ESP-IDF firmware needs no C source. Device builds
-  now also export `#[wazi]` functions. Pin `n` is GPIO `n`, a build-time constant; a missing,
-  flash (6-11) or written input-only (34-39) pin is a build error. The calls on a number are
-  bytecode instructions of their own (`PinWrite`, `PinRead`, `BoardWait`; the host runs the
-  builtins' code), so bytecode and native images are rebuilt (`BYTECODE_VERSION` 22,
-  `IMAGE_VERSION` 11). New example `examples/blink-esp32`, verified on a board: a pin written
-  reads back its level, and `ubao_subiri(1000)` takes 1000.3 ms. `ubao_saa` and Cortex-M are not
-  yet supported.
+- **Pins and the clock on the ESP32, and firmware in Asili only**: `ubao_andika`, `ubao_soma`,
+  `ubao_subiri` and `ubao_saa` drive the chip's GPIO pins (through its registers,
+  `memw`-ordered), wait in real time (on the cycle counter, at the clock the chip runs) and read
+  real time (timer group 1's timer 0, from 0 at the program's start), and a `#[wazi] kuu` is built
+  as the firmware's entry point (`app_main`), so an ESP-IDF firmware needs no C source. Device
+  builds now also export `#[wazi]` functions, and on the ESP32 functions returning `Tupu` are
+  called directly too. Pin `n` is GPIO `n`, a build-time constant; a missing, flash (6-11) or
+  written input-only (34-39) pin is a build error. The calls on numbers are bytecode
+  instructions of their own (`PinWrite`, `PinRead`, `BoardWait`, `BoardClock`; the host runs the
+  builtins' code), so bytecode and native images are rebuilt (`BYTECODE_VERSION` 23,
+  `IMAGE_VERSION` 12). New example `examples/blink-esp32`, verified on a board: a pin written
+  reads back its level, `ubao_subiri(1000)` takes 1000.3 ms, and `ubao_saa` measures a 250 ms
+  wait as 250 ms. Cortex-M has no `ubao` yet.
 - **`examples/habari-esp32`**: hello world on an ESP32 — a strict `fibonacci` built with
   `pata jenga --lengo esp32`, and an ESP-IDF project (`firmware/`) that links it straight from
   `kilele/` and prints the greeting and the numbers over serial. Runs on a real board.

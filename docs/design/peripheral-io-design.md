@@ -198,21 +198,24 @@ what the spikes need.
 
 Option A in a form that needs no change to the host's runtime ABI:
 
-1. **Typed instructions.** `ubao_andika`, `ubao_soma` and `ubao_subiri` called on a number (and a
-   truth value) compile to bytecode instructions of their own — `PinWrite`, `PinRead`,
-   `BoardWait` (`BYTECODE_VERSION` 22) — the way `sakafu`/`dari` became `Floor`/`Ceil`. The host
-   runs them with the builtins' own code (`builtins::ubao::{andika, soma, subiri}`), so the
-   virtual board has one implementation.
+1. **Typed instructions.** `ubao_andika`, `ubao_soma`, `ubao_subiri` and `ubao_saa` called on
+   numbers (and a truth value) compile to bytecode instructions of their own — `PinWrite`,
+   `PinRead`, `BoardWait`, `BoardClock` (`BYTECODE_VERSION` 23) — the way `sakafu`/`dari` became
+   `Floor`/`Ceil`. The host runs them with the builtins' own code
+   (`builtins::ubao::{andika, soma, subiri, saa}`), so the virtual board has one implementation.
 2. **Device lowering.** In device code (`lower::Ctx::device`) they lower to runtime calls with
-   their operands (`RtFn::PinWrite`, `PinRead`, `BoardWait`); host code still hands them to the
+   their operands (`RtFn::PinWrite`, `PinRead`, `BoardWait`, `BoardClock`); host code still hands them to the
    host, so no runtime-table entry was added.
 3. **Target implementation.** The ESP32's runtime inlining (`device::inline_runtime`) turns the
    pin calls into memory-mapped register accesses (`Inst::IoLoad`/`IoStore`, `memw`-ordered) and
-   the wait into a helper on the cycle counter (`Inst::CycleCount`); Cortex-M rejects them.
+   the wait into a helper on the cycle counter (`Inst::CycleCount`), and the clock into a helper
+   reading timer group 1's timer 0, which keeps the state (stopped: not started); Cortex-M
+   rejects them.
 4. **Entry point.** A `#[wazi] kuu` builds as `app_main`, so a firmware has no C of its own.
 
 Pin numbers must be build-time constants on the device (checked: existing, not the flash's,
-writable). `ubao_saa` and the cross-target trace test remain.
+writable). The device clock is real time where the host's is virtual. The cross-target trace
+test remains.
 
 ## Built on the playground (decided)
 

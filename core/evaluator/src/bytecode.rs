@@ -256,6 +256,10 @@ pub enum Opcode {
     BoardWait {
         ms: Reg,
     },
+    /// `dst = ubao_saa()`: the board's clock in milliseconds.
+    BoardClock {
+        dst: Reg,
+    },
     /// `dst = (a op b) as 0.0/1.0`.
     Cmp {
         op: CmpOp,
@@ -1293,6 +1297,8 @@ impl<'a> FunctionCompiler<'a> {
                         Ty::Num
                     } else if self.board_call(name, args, &[Ty::Num]) && name == "ubao_soma" {
                         Ty::Bool
+                    } else if self.board_call(name, args, &[]) && name == "ubao_saa" {
+                        Ty::Num
                     } else {
                         // The program's own `kazi` first: it shadows a builtin. A `sawia kazi`
                         // gives an `Ahadi`.
@@ -2718,6 +2724,14 @@ impl<'a> FunctionCompiler<'a> {
                 } else {
                     Opcode::Ceil { dst: out, src }
                 });
+                return Some(Operand {
+                    ty: Ty::Num,
+                    reg: out,
+                });
+            }
+            if name == "ubao_saa" && self.board_call(name, args, &[]) {
+                let out = self.dst_or_temp(dst, Ty::Num).reg;
+                self.emit(Opcode::BoardClock { dst: out });
                 return Some(Operand {
                     ty: Ty::Num,
                     reg: out,

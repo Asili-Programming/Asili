@@ -742,6 +742,8 @@ fn bytecode(source: &str) -> asili_evaluator::BytecodeProgram {
 fn esp32_drives_pins_and_waits() {
     // `#[wazi]` code on the ESP32: a pin written through the GPIO registers and a wait on the
     // cycle counter, giving what native code (on the virtual board) gives.
+    // Helpers returning `Tupu` are called directly (also from one another), and the clock
+    // runs: its value is real time here and virtual on the host, so only its sign is compared.
     let source = r#"
         leta ubao
         #[wazi]
@@ -750,14 +752,38 @@ fn esp32_drives_pins_and_waits() {
             ubao_subiri(ms)
             rejesha ms * 2
         }
+        #[wazi]
+        kazi zima() -> Tupu {
+            ubao_andika(2, si_kweli)
+        }
+        #[wazi]
+        kazi zima_mbili() -> Tupu {
+            zima()
+            zima()
+        }
+        #[wazi]
+        kazi pigo(ms: Namba) -> Namba {
+            ubao_andika(2, kweli)
+            ubao_subiri(ms)
+            zima_mbili()
+            rejesha ms + 1
+        }
+        #[wazi]
+        kazi saa_si_hasi() -> Ukweli {
+            weka a = ubao_saa()
+            ubao_subiri(2)
+            rejesha a >= 0 && ubao_saa() >= a
+        }
     "#;
     let program = bytecode(source);
-    let exports = indices(&program, &["washa"]);
+    let exports = indices(&program, &["washa", "pigo", "saa_si_hasi"]);
     let calls: Vec<(&str, Vec<Arg>)> = vec![
         ("washa", vec![n(1.0), n(3.0)]),
         ("washa", vec![n(0.0), n(0.0)]),
         ("washa", vec![n(1.0), n(-4.0)]),
         ("washa", vec![n(0.0), n(1.5)]),
+        ("pigo", vec![n(2.0)]),
+        ("saa_si_hasi", vec![]),
     ];
     let library = nguvu::compile(&program).expect("native code");
     let mut expected = String::new();
@@ -803,6 +829,15 @@ fn a_wazi_kuu_is_the_esp32_entry_point() {
          ubao_andika(2, kweli)\n        ubao_subiri(500)\n        ubao_andika(2, si_kweli)\n        \
          ubao_subiri(500)\n    }\n}\n",
     );
+    // A program reading the clock: the entry point restarts it (one more helper call) first.
+    let clocked = bytecode(
+        "leta ubao\n#[wazi]\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n    wakati kweli {\n        \
+         ubao_andika(2, (ubao_saa() // 250) % 2 == 0)\n    }\n}\n",
+    );
+    let k = indices(&clocked, &["kuu"])[0];
+    let with_clock = device::build_firmware(device::Lengo::Esp32, &clocked, &[], Some(k), "t")
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(with_clock.object.windows(8).any(|w| w == b"app_main"));
     let kuu = indices(&program, &["kuu"])[0];
     let built = device::build_firmware(device::Lengo::Esp32, &program, &[], Some(kuu), "t")
         .unwrap_or_else(|e| panic!("{e}"));
