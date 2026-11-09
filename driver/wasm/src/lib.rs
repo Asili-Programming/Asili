@@ -6,7 +6,7 @@
 use asili_evaluator::{compile_module_explained, run_bytecode};
 use asili_lexer::tokenize;
 use asili_parser::{
-    extern_env_from_imports, merge_modules, parse_tokens, semantic_check_with_env, ImportPath, Module,
+    extern_env_from_imports, merge_modules, parse_tokens, ImportPath, Module,
 };
 use std::collections::HashMap;
 
