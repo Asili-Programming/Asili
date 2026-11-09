@@ -78,6 +78,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Sudoku benchmark portability**: use the host runner when the musl Rust target is installed
+  but its required cross-compiler is not, instead of failing while building `aws-lc-sys`.
 - **`make install`**: the Makefile had been emptied (with the move of the VS Code extension to its
   own repository), so `make install`, which the getting-started guide and `pata jenga`'s docs
   rely on, did nothing. It is back (without the extension target) and installs both runners.
