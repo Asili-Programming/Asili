@@ -156,7 +156,7 @@ Researched, decided, not built.
 - [x] **Virtual board `ubao`** (`core/evaluator/src/ubao.rs`, `builtins/ubao.rs`): pins and a clock
       in the host, with the pin calls gated by `#[wazi]`; see
       [peripheral-io-design.md](peripheral-io-design.md).
-- [x] **`ubao` on the ESP32** (`nguvu/device.rs`, `PinWrite`/`PinRead`/`BoardWait`/
+- [x] **`ubao` on the ESP32** (`nguvu/device/esp32.rs`, `PinWrite`/`PinRead`/`BoardWait`/
       `BoardClock`): the same calls drive GPIO pins, wait and read the clock in real time, and a
       `#[wazi] kuu` is the firmware's entry point (`app_main`), so a firmware needs no C
       (`examples/blink-esp32`, verified on a board). Cortex-M and a flash image without ESP-IDF

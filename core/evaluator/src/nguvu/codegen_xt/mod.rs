@@ -27,6 +27,13 @@ use super::ir::{Class, FCond, FloatOp, Func, Home, ICond, Inst, IntOp, RtFn, Ter
 use super::regalloc::{allocate_with, Allocation, Loc, Target};
 use super::xt32::{self, Asm, BranchCond, Label};
 
+mod pool;
+mod thunk;
+
+pub use pool::Code;
+use pool::{Lit, Pool};
+pub use thunk::{thunk, ThunkSpec};
+
 /// The allocator's registers: pairs of `a2`–`a7`, the registers a `call8` preserves (the ESP32
 /// calls a helper for every double operation, so values live across calls constantly). Both
 /// classes are register pairs here, drawn from the same three (`one_file`), integers trying
@@ -52,13 +59,19 @@ fn pair(k: u8) -> Pair {
 }
 
 const SP: u8 = 1;
+
 /// Operand and result scratch pairs, in the registers a call clobbers anyway (never allocated).
 const S0: Pair = (10, 11);
+
 const S1: Pair = (12, 13);
+
 const S2: Pair = (14, 15);
+
 /// Scratch words (clobbered by calls): addresses, constants, comparison zero.
 const T: u8 = 8;
+
 const T2: u8 = 9;
+
 /// First outgoing argument register (`a2` of the callee).
 const ARG0: u8 = 10;
 
@@ -87,116 +100,6 @@ pub fn runtime_symbol(target: RtFn) -> Option<&'static str> {
         RtFn::Pow => "pow",
         _ => return None,
     })
-}
-
-/// One function's code: its literal pool followed by its instructions.
-pub struct Code {
-    pub bytes: Vec<u8>,
-    /// Offset of the first instruction (the function's address) in `bytes`.
-    pub entry: usize,
-    /// Direct calls to link: (byte offset in `bytes` of the literal that must hold the callee's
-    /// address, callee).
-    pub calls: Vec<(usize, u32)>,
-    /// Helper calls to link: (literal byte offset, index in [`HELPERS`]).
-    pub helpers: Vec<(usize, u32)>,
-    /// Bytes of stack the function's own frame takes (`entry a1, frame`).
-    pub frame: u32,
-    /// `R_XTENSA_32` relocations: (literal byte offset in `bytes`, symbol).
-    pub relocs: Vec<(usize, String)>,
-}
-
-#[derive(Clone, PartialEq)]
-enum Lit {
-    Word(u32),
-    /// The address of an external function.
-    Sym(String),
-    /// The address of program function `callee`'s direct (or, for a thunk, ordinary) entry.
-    Func(u32),
-    /// The address of helper [`HELPERS`]`[i]`.
-    Helper(u32),
-}
-
-/// A function's literal pool and pending direct calls, shared by functions and export thunks.
-#[derive(Default)]
-struct Pool {
-    lits: Vec<Lit>,
-    /// (code offset of the `l32r`, literal index, register)
-    uses: Vec<(usize, usize, u8)>,
-}
-
-impl Pool {
-    fn literal(&mut self, lit: Lit) -> usize {
-        if let Some(i) = self.lits.iter().position(|l| *l == lit) {
-            return i;
-        }
-        self.lits.push(lit);
-        self.lits.len() - 1
-    }
-
-    fn l32r(&mut self, asm: &mut Asm, reg: u8, lit: Lit) {
-        let index = self.literal(lit);
-        self.uses.push((asm.pc(), index, reg));
-        asm.word(0);
-    }
-
-    /// `reg = v`
-    fn const32(&mut self, asm: &mut Asm, reg: u8, v: u32) -> Result<(), String> {
-        let s = v as i32;
-        if (-2048..=2047).contains(&s) {
-            asm.emit(xt32::movi(reg, s))
-        } else {
-            self.l32r(asm, reg, Lit::Word(v));
-            Ok(())
-        }
-    }
-
-    /// Call program function `callee` (its address is relocated when the image is laid out).
-    fn call_direct(&mut self, asm: &mut Asm, callee: u32) {
-        self.l32r(asm, T, Lit::Func(callee));
-        asm.word(xt32::callx(8, T).expect("callx8"));
-    }
-
-    /// Lays out the literal pool before the code and patches every `l32r`.
-    fn finish(self, asm: Asm) -> Result<Code, String> {
-        let code = asm.finish()?;
-        let pool = 4 * self.lits.len();
-        let mut bytes = Vec::with_capacity(pool + code.len());
-        let mut relocs = Vec::new();
-        let mut calls = Vec::new();
-        let mut helpers = Vec::new();
-        for (i, lit) in self.lits.iter().enumerate() {
-            match lit {
-                Lit::Word(w) => bytes.extend_from_slice(&w.to_le_bytes()),
-                Lit::Sym(s) => {
-                    relocs.push((4 * i, s.clone()));
-                    bytes.extend_from_slice(&0u32.to_le_bytes());
-                }
-                Lit::Func(f) => {
-                    calls.push((4 * i, *f));
-                    bytes.extend_from_slice(&0u32.to_le_bytes());
-                }
-                Lit::Helper(h) => {
-                    helpers.push((4 * i, *h));
-                    bytes.extend_from_slice(&0u32.to_le_bytes());
-                }
-            }
-        }
-        bytes.extend_from_slice(&code);
-        for &(at, index, reg) in &self.uses {
-            let pc = pool + at;
-            let w = xt32::l32r_word(reg, xt32::l32r_offset(pc, 4 * index))
-                .ok_or("nguvu: hazina ya literal iko mbali mno")?;
-            bytes[pc..pc + 3].copy_from_slice(&w.to_le_bytes()[..3]);
-        }
-        Ok(Code {
-            bytes,
-            entry: pool,
-            calls,
-            helpers,
-            relocs,
-            frame: 0,
-        })
-    }
 }
 
 /// The GCC runtime routine computing `op` on doubles.
@@ -1317,169 +1220,4 @@ fn fused_loads(func: &Func) -> Vec<Vec<bool>> {
         }
     }
     fused
-}
-
-/// What an export thunk needs to know about its function (see [`thunk`]).
-pub struct ThunkSpec {
-    /// Numeric registers and list registers of the function's frame.
-    pub num_regs: u32,
-    pub list_regs: u32,
-    /// Registers that start with a constant: (register, bits of the double).
-    pub num_consts: Vec<(u32, u64)>,
-    /// Parameters in order: (register, whether it is a list).
-    pub params: Vec<(u32, bool)>,
-    /// `Return`s of a number or truth value: (pc, register returned).
-    pub returns: Vec<(u32, u32)>,
-    /// Call the function's direct entry (a number out; list references after the numeric
-    /// registers, see `lower::Ctx::direct_lists`): `(host, nums)` in, the number back in
-    /// registers with status 0, so no `Return` needs finding.
-    pub direct: bool,
-    /// The firmware's entry point, `void app_main(void)` (the program's `kuu`): no arguments
-    /// read, nothing returned (`params` and `returns` are empty).
-    pub entry_point: bool,
-    /// For the entry point: restart the board's clock first (the helper of this index in
-    /// [`HELPERS`], `RtFn::BoardClock`, called with 1), so a program's clock starts with it.
-    pub start_clock: Option<u32>,
-}
-
-/// Status kind in the high word of a function's return value meaning "returned"
-/// (`native::STATUS_RETURN`).
-const STATUS_RETURN: i32 = 3;
-
-/// The export `int32_t asili_f(const hoja *h, double *matokeo)`: builds the function's frame
-/// on the stack from `hoja` (a2), calls its ordinary entry (the one entry in `calls`, to be
-/// linked), and stores the number returned at `matokeo` (a3). Returns 0, or the non-zero
-/// status kind when the call failed.
-pub fn thunk(spec: &ThunkSpec) -> Result<Code, String> {
-    // Scratch of the thunk's own (it allocates nothing): a4..a7.
-    const TS0: Pair = (4, 5);
-    const TS1: Pair = (6, 7);
-    let nums = 8 * spec.num_regs;
-    let lists = 8 * spec.list_regs;
-    let host = nums + lists; // depth, runtime table, stack limit: 24 bytes, all zero
-    let size = (host + 24).div_ceil(8) * 8;
-    let frame = size.div_ceil(16) * 16 + 32;
-    if frame > 32760 {
-        return Err("kazi ina rejista nyingi mno kwa ESP32".into());
-    }
-    let (hoja, matokeo) = (2u8, 3u8);
-    let mut a = Asm::new();
-    let mut pool = Pool::default();
-    a.emit(xt32::entry(frame))?;
-    // Zero the frame: registers, list references, host fields. A direct entry reads only its
-    // parameters and the host fields (its constants and other registers start in code, and
-    // its number comes back in registers), so it needs only the host fields zeroed.
-    a.emit(xt32::movi(TS1.0, 0))?;
-    let zero_from = if spec.direct { host } else { 0 };
-    for off in (zero_from..size).step_by(4) {
-        store_word(&mut a, &mut pool, TS1.0, off)?;
-    }
-    // Constants the registers start with (read back by the ordinary entry's `Return`s).
-    let consts: &[(u32, u64)] = if spec.direct { &[] } else { &spec.num_consts };
-    for &(reg, bits) in consts {
-        pool.const32(&mut a, TS0.0, bits as u32)?;
-        pool.const32(&mut a, TS0.1, (bits >> 32) as u32)?;
-        store_word(&mut a, &mut pool, TS0.0, 8 * reg)?;
-        store_word(&mut a, &mut pool, TS0.1, 8 * reg + 4)?;
-    }
-    // Arguments, eight bytes each in `hoja`.
-    for (i, &(reg, is_list)) in spec.params.iter().enumerate() {
-        let from = 8 * i as u32;
-        if from + 4 > 1020 {
-            return Err("ina hoja nyingi mno".into());
-        }
-        a.emit(xt32::l32i(TS0.0, hoja, from))?;
-        a.emit(xt32::l32i(TS0.1, hoja, from + 4))?;
-        let to = if is_list { nums + 8 * reg } else { 8 * reg };
-        store_word(&mut a, &mut pool, TS0.0, to)?;
-        store_word(&mut a, &mut pool, TS0.1, to + 4)?;
-    }
-    if spec.direct {
-        // direct entry(host, nums): status in a10:a11 (0: returned), the number in a12:a13.
-        pool.const32(&mut a, T, host)?;
-        a.word(xt32::add(ARG0, SP, T));
-        a.word(xt32::mov(ARG0 + 1, SP));
-        pool.call_direct(&mut a, 0);
-        let failed = a.new_label();
-        a.word(xt32::or(T, ARG0, ARG0 + 1));
-        a.emit(xt32::movi(T2, 0))?;
-        a.branch(BranchCond::Ne, T, T2, failed);
-        a.emit(xt32::s32i(ARG0 + 2, matokeo, 0))?;
-        a.emit(xt32::s32i(ARG0 + 3, matokeo, 4))?;
-        a.emit(xt32::movi(2, 0))?;
-        a.word(xt32::RETW);
-        a.bind(failed);
-        a.word(xt32::mov(2, ARG0 + 1)); // the status kind: non-zero for every failure
-        a.word(xt32::RETW);
-        let mut code = pool.finish(a)?;
-        code.frame = frame;
-        return Ok(code);
-    }
-    if let Some(h) = spec.start_clock {
-        a.emit(xt32::movi(ARG0, 1))?;
-        a.emit(xt32::movi(ARG0 + 1, 0))?;
-        pool.l32r(&mut a, T, Lit::Helper(h));
-        a.word(xt32::callx(8, T).expect("callx8"));
-    }
-    // entry(runtime: unused on a device, host, frame = list references, nums)
-    a.emit(xt32::movi(ARG0, 0))?;
-    pool.const32(&mut a, T, host)?;
-    a.word(xt32::add(ARG0 + 1, SP, T));
-    pool.const32(&mut a, T, nums)?;
-    a.word(xt32::add(ARG0 + 2, SP, T));
-    a.word(xt32::mov(ARG0 + 3, SP));
-    pool.call_direct(&mut a, 0);
-    if spec.entry_point {
-        a.word(xt32::RETW);
-        let mut code = pool.finish(a)?;
-        code.frame = frame;
-        return Ok(code);
-    }
-    // a11 = status kind, a10 = the pc of the `Return` reached.
-    let fail = a.new_label();
-    let done = a.new_label();
-    let ok = a.new_label();
-    a.emit(xt32::movi(T2, STATUS_RETURN))?;
-    a.branch(BranchCond::Eq, ARG0 + 1, T2, ok);
-    a.jump(fail);
-    a.bind(ok);
-    for &(pc, reg) in &spec.returns {
-        let next = a.new_label();
-        pool.const32(&mut a, T2, pc)?;
-        a.branch(BranchCond::Ne, ARG0, T2, next);
-        let off = 8 * reg;
-        let (b, o) = if off + 4 <= 1020 {
-            (SP, off)
-        } else {
-            pool.const32(&mut a, T, off)?;
-            a.word(xt32::add(T, SP, T));
-            (T, 0)
-        };
-        a.emit(xt32::l32i(TS0.0, b, o))?;
-        a.emit(xt32::l32i(TS0.1, b, o + 4))?;
-        a.emit(xt32::s32i(TS0.0, matokeo, 0))?;
-        a.emit(xt32::s32i(TS0.1, matokeo, 4))?;
-        a.jump(done);
-        a.bind(next);
-    }
-    a.bind(done);
-    a.emit(xt32::movi(2, 0))?;
-    a.word(xt32::RETW);
-    a.bind(fail);
-    a.word(xt32::mov(2, ARG0 + 1));
-    a.word(xt32::RETW);
-    let mut code = pool.finish(a)?;
-    code.frame = frame;
-    Ok(code)
-}
-
-/// `[sp + off] = r` for any frame offset.
-fn store_word(a: &mut Asm, pool: &mut Pool, r: u8, off: u32) -> Result<(), String> {
-    if off <= 1020 {
-        a.emit(xt32::s32i(r, SP, off))
-    } else {
-        pool.const32(a, T, off)?;
-        a.word(xt32::add(T, SP, T));
-        a.emit(xt32::s32i(r, T, 0))
-    }
 }
