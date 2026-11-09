@@ -3,7 +3,7 @@
 ## Kuingiza Moduli (Importing)
 
 Builtin standard-library modules are available without `leta`, except the opt-in `kasha_gc`
-(managed memory), which must be imported explicitly. The keyword remains necessary for
+(managed memory) and `ubao` (a board's pins and clock), which must be imported explicitly. The keyword remains necessary for
 project and dependency modules; it may also be used as documentation when showing which builtin
 module provides a function.
 

@@ -180,3 +180,17 @@ fn a_fractional_pin_is_an_error_on_the_instruction_path() {
     let err = format!("{:?}", run_function(&module, "prova", vec![]).unwrap_err());
     assert!(err.contains("namba ya pini si sahihi"), "{err}");
 }
+
+#[test]
+fn ubao_is_opt_in() {
+    // Only programs that drive a board bring `ubao` in; without `leta ubao` its calls are
+    // unknown, and the error says what to import.
+    let module = parse("#[wazi]\nkazi prova() -> Tupu { ubao_andika(1, kweli) }");
+    let (functions, constants) = extern_env_from_imports(&module);
+    let errs = semantic_check_with_env(&module, false, functions, constants).unwrap_err();
+    let text = format!("{errs:?}");
+    assert!(text.contains("SEM037") && text.contains("leta ubao"), "{text}");
+    let module = parse("leta ubao\n#[wazi]\nkazi prova() -> Tupu { ubao_andika(1, kweli) }");
+    let (functions, constants) = extern_env_from_imports(&module);
+    semantic_check_with_env(&module, false, functions, constants).expect("with the import");
+}

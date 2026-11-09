@@ -42,7 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   builtins' code), so bytecode and native images are rebuilt (`BYTECODE_VERSION` 23,
   `IMAGE_VERSION` 12). New example `examples/blink-esp32`, verified on a board: a pin written
   reads back its level, `ubao_subiri(1000)` takes 1000.3 ms, and `ubao_saa` measures a 250 ms
-  wait as 250 ms. Cortex-M has no `ubao` yet.
+  wait as 250 ms. Cortex-M has no `ubao` yet. `ubao` is now opt-in, like `kasha_gc`: its calls
+  are in scope only after `leta ubao` (a call without it is SEM037, naming the module to import),
+  so programs that drive no board do not see it.
 - **`examples/habari-esp32`**: hello world on an ESP32 — a strict `fibonacci` built with
   `pata jenga --lengo esp32`, and an ESP-IDF project (`firmware/`) that links it straight from
   `kilele/` and prints the greeting and the numbers over serial. Runs on a real board.

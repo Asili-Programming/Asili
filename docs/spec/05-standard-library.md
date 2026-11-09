@@ -257,7 +257,8 @@ Typed hardware handles may be provided to model hardware state safely:
 
 Pins and a clock. On the build machine and in the browser they are a virtual board that exists
 only in the process, so a run is reproducible; on an ESP32 (`pata jenga --lengo esp32`) they are
-the chip's GPIO pins and real time. `leta ubao` brings in:
+the chip's GPIO pins and real time. The module is opt-in, like `kasha_gc`: its calls are not in
+scope without `leta ubao`, which brings in:
 
 - `ubao_andika(pini: Namba, hali: Ukweli) -> Tupu` — drive a pin. Requires a `#[wazi]` grant.
 - `ubao_soma(pini: Namba) -> Ukweli` — read a pin: on the virtual board from the scenario's

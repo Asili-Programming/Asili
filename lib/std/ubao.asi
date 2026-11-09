@@ -3,7 +3,7 @@
 # badilisha jedwali, kisha: ASILI_GOLDEN=write cargo test -p pata-core stdlib_stubs
 #
 # Ubao: pini na saa — bodi pepe kwenye kompyuta na kivinjari, pini na saa halisi kwenye ESP32.
-# Kazi za pini zinahitaji `#[wazi]`.
+# Ya hiari: inahitaji `leta ubao`. Kazi za pini zinahitaji `#[wazi]`.
 
 # Weka pini kuwa hali (kweli au si_kweli); lazima kazi iwe `#[wazi]`. Kwenye ESP32 pini ni GPIO
 # ya namba hiyo, namba thabiti.
