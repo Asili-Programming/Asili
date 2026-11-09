@@ -3,7 +3,7 @@
 //! (`http_mteja.rs`) alike. Field order follows the declarations in
 //! `core/parser/src/builtins.rs` (`BUILTIN_MODULES`), so field reads by slot hit first time.
 // Only the network builtins use these, and the browser has none.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#![cfg_attr(not(net), allow(dead_code))]
 
 use crate::value::{self, MapKey, Value};
 use std::rc::Rc;
@@ -94,7 +94,7 @@ fn list_to_pairs(v: &Value) -> Vec<(String, String)> {
 
 /// A request as the server hands it to a handler.
 /// `OmbiHttp` for a request the server received.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub(crate) fn request_to_value(r: asili_mtandao::http::seva::Ombi) -> Value {
     // A repeated parameter keeps its last value.
     let mut query =
@@ -156,7 +156,7 @@ pub(crate) fn response_to_value(r: Response) -> Value {
 /// `vichwa_vyote`, which can repeat a name) and body — `mwili_njia`'s chunks (a channel) when
 /// given, else `mwili_baiti`, else `mwili`. Any struct with `hali` works — the struct's name is
 /// not checked, as with the JSON codec. `None` without a numeric `hali`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub(crate) fn value_to_response(v: &Value) -> Option<asili_mtandao::http::seva::Jibu> {
     use asili_mtandao::http::seva::{Jibu, JibuMwili};
     let status = value::as_f64(field(v, "hali"))?;
@@ -184,10 +184,10 @@ pub(crate) fn value_to_response(v: &Value) -> Option<asili_mtandao::http::seva::
 }
 
 /// A channel's values as body chunks: text and bytes as they are, anything else as it prints.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 struct Chunks(flume::r#async::RecvStream<'static, value::SendValue>);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 impl futures_core::Stream for Chunks {
     type Item = Vec<u8>;
 

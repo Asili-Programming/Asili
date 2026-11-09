@@ -43,11 +43,15 @@ Success:
   LLVM backend are removed.
 - `--tenda` runs the artifact just built exactly as `pata tenda` would (native code when present)
 - `--namna release` also writes a standalone executable `<pato>/<name>` (`<name>.exe` on
-  Windows), printing `programu huru: <path>`: the static runner `tenda` with the artifact and its
-  native image appended, so `./kilele/<name> [hoja...]` runs the program directly with no other
-  files and no `pata`. The runner is the `tenda` beside `pata` (`make install` puts it there) or
-  the one `ASILI_TENDA` names; without one the build prints `programu huru haikujengwa: ...` and
-  still succeeds
+  Windows), printing `programu huru: <path>`: a runner with the artifact and its native image
+  appended, so `./kilele/<name> [hoja...]` runs the program directly with no other files and no
+  `pata`. A program that calls no networking builtin (`http_ombi`, `mkondo_*`, `tafuta_anwani`,
+  `tls_sanidi`, `udp_fungua`, `ws_unganisha`) gets `tenda-msingi`, the runner built without
+  networking (about a third the size), and the line ends `(tenda-msingi: bila mtandao)`; any other
+  program, or any program when there is no `tenda-msingi`, gets `tenda`. Each runner is the one
+  beside `pata` (`make install` puts both there) or the one its variable names (`ASILI_TENDA_MSINGI`,
+  `ASILI_TENDA`); without one the build prints `programu huru haikujengwa: ...` and still
+  succeeds
 
 Failures:
 - syntax/type/ownership diagnostics

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use super::BuiltinFn;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 use crate::value::EvalError;
 use crate::value::Value;
 
@@ -29,46 +29,60 @@ pub(crate) fn register(m: &mut HashMap<String, BuiltinFn>) {
             )))
         }),
     );
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(net)]
     {
-        m.insert("mkondo_unganisha".to_string(), Box::new(native::unganisha));
-        m.insert("mkondo_sikiliza".to_string(), Box::new(native::sikiliza));
-        m.insert("tafuta_anwani".to_string(), Box::new(native::tafuta_anwani));
-        m.insert("tls_sanidi".to_string(), Box::new(native::tls_sanidi));
-        m.insert("udp_fungua".to_string(), Box::new(native::udp_fungua));
-        m.insert("ws_unganisha".to_string(), Box::new(native::ws_unganisha));
+        let fns: [BuiltinFn; SOCKETS.len()] = [
+            Box::new(native::unganisha),
+            Box::new(native::sikiliza),
+            Box::new(native::tafuta_anwani),
+            Box::new(native::tls_sanidi),
+            Box::new(native::udp_fungua),
+            Box::new(native::ws_unganisha),
+        ];
+        for (name, f) in SOCKETS.into_iter().zip(fns) {
+            m.insert(name.to_string(), f);
+        }
     }
-    #[cfg(target_arch = "wasm32")]
-    for name in [
-        "mkondo_unganisha",
-        "mkondo_sikiliza",
-        "tafuta_anwani",
-        "udp_fungua",
-        "ws_unganisha",
-    ] {
+    #[cfg(not(net))]
+    for name in SOCKETS {
         m.insert(
             name.to_string(),
             Box::new(move |_: &[Value]| {
-                Ok(Value::kosa(format!("{name}: haipatikani kwenye kivinjari")))
+                Ok(Value::kosa(format!("{name}: {}", super::BILA_MTANDAO)))
             }),
         );
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The socket builtins, in the order of their functions above: registered with them when
+/// networking is in (`net`), as stubs otherwise — the same names either way, since a program's
+/// builtin calls are indices into the sorted list of every name ([`super::builtin_names`]).
+pub(crate) const SOCKETS: [&str; 6] = [
+    "mkondo_unganisha",
+    "mkondo_sikiliza",
+    "tafuta_anwani",
+    "tls_sanidi",
+    "udp_fungua",
+    "ws_unganisha",
+];
+
+#[cfg(net)]
 pub(crate) use native::*;
 
 /// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub(crate) fn mkondo_tumikia(
     _program: &crate::spawn::Shared,
     _args: &[Value],
 ) -> Result<Value, EvalError> {
-    Ok(Value::kosa("mkondo_tumikia: haipatikani kwenye kivinjari"))
+    Ok(Value::kosa(format!(
+        "mkondo_tumikia: {}",
+        super::BILA_MTANDAO
+    )))
 }
 
 /// No sockets in the browser (a `Mkondo` cannot exist there).
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub(crate) fn mkondo_method(
     cell: &std::rc::Rc<std::cell::RefCell<crate::value::MkondoHandle>>,
     _method: &str,
@@ -78,7 +92,7 @@ pub(crate) fn mkondo_method(
 }
 
 /// No sockets in the browser (a `MkondoSikilizaji` cannot exist there).
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub(crate) fn sikilizaji_method(
     listener: &crate::value::Sikilizaji,
     _method: &str,
@@ -88,7 +102,7 @@ pub(crate) fn sikilizaji_method(
 }
 
 /// No sockets in the browser (a `MkondoWs` cannot exist there).
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub(crate) fn ws_method(
     w: &std::rc::Rc<std::cell::RefCell<crate::value::WsHandle>>,
     _method: &str,
@@ -98,7 +112,7 @@ pub(crate) fn ws_method(
 }
 
 /// No sockets in the browser (a `MkondoUdp` cannot exist there).
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub(crate) fn udp_method(
     u: &crate::value::MkondoUdp,
     _method: &str,
@@ -107,7 +121,7 @@ pub(crate) fn udp_method(
     match u.0 {}
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 mod native {
     use std::cell::RefCell;
     use std::rc::Rc;

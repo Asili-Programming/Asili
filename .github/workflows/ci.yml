@@ -31,6 +31,11 @@ jobs:
       - name: Runtime never panics (clippy deny lints in the evaluator's runtime modules)
         run: cargo clippy -p asili-evaluator --lib
 
+      - name: Runner without networking (tenda-msingi) builds, with the same builtin names
+        run: |
+          cargo build -p asili-runner --no-default-features
+          cargo test -p asili-evaluator --no-default-features --test builtin_names
+
       - name: Optimizer differential fuzzing (optimized vs unoptimized native code, 2,000 programs)
         run: ASILI_FUZZ_PROGRAMS=2000 cargo test --release -p asili-evaluator --test fuzz
 

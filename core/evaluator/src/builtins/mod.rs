@@ -16,19 +16,20 @@
 
 mod faili;
 mod hisabati;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub(crate) mod http;
-/// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+/// No networking (the browser, or a runner built without `mtandao`).
+#[cfg(not(net))]
 pub(crate) mod http {
     use crate::value::{EvalError, Value};
     pub(crate) fn mkondo_tumikia_http(
         _program: &crate::spawn::Shared,
         _args: &[Value],
     ) -> Result<Value, EvalError> {
-        Ok(Value::kosa(
-            "mkondo_tumikia_http: haipatikani kwenye kivinjari",
-        ))
+        Ok(Value::kosa(format!(
+            "mkondo_tumikia_http: {}",
+            super::BILA_MTANDAO
+        )))
     }
 }
 mod http_mteja;
@@ -61,6 +62,38 @@ pub type BuiltinFn = Box<dyn Fn(&[Value]) -> Result<Value, EvalError>>;
 /// the plain builtin table. Native code's host hands threads its own bytecode and native code.
 pub const MODULE_BUILTINS: [&str; 4] =
     ["tenda", "mkondo_tumikia", "mkondo_tumikia_http", "anzisha"];
+
+/// What a networking builtin answers where there is no networking (the browser, or a runner
+/// built without the `mtandao` feature).
+#[cfg_attr(net, allow(dead_code))] // the stubs, built only without networking
+pub(crate) const BILA_MTANDAO: &str = "haipatikani hapa: programu hii inaendeshwa bila mtandao";
+
+/// The builtins that need networking (the `mtandao` feature): a program calling none of them runs
+/// on a runner built without it. Every one is registered either way (as a stub without it), so
+/// builtin indices do not depend on the build.
+pub const NETWORK_BUILTINS: [&str; 9] = [
+    "http_ombi",
+    "mkondo_sikiliza",
+    "mkondo_tumikia",
+    "mkondo_tumikia_http",
+    "mkondo_unganisha",
+    "tafuta_anwani",
+    "tls_sanidi",
+    "udp_fungua",
+    "ws_unganisha",
+];
+
+/// Whether `program` calls a networking builtin ([`NETWORK_BUILTINS`]), so it needs a runner
+/// with networking. Builtins are only reached through `CallBuiltin`.
+pub fn needs_network(program: &crate::bytecode::BytecodeProgram) -> bool {
+    let names = builtin_names();
+    program.functions.iter().flat_map(|f| &f.code).any(|op| {
+        matches!(op, crate::bytecode::Opcode::CallBuiltin(call)
+            if names
+                .get(call.builtin as usize)
+                .is_some_and(|n| NETWORK_BUILTINS.contains(&n.as_str())))
+    })
+}
 
 /// Every builtin module's registrations: the single list of what exists.
 /// Argument `i` as a `Neno` (empty when missing or not text) — the lenient string-argument

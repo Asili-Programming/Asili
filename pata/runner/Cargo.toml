@@ -11,8 +11,14 @@ path = "src/main.rs"
 
 [dependencies]
 asili-trace = { path = "../../core/trace" }
-asili-evaluator = { path = "../../core/evaluator" }
+asili-evaluator = { path = "../../core/evaluator", default-features = false }
 asili-mem = { path = "mem" }
+
+[features]
+default = ["mtandao"]
+# Networking builtins (sockets, TLS, HTTP). `--no-default-features` builds the runner for
+# programs that use none of them: the network stack is not linked.
+mtandao = ["asili-evaluator/mtandao"]
 
 [dev-dependencies]
 asili-lexer = { path = "../../core/lexer" }

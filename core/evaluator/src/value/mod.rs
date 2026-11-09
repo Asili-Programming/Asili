@@ -184,7 +184,7 @@ pub enum Value {
     /// `Arc`-shares it across connections — so this fits the worker pool's existing
     /// `Arc`-sharing model directly, the same way `MkondoSikilizaji` already shares one listener
     /// across every worker thread.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(net)]
     TlsUsanidi(Arc<rustls::ServerConfig>),
     /// Heap-allocated box owning a value of type T; no OS resource, plain owning indirection —
     /// existing Box/Value drop and clone semantics already suffice, no special handling needed.
@@ -416,7 +416,7 @@ impl Value {
             // manages its own threads directly rather than routing through tenda/SendValue —
             // excluded here since nothing in this design needs either to cross that specific
             // boundary; revisit if that changes.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::TlsUsanidi(_) => return None,
             Value::KashaGC(_)
             | Value::Ahadi(_)
@@ -495,23 +495,23 @@ impl Drop for FailiHandle {
 }
 
 /// A listening socket.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub type Sikilizaji = asili_mtandao::Listener;
 /// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub type Sikilizaji = std::convert::Infallible;
 
 /// An open connection (`mkondo_unganisha`, `.kubali()`, a server's worker): its stream (`None`
 /// once closed), the bytes read ahead by `.soma_mstari()`, and the time limit of each read or
 /// write (`.weka_muda`). Closed by `.funga()` or when dropped (TLS ends with `close_notify`).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub struct MkondoHandle {
     pub stream: Option<asili_mtandao::Stream>,
     pub buffered: Vec<u8>,
     pub timeout: Option<std::time::Duration>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 impl MkondoHandle {
     pub fn new(stream: asili_mtandao::Stream) -> Self {
         MkondoHandle {
@@ -522,7 +522,7 @@ impl MkondoHandle {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 impl Drop for MkondoHandle {
     fn drop(&mut self) {
         if let Some(s) = self.stream.as_mut() {
@@ -532,26 +532,26 @@ impl Drop for MkondoHandle {
 }
 
 /// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub struct MkondoHandle(pub std::convert::Infallible);
 
 /// A UDP socket and the time limit of a `.pokea()`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub struct MkondoUdp {
     pub udp: asili_mtandao::Udp,
     pub timeout: std::cell::Cell<Option<std::time::Duration>>,
 }
 
 /// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub struct MkondoUdp(pub std::convert::Infallible);
 
 /// A WebSocket (`None` once closed by `.funga()`).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 pub struct WsHandle(pub Option<asili_mtandao::ws::Ws>);
 
 /// No sockets in the browser.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 pub struct WsHandle(pub std::convert::Infallible);
 
 // Manual Debug impl (not #[derive]) so raw/REPL output uses Asili's own variant names —
@@ -603,22 +603,22 @@ impl std::fmt::Debug for Value {
                 let open = cell.borrow().0.is_some();
                 write!(f, "Faili({})", if open { "wazi" } else { "imefungwa" })
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::Mkondo(cell) => {
                 let open = cell.borrow().stream.is_some();
                 write!(f, "Mkondo({})", if open { "wazi" } else { "imefungwa" })
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(net))]
             Value::Mkondo(cell) => match cell.borrow().0 {},
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::MkondoSikilizaji(listener) => {
                 write!(f, "MkondoSikilizaji({})", listener.local_addr())
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(net))]
             Value::MkondoSikilizaji(listener) => match **listener {},
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::MkondoUdp(u) => write!(f, "MkondoUdp({})", u.udp.local_addr()),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::MkondoWs(w) => write!(
                 f,
                 "MkondoWs({})",
@@ -628,11 +628,11 @@ impl std::fmt::Debug for Value {
                     "imefungwa"
                 }
             ),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(net))]
             Value::MkondoWs(w) => match w.borrow().0 {},
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(net))]
             Value::MkondoUdp(u) => match u.0 {},
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(net)]
             Value::TlsUsanidi(_) => write!(f, "TlsUsanidi"),
             Value::Kumbukumbu(v) => f.debug_tuple("Kumbukumbu").field(v).finish(),
             Value::Seti(s) => f.debug_tuple("Seti").field(s).finish(),

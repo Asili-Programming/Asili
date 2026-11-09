@@ -51,6 +51,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`check` in the browser build** (`driver/wasm`, `check_source`): returns the diagnostics for a
   program as JSON (`[{"line", "column", "code", "message"}]`, `[]` when clean), from the same lexer,
   parser and semantic checks `pata` runs. The playground marks the failing line in the editor.
+- **`tenda-msingi`, a runner without networking**: the `mtandao` feature (on by default) of
+  `asili-evaluator` and `asili-runner` gates sockets, TLS, DNS and HTTP; built without it
+  (`cargo build -p asili-runner --no-default-features`, or `make runners`), the runner is about a
+  third the size (3.9 MB against 11.8 MB stripped). `pata jenga --namna release` builds a program
+  that calls no networking builtin (`asili_evaluator::builtins::needs_network`) on `tenda-msingi`
+  when one sits beside `pata` (or `ASILI_TENDA_MSINGI` names one): the Sudoku example's standalone
+  executable drops from 18.6 MB to 6.1 MB. Both runners register the same builtin names (stubs
+  without networking), since a program's builtin calls are indices into that list;
+  `tests/builtin_names.rs` checks it in both configurations.
 
 ### Changed
 
@@ -68,6 +77,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`make install`**: the Makefile had been emptied (with the move of the VS Code extension to its
+  own repository), so `make install`, which the getting-started guide and `pata jenga`'s docs
+  rely on, did nothing. It is back (without the extension target) and installs both runners.
+- **Browser build: `tls_sanidi`** had no stub without sockets, so the browser's list of builtin
+  names was one short of the native one — every name after it at a different index. The socket
+  builtins now come from one list, as functions or as stubs.
 - **Device builds from the build cache**: `pata jenga --lengo cortex-m` (and `esp32`) skipped
   writing the device object and header when the bytecode came from the cache, so a deleted or
   stale object was never rebuilt. Device targets now always emit.

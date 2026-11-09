@@ -138,7 +138,6 @@ dependencies = [
  "foldhash 0.2.0",
  "futures-core",
  "getrandom 0.4.2",
- "httparse",
  "libc",
  "lock_api",
  "num-bigint",

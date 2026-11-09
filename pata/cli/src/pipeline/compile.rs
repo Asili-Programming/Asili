@@ -421,21 +421,38 @@ fn write_device(
     Ok(())
 }
 
-/// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): the static
-/// runner `tenda` with the artifact and its native image appended
-/// (`asili_evaluator::bundle`), which runs directly. The runner comes from `ASILI_TENDA` or sits
-/// beside `pata`; without one the build only notes that the executable was skipped.
+/// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): a runner with
+/// the artifact and its native image appended (`asili_evaluator::bundle`), which runs directly.
+/// A program calling no networking builtin gets `tenda-msingi`, the runner built without
+/// networking (about a third the size), when there is one; any other gets `tenda`. Each comes
+/// from its variable (`ASILI_TENDA_MSINGI`, `ASILI_TENDA`) or sits beside `pata`; without a runner
+/// the build only notes that the executable was skipped.
 fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliError> {
-    let exe = format!("tenda{}", std::env::consts::EXE_SUFFIX);
-    let runner = std::env::var_os("ASILI_TENDA")
-        .map(PathBuf::from)
-        .or_else(|| Some(std::env::current_exe().ok()?.parent()?.join(&exe)))
-        .filter(|p| p.is_file());
-    let Some(runner) = runner else {
-        println!(
-            "programu huru haikujengwa: `{exe}` haipatikani kando ya pata (au weka ASILI_TENDA)"
-        );
-        return Ok(());
+    let beside = |var: &str, file: &str| {
+        let exe = format!("{file}{}", std::env::consts::EXE_SUFFIX);
+        std::env::var_os(var)
+            .map(PathBuf::from)
+            .or_else(|| Some(std::env::current_exe().ok()?.parent()?.join(exe)))
+            .filter(|p| p.is_file())
+    };
+    let offline = asili_evaluator::load_asb_bytecode(asb)
+        .is_ok_and(|p| !asili_evaluator::builtins::needs_network(&p));
+    let small = offline
+        .then(|| beside("ASILI_TENDA_MSINGI", "tenda-msingi"))
+        .flatten();
+    let (runner, note) = match small {
+        Some(r) => (r, " (tenda-msingi: bila mtandao)"),
+        None => match beside("ASILI_TENDA", "tenda") {
+            Some(r) => (r, ""),
+            None => {
+                println!(
+                    "programu huru haikujengwa: `tenda{}` haipatikani kando ya pata (au weka \
+                     ASILI_TENDA)",
+                    std::env::consts::EXE_SUFFIX
+                );
+                return Ok(());
+            }
+        },
     };
     let runner = fs::read(&runner)
         .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", runner.display()), 1))?;
@@ -451,7 +468,7 @@ fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliErro
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
     }
-    println!("programu huru: {}", path.display());
+    println!("programu huru: {}{note}", path.display());
     Ok(())
 }
 
