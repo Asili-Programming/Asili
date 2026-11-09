@@ -14,7 +14,9 @@ fn builtin_names_are_the_same_in_every_build() {
     if std::env::var_os("ASILI_GOLDEN").is_some_and(|v| v == "write") {
         std::fs::write(path, &names).expect("write golden");
     }
-    let golden = std::fs::read_to_string(path).expect("golden/builtin_names.txt");
+    let golden = std::fs::read_to_string(path)
+        .expect("golden/builtin_names.txt")
+        .replace("\r\n", "\n");
     assert_eq!(
         names, golden,
         "builtin names changed (or differ in this build)"

@@ -32,7 +32,9 @@ fn handler() -> Handler {
 
 #[test]
 fn http3_request_and_response() {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let ck =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
     let dir = std::env::temp_dir();
     let (cert, key) = (
         dir.join(format!("h3-cert-{}.pem", std::process::id())),
@@ -58,7 +60,7 @@ fn http3_request_and_response() {
         };
         let server = tokio::task::spawn_local(serve(l.local().unwrap(), opts, handler()));
 
-        let url = url::Url::parse(&format!("https://localhost:{port}/h3?x=1")).unwrap();
+        let url = url::Url::parse(&format!("https://127.0.0.1:{port}/h3?x=1")).unwrap();
         let got = tokio::time::timeout(
             Duration::from_secs(10),
             h3::fetch(
