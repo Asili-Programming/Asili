@@ -49,8 +49,9 @@ The VS Code extension (Kiendelezi: syntax highlighting, Mwalimu LSP client) and 
 - **evaluator/** — Runs programs. Every program is lowered to bytecode (`bytecode.rs`) and runs
   as native code from Asili's own backend (`nguvu/`, no external compiler): x86-64 or AArch64
   machine code, which `pata jenga` writes ahead of time as `<name>.nguvu` next to the `.asb` (the
-  runner compiles it in memory when that is missing), or in the browser a wasm module the page
-  instantiates (`nguvu/wasm.rs`). There is no interpreter of any kind and no fallback: a
+  runner compiles it in memory when that is missing), device objects for strict functions on
+  Cortex-M and ESP32 (`pata jenga --lengo cortex-m|esp32`), or in the browser a wasm module the
+  page instantiates (`nguvu/wasm.rs`). There is no interpreter of any kind and no fallback: a
   construct the bytecode compiler does not lower is a build error. Native code calls back into
   its host (`host.rs`) for generic operations, which share one implementation of operators,
   methods, casts, patterns and iteration (`eval/ops.rs`, `eval/methods.rs`, `eval/pattern.rs`).
@@ -68,6 +69,8 @@ The VS Code extension (Kiendelezi: syntax highlighting, Mwalimu LSP client) and 
 - **win32/** — Windows system calls.
 - **wasm/** — Browser-based system stubs.
 - **embedded/** — Bare-metal HAL. Handles `.asm` (Asili Assembly) generation for low-level debugging.
+- **kifaa/** — `no_std` Cortex-M device runtime. The ESP32 target is emitted by `nguvu` in
+  `core/evaluator` and needs no Asili runtime library.
 
 ### /pata (Tooling)
 

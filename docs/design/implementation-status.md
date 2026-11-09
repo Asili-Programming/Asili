@@ -130,7 +130,7 @@ Researched, decided, not built.
 - [ ] Self-hosting itself (a lexer/parser/analyzer written in Asili) — not started, gated on the
       two items above.
 
-### Phase IV — Nguvu (LLVM, embedded, concurrency, FFI) — partially started
+### Phase IV — Nguvu (native backend, embedded, concurrency, FFI) — partially started
 
 - [x] **Concurrency (`tenda`/`njia`/`fungo`) — implemented**, despite the spec's own Phase IV
       placement (kept here rather than re-filed under Phase II, since the checklist above is
