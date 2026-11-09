@@ -1,7 +1,7 @@
 //! HTTP/3 from Asili programs: `ChaguoSeva { h3: kweli }` on the server, `ChaguoHttp { h3: kweli }`
 //! on the client.
 
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::time::Duration;
 
 use asili_evaluator::{run_function, Value};
@@ -60,11 +60,18 @@ const SERVER: &str = r#"
 "#;
 
 fn free_ports() -> (String, String) {
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (server, udp, server_addr) = loop {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = server.local_addr().unwrap();
+        match UdpSocket::bind(server_addr) {
+            Ok(udp) => break (server, udp, server_addr),
+            Err(_) => continue,
+        }
+    };
     let control = TcpListener::bind("127.0.0.1:0").unwrap();
-    let server_addr = server.local_addr().unwrap();
     let control_addr = control.local_addr().unwrap();
     assert_ne!(server_addr, control_addr);
+    drop((server, udp, control));
     (server_addr.to_string(), control_addr.to_string())
 }
 
