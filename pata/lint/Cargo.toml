@@ -1,6 +1,7 @@
 [package]
 name = "pata-lint"
 version = "0.2.1"
+license = "GPL-2.0-only"
 edition = "2021"
 
 [lib]

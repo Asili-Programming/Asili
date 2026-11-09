@@ -17,6 +17,9 @@
 //!
 //! There is no option to turn certificate checking off. Unavailable in the browser build.
 
+// Without networking (`net`) only the stub `ombi` remains: the options and limits go unused.
+#![cfg_attr(not(net), allow(dead_code))]
+
 use super::http_thamani::{kamusi_to_pairs as text_pairs, unwrap_some};
 use super::BuiltinFn;
 use crate::value::{self, Value};
@@ -173,12 +176,12 @@ impl Options {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(net))]
 fn ombi(_method: &str, _url: &str, _options: Option<&Value>) -> Result<Value, String> {
-    Err("HTTP haipatikani kwenye kivinjari".into())
+    Err(format!("HTTP {}", super::BILA_MTANDAO))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 fn ombi(method: &str, url: &str, options: Option<&Value>) -> Result<Value, String> {
     let options = Options::from_value(options)?;
     let response = native::send(method, url, &options)?;
@@ -192,7 +195,7 @@ fn ombi(method: &str, url: &str, options: Option<&Value>) -> Result<Value, Strin
     Ok(super::http_thamani::response_to_value(response))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(net)]
 mod native {
     use super::super::http_thamani::Response;
     use super::Options;

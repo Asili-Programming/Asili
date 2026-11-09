@@ -1,7 +1,8 @@
 # Peripheral I/O: exploration
 
-**Status: exploration, not accepted.** Nothing here is implemented. It records what the code
-already allows, the options for letting Asili programs drive pins, serial lines and timers, and
+**Status: partly implemented.** The virtual board (`ubao`, "Built on the playground" below) and
+its device path on the ESP32 ("Device path on the ESP32" below) exist; serial output, timers, the
+trace comparison across targets and Cortex-M do not. It records what the code already allows, the options for letting Asili programs drive pins, serial lines and timers, and
 the spikes that would decide between them. Related: [wazi-hardware-design.md](wazi-hardware-design.md)
 (the unsafe-block and hardware-handle design), [safety-critical-roadmap.md](safety-critical-roadmap.md),
 and [docs/spec/05-standard-library.md](../spec/05-standard-library.md) (the `piga_pini` and `Pini`
@@ -192,6 +193,29 @@ under this rule is a bug fix, not a feature, and can land before any peripheral 
 
 Market and user research, board libraries, interrupts, DMA, and anything touching `pata` beyond
 what the spikes need.
+
+## Device path on the ESP32 (implemented)
+
+Option A in a form that needs no change to the host's runtime ABI:
+
+1. **Typed instructions.** `ubao_andika`, `ubao_soma`, `ubao_subiri` and `ubao_saa` called on
+   numbers (and a truth value) compile to bytecode instructions of their own — `PinWrite`,
+   `PinRead`, `BoardWait`, `BoardClock` (`BYTECODE_VERSION` 23) — the way `sakafu`/`dari` became
+   `Floor`/`Ceil`. The host runs them with the builtins' own code
+   (`builtins::ubao::{andika, soma, subiri, saa}`), so the virtual board has one implementation.
+2. **Device lowering.** In device code (`lower::Ctx::device`) they lower to runtime calls with
+   their operands (`RtFn::PinWrite`, `PinRead`, `BoardWait`, `BoardClock`); host code still hands them to the
+   host, so no runtime-table entry was added.
+3. **Target implementation.** The ESP32's runtime inlining (`device::inline_runtime`) turns the
+   pin calls into memory-mapped register accesses (`Inst::IoLoad`/`IoStore`, `memw`-ordered) and
+   the wait into a helper on the cycle counter (`Inst::CycleCount`), and the clock into a helper
+   reading timer group 1's timer 0, which keeps the state (stopped: not started); Cortex-M
+   rejects them.
+4. **Entry point.** A `#[wazi] kuu` builds as `app_main`, so a firmware has no C of its own.
+
+Pin numbers must be build-time constants on the device (checked: existing, not the flash's,
+writable). The device clock is real time where the host's is virtual. The cross-target trace
+test remains.
 
 ## Built on the playground (decided)
 

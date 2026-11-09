@@ -356,25 +356,46 @@ impl BuildProfile {
 /// Ahead-of-time compile a bytecode artifact to native machine code next to it
 /// (`<name>.nguvu`, built in-house with no external tools). In `Dev` an image that cannot be
 /// built is left to the runner to build at start-up; `Release` fails instead.
-/// The device build (`--lengo cortex-m`): the strict functions as `<name>-cortex-m.o`, an ELF
-/// object for Cortex-M a firmware links, and their C declarations in `<name>.h`.
-fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliError> {
+/// The device build (`--lengo cortex-m` or `--lengo esp32`): the strict functions as
+/// `<name>-<lengo>.o`, an ELF object for the device a firmware links, and their C declarations
+/// in `<name>.h`.
+fn write_device(
+    module: &Module,
+    target: &Path,
+    name: &str,
+    lengo: asili_evaluator::nguvu::device::Lengo,
+    slug: &str,
+) -> Result<(), CliError> {
     let program =
         asili_evaluator::compile_module_explained(module).map_err(|e| CliError::new(e, 1))?;
-    let strict: Vec<usize> = module
+    // Exports: the strict functions and the `#[wazi]` ones (pins, clock) but `kuu`; a `#[wazi]
+    // kuu` is the firmware's entry point on the ESP32. An ordinary `kuu` stays on the host.
+    let wazi = |f: &asili_parser::Function| f.attrs.iter().any(|a| a.name == "wazi");
+    let index =
+        |f: &asili_parser::Function| program.functions.iter().position(|g| g.name == f.name);
+    let exports: Vec<usize> = module
         .functions
         .iter()
-        .filter(|f| asili_evaluator::salama::is_strict(f))
-        .filter_map(|f| program.functions.iter().position(|g| g.name == f.name))
+        .filter(|f| f.name != "kuu" && (asili_evaluator::salama::is_strict(f) || wazi(f)))
+        .filter_map(index)
         .collect();
-    if strict.is_empty() {
+    let kuu = module
+        .functions
+        .iter()
+        .find(|f| f.name == "kuu" && wazi(f))
+        .and_then(index);
+    if exports.is_empty() && kuu.is_none() {
         return Err(CliError::new(
-            "hakuna kazi salama ya kujenga kwa Cortex-M (weka #[salama] juu ya kazi)",
+            format!(
+                "hakuna kazi ya kujenga kwa {} (weka #[salama] au #[wazi] juu ya kazi)",
+                lengo.jina()
+            ),
             1,
         ));
     }
-    let built = asili_evaluator::nguvu::device::build(&program, &strict, name)
-        .map_err(|e| CliError::new(e, 1))?;
+    let built =
+        asili_evaluator::nguvu::device::build_firmware(lengo, &program, &exports, kuu, name)
+            .map_err(|e| CliError::new(e, 1))?;
     let write = |file: String, bytes: &[u8]| -> Result<PathBuf, CliError> {
         let path = target.join(file);
         fs::write(&path, bytes).map_err(|e| {
@@ -382,35 +403,90 @@ fn write_device(module: &Module, target: &Path, name: &str) -> Result<(), CliErr
         })?;
         Ok(path)
     };
-    let object = write(format!("{name}-cortex-m.o"), &built.object)?;
+    let object = write(format!("{name}-{slug}.o"), &built.object)?;
     let header = write(format!("{name}.h"), built.header.as_bytes())?;
     println!(
-        "kifaa (Cortex-M): {} na {} — kazi: {}",
+        "kifaa ({}): {} na {} — kazi: {}",
+        lengo.jina(),
         object.display(),
         header.display(),
         built.exports.join(", ")
     );
+    for (kazi, baiti) in &built.stack {
+        println!(
+            "kifaa ({}): kazi '{kazi}' — mrundikano ≤ baiti {baiti}",
+            lengo.jina()
+        );
+    }
     Ok(())
 }
 
-/// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): the static
-/// runner `tenda` with the artifact and its native image appended
-/// (`asili_evaluator::bundle`), which runs directly. The runner comes from `ASILI_TENDA` or sits
-/// beside `pata`; without one the build only notes that the executable was skipped.
+/// A release build's standalone executable `<target>/<name>` (`.exe` on Windows): a runner with
+/// the artifact and its native image appended (`asili_evaluator::bundle`), which runs directly.
+/// The runner is the smallest one that has every optional feature the program uses
+/// (`asili_evaluator::uwezo`): the runners beside `pata` (`tenda`, `tenda-msingi`, ...), and those
+/// `ASILI_TENDA` and `ASILI_TENDA_MSINGI` name. Without one the build only notes that the
+/// executable was skipped.
 fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliError> {
-    let exe = format!("tenda{}", std::env::consts::EXE_SUFFIX);
-    let runner = std::env::var_os("ASILI_TENDA")
-        .map(PathBuf::from)
-        .or_else(|| Some(std::env::current_exe().ok()?.parent()?.join(&exe)))
-        .filter(|p| p.is_file());
-    let Some(runner) = runner else {
+    use asili_evaluator::uwezo;
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let mut paths: Vec<PathBuf> = ["ASILI_TENDA", "ASILI_TENDA_MSINGI"]
+        .iter()
+        .filter_map(|v| std::env::var_os(v).map(PathBuf::from))
+        .collect();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let stem = file.strip_suffix(suffix).unwrap_or(&file);
+                let variant = stem
+                    .strip_prefix("tenda")
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'));
+                if variant && (suffix.is_empty() || file.ends_with(suffix)) {
+                    paths.push(entry.path());
+                }
+            }
+        }
+    }
+    let program = asili_evaluator::load_asb_bytecode(asb).ok();
+    let needed = program.as_ref().map(uwezo::needed);
+    // (bytes, path, features it lacks): the smallest runner with every feature needed.
+    let mut best: Option<(Vec<u8>, PathBuf, Vec<String>)> = None;
+    for path in paths.into_iter().filter(|p| p.is_file()) {
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let has = uwezo::ya_tenda(&bytes);
+        let all: Vec<String> = uwezo::VIPENGELE
+            .iter()
+            .map(|(f, _)| f.to_string())
+            .collect();
+        let has = has.unwrap_or_else(|| all.clone());
+        let covers = match &needed {
+            Some(needed) => needed.iter().all(|f| has.iter().any(|h| h == f)),
+            None => has.len() == all.len(), // unreadable artifact: only a full runner
+        };
+        if covers && best.as_ref().is_none_or(|(b, _, _)| bytes.len() < b.len()) {
+            let lacks = all.into_iter().filter(|f| !has.contains(f)).collect();
+            best = Some((bytes, path, lacks));
+        }
+    }
+    let Some((runner, runner_path, lacks)) = best else {
         println!(
-            "programu huru haikujengwa: `{exe}` haipatikani kando ya pata (au weka ASILI_TENDA)"
+            "programu huru haikujengwa: hakuna `tenda{suffix}` kando ya pata yenye uwezo wote \
+             unaohitajika (au weka ASILI_TENDA)"
         );
         return Ok(());
     };
-    let runner = fs::read(&runner)
-        .map_err(|e| CliError::new(format!("imeshindwa kusoma {}: {e}", runner.display()), 1))?;
+    let note = if lacks.is_empty() {
+        String::new()
+    } else {
+        let file = runner_path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned());
+        format!(" ({}: bila {})", file.unwrap_or_default(), lacks.join(", "))
+    };
     let image = fs::read(target.join(asili_evaluator::nguvu::image_file_name(name))).ok();
     let path = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     fs::write(
@@ -423,7 +499,7 @@ fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliErro
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
     }
-    println!("programu huru: {}", path.display());
+    println!("programu huru: {}{note}", path.display());
     Ok(())
 }
 
@@ -460,6 +536,15 @@ fn build_native_library(
     }
     println!("picha ya msimbo asilia haikujengwa ({failure})");
     Ok(())
+}
+
+/// The device target a `--lengo` / `[jenga] lengo` name selects, if it is one.
+pub fn device_lengo(target: &str) -> Option<asili_evaluator::nguvu::device::Lengo> {
+    match target {
+        "cortex-m" => Some(asili_evaluator::nguvu::device::Lengo::CortexM),
+        "esp32" => Some(asili_evaluator::nguvu::device::Lengo::Esp32),
+        _ => None,
+    }
 }
 
 pub fn emit_build_artifacts(
@@ -502,9 +587,16 @@ pub fn emit_build_artifacts(
     if profile == BuildProfile::Release {
         write_standalone(&asb, &target, &compiled.config.name)?;
     }
-    if compiled.target.0 == "cortex-m" {
-        let _phase = asili_trace::phase("cortex-m");
-        write_device(&compiled.module, &target, &compiled.config.name)?;
+    if let Some(lengo) = device_lengo(&compiled.target.0) {
+        let slug = compiled.target.0.clone();
+        let _phase = asili_trace::phase(&slug);
+        write_device(
+            &compiled.module,
+            &target,
+            &compiled.config.name,
+            lengo,
+            &slug,
+        )?;
     }
 
     let meta = target.join(format!("{}.build.manifest", compiled.config.name));

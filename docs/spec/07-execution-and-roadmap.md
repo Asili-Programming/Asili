@@ -71,7 +71,7 @@ The ability to loop indefinitely is inherent in Turing-complete systems (Halting
 | **I** | Catalyst | Rust-based interpreter, terminal REPL, basic Pata. |
 | **II** | Synthesis | LSP (Mwalimu), Wasm support, managed/GC module optimization (opt-in). |
 | **III** | Resolution | Self-hosting (compiler written in Asili). |
-| **IV** | Nguvu | Native backend (in-house, started: x86-64/AArch64), embedded targets, manual memory. |
+| **IV** | Nguvu | Native backend (in-house: x86-64/AArch64 and device targets Cortex-M/ESP32), manual memory. |
 
 ---
 
@@ -84,7 +84,7 @@ Concrete features per phase so each has a clear lifecycle; dependencies are resp
 | **I — Catalyst** | Rust interpreter, REPL, basic Pata | Core complete: `umbo`, `shughuli ya`, Orodha index, Kamusi, Herufi, Jozi, `linganisha` (struct/Jozi). Optional: `vunja`, `endelea`, `lebo`. |
 | **II — Synthesis** | LSP, Wasm, managed-memory modules (opt-in) | `linganisha`, `jaribu`/`?`, `Sifa`, `Jumla<T>`, `Pakiti`/`Moduli`, `#[jaribio]`, `#[sharti]`. Optional managed/GC module work can progress here without changing ownership-default semantics. Test runner honours `#[jaribio]`. |
 | **III — Resolution** | Self-hosting | `Rejeo`, `Muda_wa_Kuishi` (borrow checker), `Mfululizo`, `Jozi`, `Seti`. Orodha strict mode (Tokeo on allocation failure). AST stable for macros. |
-| **IV — Nguvu** | Native backend, embedded, manual memory | `tenda`, `njia`, `fungo` (concurrency). Then `sawia`/`subiri` once executor/runtime exists. `Kielelezo!`, `#[kiunganishi]`, FFI, `Kiashiria` in `wazi`. |
+| **IV — Nguvu** | Native backend, embedded, manual memory | `nguvu` supports x86-64/AArch64 and strict device targets Cortex-M and ESP32; ESP32 firmware can use `ubao` GPIO/clock calls. `tenda`, `njia`, `fungo` (concurrency). Then `sawia`/`subiri` once executor/runtime exists. `Kielelezo!`, `#[kiunganishi]`, FFI, `Kiashiria` in `wazi`. |
 
 ### Core complete (Phase I interpreter)
 

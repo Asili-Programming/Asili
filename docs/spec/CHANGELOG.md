@@ -4,6 +4,13 @@ All notable changes to the Asili specification are recorded here.
 
 ## Unreleased
 
+- Execution and roadmap ([07-execution-and-roadmap.md](07-execution-and-roadmap.md)): Phase IV now
+  records the implemented Cortex-M and ESP32 device targets and ESP32 `ubao` firmware path.
+- Architecture ([02-architecture-and-files.md](02-architecture-and-files.md)): records the
+  Cortex-M runtime and ESP32 device-object paths alongside the native and browser targets.
+- Standard library ([05-standard-library.md](05-standard-library.md)): `ubao` drives an ESP32's
+  GPIO pins, waits and reads its clock in real time there (pin `n` is GPIO `n`, a constant), and a
+  `#[wazi] kuu` is the firmware's entry point. `ubao` is opt-in (`leta ubao`), like `kasha_gc`.
 - Standard library ([05-standard-library.md](05-standard-library.md)): the virtual board `ubao`
   (`ubao_andika`, `ubao_soma`, `ubao_subiri`, `ubao_saa`); pin calls need a `#[wazi]` grant.
 - Project structure ([02-architecture-and-files.md](02-architecture-and-files.md)): the VS Code

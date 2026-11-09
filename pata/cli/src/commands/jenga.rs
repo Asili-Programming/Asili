@@ -17,9 +17,10 @@ Chagua:
   --pato <njia>      Mahali pa kuweka kilele (default: kilele/).
   --namna <dev|release>        dev (chaguo-msingi): msimbo asilia ukiwezekana, vinginevyo bila.
                                 release: lazima bytecode na msimbo asilia, la sivyo kosa.
-  --lengo <lengo>    Lengo la kujenga: "native" (chaguo-msingi), "wasm", au
-                     "cortex-m" (pia huandika kazi za #[salama] kama kilele/<jina>-cortex-m.o
-                     na kilele/<jina>.h kwa kifaa). Hupita [jenga] lengo katika pata.toml.
+  --lengo <lengo>    Lengo la kujenga: "native" (chaguo-msingi), "wasm", "cortex-m" au
+                     "esp32" (haya mawili pia huandika kazi za #[salama] kama
+                     kilele/<jina>-<lengo>.o na kilele/<jina>.h kwa kifaa). Hupita
+                     [jenga] lengo katika pata.toml.
   --workspace-info   Onyesha wanachama wa workspace na urejeshi.
   --muda             Onyesha muda wa kila awamu ya ujenzi (kuchanganua/kutoa).
   --fuatilia[=namna] Fuatilia ujenzi na utekelezaji: mti (chaguo-msingi), json,
@@ -132,7 +133,10 @@ pub fn run(args: &[String]) -> CliResult {
     };
 
     let emit_timer = ScopedTimer::new("kutoa");
-    let artifact = if compiled.from_cache && profile == BuildProfile::Dev {
+    // A cached build reuses only the bytecode: a device target also writes its object and
+    // header, which the cache does not hold, so it always emits.
+    let device = crate::pipeline::compile::device_lengo(&compiled.target.0).is_some();
+    let artifact = if compiled.from_cache && profile == BuildProfile::Dev && !device {
         let target = out.as_ref().cloned().unwrap_or_else(|| root.join("kilele"));
         let a = target.join(format!("{}.asb", compiled.config.name));
         println!("imejengwa (cache): {}", a.display());

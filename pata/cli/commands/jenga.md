@@ -10,13 +10,16 @@ Flags:
   is `mti` (default), `json`, `json:<faili>`, `mti:<faili>` or `binari:<faili>`; same as
   `ASILI_FUATILIA`. See `docs/design/tracing.md`.
 - `--pato <path>`: Output directory (default `kilele/`)
-- `--lengo <lengo>`: Build target (default `native`; also `wasm`, `cortex-m`); overrides
+- `--lengo <lengo>`: Build target (default `native`; also `wasm`, `cortex-m`, `esp32`); overrides
   `pata.toml`'s `[jenga] lengo`. `cortex-m` also compiles every strict (`#[salama]`) function to
   Thumb-2 for ARMv7E-M with `fpv5-d16`, writing `<pato>/<name>-cortex-m.o` (an ELF object a
   firmware links with the device runtime `driver/kifaa`) and `<pato>/<name>.h` (its C
-  declarations), and prints `kifaa (Cortex-M): <object> na <header> — kazi: <names>`. A program
-  without strict functions, or a strict function a device cannot run, fails the build. See
-  `docs/howto/07-build-for-cortex-m.md`
+  declarations), and prints `kifaa (Cortex-M): <object> na <header> — kazi: <names>`. `esp32`
+  does the same for the ESP32 (Xtensa LX6, windowed ABI), writing `<pato>/<name>-esp32.o` (it
+  needs no runtime library of Asili's own) and printing `kifaa (ESP32): ...` plus, for each export, `kifaa (ESP32): kazi '<f>' —
+  mrundikano ≤ baiti <n>` (the most stack a call takes in Asili's code). A program without
+  strict functions, or a strict function a device cannot run, fails the build. See
+  `docs/howto/07-build-for-cortex-m.md` and `docs/howto/08-build-for-esp32.md`
 - `--namna <dev|release>`: Build profile. Every program is compiled to bytecode in both (a
   construct the bytecode compiler can't lower fails the build, naming the `kazi` and line; there
   is no syntax-tree artifact). `dev` (default) writes the native image where it can and otherwise
@@ -40,11 +43,17 @@ Success:
   LLVM backend are removed.
 - `--tenda` runs the artifact just built exactly as `pata tenda` would (native code when present)
 - `--namna release` also writes a standalone executable `<pato>/<name>` (`<name>.exe` on
-  Windows), printing `programu huru: <path>`: the static runner `tenda` with the artifact and its
-  native image appended, so `./kilele/<name> [hoja...]` runs the program directly with no other
-  files and no `pata`. The runner is the `tenda` beside `pata` (`make install` puts it there) or
-  the one `ASILI_TENDA` names; without one the build prints `programu huru haikujengwa: ...` and
-  still succeeds
+  Windows), printing `programu huru: <path>`: a runner with the artifact and its native image
+  appended, so `./kilele/<name> [hoja...]` runs the program directly with no other files and no
+  `pata`. The runner is the smallest one that has every optional feature the program uses:
+  `mtandao` (networking: `http_ombi`, `mkondo_*`, `tafuta_anwani`, `tls_sanidi`, `udp_fungua`,
+  `ws_unganisha`) and `ruwaza` (the `ruwaza_*` regular expressions). `make install` puts three
+  beside `pata`: `tenda` (both), `tenda-msingi` (no networking: about a third the size) and
+  `tenda-ndogo` (neither); any `tenda-*` there, and the runners `ASILI_TENDA` and
+  `ASILI_TENDA_MSINGI` name, are candidates, each read for the features it carries (`tenda --uwezo`
+  prints them). A smaller runner is named in the output, e.g. `(tenda-ndogo: bila mtandao,
+  ruwaza)`. Without a runner that covers the program the build prints `programu huru haikujengwa:
+  ...` and still succeeds
 
 Failures:
 - syntax/type/ownership diagnostics

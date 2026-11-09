@@ -130,7 +130,7 @@ Researched, decided, not built.
 - [ ] Self-hosting itself (a lexer/parser/analyzer written in Asili) — not started, gated on the
       two items above.
 
-### Phase IV — Nguvu (LLVM, embedded, concurrency, FFI) — partially started
+### Phase IV — Nguvu (native backend, embedded, concurrency, FFI) — partially started
 
 - [x] **Concurrency (`tenda`/`njia`/`fungo`) — implemented**, despite the spec's own Phase IV
       placement (kept here rather than re-filed under Phase II, since the checklist above is
@@ -154,8 +154,14 @@ Researched, decided, not built.
       still a stub (`FIXME(Phase IV)`, returns `Anuani(0)`). See
       [wazi-hardware-design.md](wazi-hardware-design.md).
 - [x] **Virtual board `ubao`** (`core/evaluator/src/ubao.rs`, `builtins/ubao.rs`): pins and a clock
-      in the host, with the pin calls gated by `#[wazi]`. Not a device driver; see
+      in the host, with the pin calls gated by `#[wazi]`; see
       [peripheral-io-design.md](peripheral-io-design.md).
+- [x] **`ubao` on the ESP32** (`nguvu/device/esp32.rs`, `PinWrite`/`PinRead`/`BoardWait`/
+      `BoardClock`): the same calls drive GPIO pins, wait and read the clock in real time, and a
+      `#[wazi] kuu` is the firmware's entry point (`app_main`), so a firmware needs no C
+      (`examples/blink-esp32`, verified on a board). Cortex-M and a flash image without ESP-IDF
+      are not done
+      ([docs/howto/08-build-for-esp32.md](../howto/08-build-for-esp32.md)).
 - [ ] `kiungo` (FFI) is a documented stub: `core/evaluator/src/builtins/kiungo.rs`
       unconditionally returns `Err` from both exported functions, with a `TODO(Phase IV)`
       comment about `libloading`. Correctly scoped to this phase, not a surprise gap.

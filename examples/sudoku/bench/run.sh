@@ -13,10 +13,11 @@ out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
 cargo build --release -q -p pata-cli --manifest-path "$root/Cargo.toml"
-# The runner as it ships: `dist` profile, statically linked against musl when that target is
-# installed (`rustup target add x86_64-unknown-linux-musl`), else for the host.
+# The runner as it ships: `dist` profile, statically linked against musl when that target and
+# its cross compiler are installed, else for the host.
 musl="$(uname -m)-unknown-linux-musl"
-if rustup target list --installed 2>/dev/null | grep -qx "$musl"; then
+musl_cc="$(uname -m)-linux-musl-gcc"
+if rustup target list --installed 2>/dev/null | grep -qx "$musl" && command -v "$musl_cc" >/dev/null; then
   cargo build --profile dist -q -p asili-runner --target "$musl" --manifest-path "$root/Cargo.toml"
   runner="$root/target/$musl/dist/tenda"
 else

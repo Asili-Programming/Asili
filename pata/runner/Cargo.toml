@@ -1,6 +1,7 @@
 [package]
 name = "asili-runner"
 version = "0.2.2"
+license = "GPL-2.0-only"
 edition = "2021"
 description = "Standalone runner for Asili .asb artifacts (no compiler)"
 
@@ -10,8 +11,17 @@ path = "src/main.rs"
 
 [dependencies]
 asili-trace = { path = "../../core/trace" }
-asili-evaluator = { path = "../../core/evaluator" }
+asili-evaluator = { path = "../../core/evaluator", default-features = false }
 asili-mem = { path = "mem" }
+
+[features]
+default = ["mtandao", "ruwaza"]
+# Optional builtin groups; a runner built without one is smaller and runs the programs that use
+# none of its builtins (`pata` picks the smallest runner that covers a program, see
+# `asili_evaluator::uwezo`). Networking: sockets, TLS, HTTP.
+mtandao = ["asili-evaluator/mtandao"]
+# Regular expressions (the `ruwaza_*` builtins).
+ruwaza = ["asili-evaluator/ruwaza"]
 
 [dev-dependencies]
 asili-lexer = { path = "../../core/lexer" }

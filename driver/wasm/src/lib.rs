@@ -5,7 +5,9 @@
 
 use asili_evaluator::{compile_module_explained, run_bytecode};
 use asili_lexer::tokenize;
-use asili_parser::{merge_modules, parse_tokens, ImportPath, Module};
+use asili_parser::{
+    extern_env_from_imports, merge_modules, parse_tokens, ImportPath, Module,
+};
 use std::collections::HashMap;
 
 /// Run Asili source: tokenize, parse, run `kuu` with empty args. Single-module only — any `leta`
@@ -31,6 +33,72 @@ pub fn run_board_source(source: &str, triples: &[f64]) -> Result<(), String> {
         .collect();
     asili_evaluator::ubao::anza(ingizo);
     run_source(source)
+}
+
+/// Diagnostics for `source` as a JSON array, `[]` when it is clean: each item is
+/// `{"line":L,"column":C,"code":"SEM001","message":"..."}` (line and column are 0 when a
+/// diagnostic has no position). Lexing, parsing and the semantic checks run in the order the CLI
+/// runs them, so the editor cannot disagree with `pata kagua`'s compile front end.
+pub fn check_source(source: &str) -> String {
+    check_source_with(source, &[])
+}
+
+/// As `check_source`, for a file of a project: `modules` are the other modules the project
+/// provides (`leta <name>` resolves to them), so their imports are not reported as unknown.
+pub fn check_source_with(source: &str, modules: &[String]) -> String {
+    let diags = match tokenize(source) {
+        Err(d) => d,
+        Ok(tokens) => match parse_tokens(&tokens) {
+            Err(d) => d,
+            Ok(module) => {
+                let (functions, constants) = extern_env_from_imports(&module);
+                let resolved: std::collections::HashSet<String> = modules.iter().cloned().collect();
+                match asili_parser::semantic_check_with_env_and_modules(
+                    &module, true, functions, constants, resolved,
+                ) {
+                    Ok(()) => Vec::new(),
+                    Err(d) => d,
+                }
+            }
+        },
+    };
+    let items: Vec<String> = diags
+        .iter()
+        .map(|d| {
+            let (line, column) = d.span.as_ref().map_or((0, 0), |s| (s.line, s.column));
+            let code = serde_json::to_string(d.code).unwrap_or_else(|_| "\"\"".into());
+            let message = serde_json::to_string(&d.message).unwrap_or_else(|_| "\"\"".into());
+            format!("{{\"line\":{line},\"column\":{column},\"code\":{code},\"message\":{message}}}")
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// The source as `pata nadhifu` writes it (the formatter's canonical form, the same library the CLI
+/// calls).
+pub fn format_source(source: &str) -> String {
+    pata_fmt::canonical_format(source)
+}
+
+/// The lint findings for `source` as JSON, in the form `check_source` uses: `[{"line","column",
+/// "code","message"}]`, `[]` when clean. A source that cannot be linted reports its error at line 0.
+pub fn lint_source_json(source: &str) -> String {
+    let items: Vec<String> = match pata_lint::lint_source(source) {
+        Ok(findings) => findings
+            .iter()
+            .map(|d| {
+                let (line, column) = d.span.as_ref().map_or((0, 0), |s| (s.line, s.column));
+                let code = serde_json::to_string(d.code).unwrap_or_else(|_| "\"\"".into());
+                let message = serde_json::to_string(&d.message).unwrap_or_else(|_| "\"\"".into());
+                format!("{{\"line\":{line},\"column\":{column},\"code\":{code},\"message\":{message}}}")
+            })
+            .collect(),
+        Err(e) => vec![format!(
+            "{{\"line\":0,\"column\":0,\"code\":\"LINT\",\"message\":{}}}",
+            serde_json::to_string(&e).unwrap_or_else(|_| "\"\"".into())
+        )],
+    };
+    format!("[{}]", items.join(","))
 }
 
 /// Lower `module` to bytecode and run its `kuu` as native code (a wasm module the page
@@ -99,6 +167,35 @@ mod browser_entry {
         run_source(source).map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Diagnostics for `source` as JSON (see `check_source`), for the editor's error marks.
+    #[wasm_bindgen]
+    pub fn check(source: &str) -> String {
+        super::check_source(source)
+    }
+
+    /// As `check`, with `modules` a comma-separated list of the project's other module names.
+    #[wasm_bindgen(js_name = checkWithModules)]
+    pub fn check_with_modules(source: &str, modules: &str) -> String {
+        let names: Vec<String> = modules
+            .split(',')
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        super::check_source_with(source, &names)
+    }
+
+    /// The formatted source (`pata nadhifu`'s canonical form).
+    #[wasm_bindgen]
+    pub fn format(source: &str) -> String {
+        super::format_source(source)
+    }
+
+    /// The lint findings as JSON (see `lint_source_json`).
+    #[wasm_bindgen]
+    pub fn lint(source: &str) -> String {
+        super::lint_source_json(source)
+    }
+
     /// Run on the virtual board: `triples` is the scenario (see `run_board_source`).
     #[wasm_bindgen(js_name = runBoard)]
     pub fn run_board(source: &str, triples: &[f64]) -> Result<(), JsValue> {
@@ -151,5 +248,61 @@ kazi kuu(hoja: Orodha<Neno>) -> Tupu {
         let modules = HashMap::new();
         let err = run_bundle("kuu", &modules).unwrap_err();
         assert!(err.contains("kuu"));
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::{check_source, check_source_with};
+
+    #[test]
+    fn project_module_imports_resolve() {
+        let src = "leta msaidizi\n\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  chapisha(\"hi\")\n}\n";
+        assert!(check_source(src).contains("\"code\":\"SEM"), "unknown module is reported");
+        let names = vec!["msaidizi".to_string()];
+        assert_eq!(check_source_with(src, &names), "[]");
+    }
+
+    #[test]
+    fn clean_program_has_no_diagnostics() {
+        let src = "leta matumizi\n\nkazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  chapisha(\"hi\")\n}\n";
+        assert_eq!(check_source(src), "[]");
+    }
+
+    #[test]
+    fn semantic_error_has_line_code_and_message() {
+        let src = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka x: Namba = \"nope\"\n}\n";
+        let out = check_source(src);
+        assert!(out.starts_with("[{\"line\":"), "{out}");
+        assert!(out.contains("\"code\":\"SEM"), "{out}");
+        assert!(out.contains("\"message\":"), "{out}");
+    }
+
+    #[test]
+    fn parse_error_is_reported_with_position() {
+        let out = check_source("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka = 3\n}\n");
+        assert!(out.contains("\"code\":\"PAR"), "{out}");
+        assert!(!out.contains("\"line\":0,"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod fmt_lint_tests {
+    use super::{format_source, lint_source_json};
+
+    #[test]
+    fn format_is_the_canonical_form_and_idempotent() {
+        let messy = "kazi   kuu(hoja:Orodha<Neno>)->Tupu{\nchapisha(\"a\")\n}\n";
+        let once = format_source(messy);
+        assert!(once.contains("kazi kuu(hoja: Orodha<Neno>) -> Tupu {"), "{once}");
+        assert_eq!(format_source(&once), once, "formatting twice changes nothing");
+    }
+
+    #[test]
+    fn lint_reports_findings_as_json() {
+        let clean = "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n}\n";
+        assert_eq!(lint_source_json(clean).starts_with('['), true);
+        let out = lint_source_json("kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka x = 1\n}\n");
+        assert!(out.starts_with('[') && out.contains("\"code\":\"LINT"), "{out}");
     }
 }

@@ -2,8 +2,10 @@
 //! records every event. The same program with the same scenario gives the same events and result
 //! on native code and on the reference path, and pin calls outside a `#[wazi]` grant are errors.
 
-use asili_evaluator::{compile_module_explained, run_bytecode_function_on, run_function, ubao, Value};
 use asili_evaluator::ubao::{Ingizo, Tukio};
+use asili_evaluator::{
+    compile_module_explained, run_bytecode_function_on, run_function, ubao, Value,
+};
 use asili_lexer::tokenize;
 use asili_parser::{extern_env_from_imports, parse_tokens, semantic_check_with_env, Module};
 
@@ -22,8 +24,16 @@ kazi prova() -> Namba {
 
 fn scenario() -> Vec<Ingizo> {
     vec![
-        Ingizo { saa: 0, pini: 3, hali: false },
-        Ingizo { saa: 5, pini: 3, hali: true },
+        Ingizo {
+            saa: 0,
+            pini: 3,
+            hali: false,
+        },
+        Ingizo {
+            saa: 5,
+            pini: 3,
+            hali: true,
+        },
     ]
 }
 
@@ -33,10 +43,34 @@ fn parse(src: &str) -> Module {
 
 fn expected_events() -> Vec<Tukio> {
     vec![
-        Tukio { hatua: 0, aina: "andika", pini: 3, hali: true, saa: 0 },
-        Tukio { hatua: 1, aina: "subiri", pini: -1, hali: false, saa: 10 },
-        Tukio { hatua: 2, aina: "soma", pini: 3, hali: true, saa: 10 },
-        Tukio { hatua: 3, aina: "andika", pini: 4, hali: true, saa: 10 },
+        Tukio {
+            hatua: 0,
+            aina: "andika",
+            pini: 3,
+            hali: true,
+            saa: 0,
+        },
+        Tukio {
+            hatua: 1,
+            aina: "subiri",
+            pini: -1,
+            hali: false,
+            saa: 10,
+        },
+        Tukio {
+            hatua: 2,
+            aina: "soma",
+            pini: 3,
+            hali: true,
+            saa: 10,
+        },
+        Tukio {
+            hatua: 3,
+            aina: "andika",
+            pini: 4,
+            hali: true,
+            saa: 10,
+        },
     ]
 }
 
@@ -73,11 +107,16 @@ fn native_code_and_the_reference_path_agree() {
 
 #[test]
 fn a_pin_read_before_any_change_is_low() {
-    let module = parse(
-        "leta ubao\n#[wazi]\nkazi prova() -> Ukweli { rejesha ubao_soma(9) }",
+    let module = parse("leta ubao\n#[wazi]\nkazi prova() -> Ukweli { rejesha ubao_soma(9) }");
+    ubao::anza(vec![Ingizo {
+        saa: 0,
+        pini: 3,
+        hali: true,
+    }]);
+    assert_eq!(
+        run_function(&module, "prova", vec![]).expect("run"),
+        Value::Ukweli(false)
     );
-    ubao::anza(vec![Ingizo { saa: 0, pini: 3, hali: true }]);
-    assert_eq!(run_function(&module, "prova", vec![]).expect("run"), Value::Ukweli(false));
 }
 
 #[test]
@@ -95,4 +134,63 @@ fn a_negative_pin_is_an_error() {
     let module = parse("leta ubao\n#[wazi]\nkazi prova() -> Tupu { ubao_andika(-1, kweli) }");
     ubao::anza(vec![]);
     assert!(run_function(&module, "prova", vec![]).is_err());
+}
+
+#[test]
+fn typed_pin_calls_are_instructions_of_their_own() {
+    // A number and a truth value go straight to `PinWrite`/`PinRead`/`BoardWait` (no boxing),
+    // which native code on a device can run without a host; anything else stays a builtin call.
+    let module = parse(
+        "leta ubao\n#[wazi]\nkazi prova(p: Namba) -> Ukweli {\n    ubao_andika(p, kweli)\n    ubao_subiri(3)\n    rejesha ubao_soma(p) || ubao_saa() < 0\n}",
+    );
+    let program = compile_module_explained(&module).expect("compile");
+    let f = program
+        .functions
+        .iter()
+        .find(|f| f.name == "prova")
+        .expect("prova");
+    let code = format!("{:?}", f.code);
+    for op in ["PinWrite", "BoardWait", "PinRead", "BoardClock"] {
+        assert!(code.contains(op), "{op} missing: {code}");
+    }
+    assert!(!code.contains("CallBuiltin"), "{code}");
+    ubao::anza(vec![]);
+    assert_eq!(
+        run_function(&module, "prova", vec![Value::Namba(5.0)]).expect("run"),
+        Value::Ukweli(false)
+    );
+    let events: Vec<(&str, i64, bool, i64)> = ubao::tukio()
+        .iter()
+        .map(|t| (t.aina, t.pini, t.hali, t.saa))
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            ("andika", 5, true, 0),
+            ("subiri", -1, false, 3),
+            ("soma", 5, false, 3)
+        ]
+    );
+}
+
+#[test]
+fn a_fractional_pin_is_an_error_on_the_instruction_path() {
+    let module = parse("leta ubao\n#[wazi]\nkazi prova() -> Tupu { ubao_andika(1.5, kweli) }");
+    ubao::anza(vec![]);
+    let err = format!("{:?}", run_function(&module, "prova", vec![]).unwrap_err());
+    assert!(err.contains("namba ya pini si sahihi"), "{err}");
+}
+
+#[test]
+fn ubao_is_opt_in() {
+    // Only programs that drive a board bring `ubao` in; without `leta ubao` its calls are
+    // unknown, and the error says what to import.
+    let module = parse("#[wazi]\nkazi prova() -> Tupu { ubao_andika(1, kweli) }");
+    let (functions, constants) = extern_env_from_imports(&module);
+    let errs = semantic_check_with_env(&module, false, functions, constants).unwrap_err();
+    let text = format!("{errs:?}");
+    assert!(text.contains("SEM037") && text.contains("leta ubao"), "{text}");
+    let module = parse("leta ubao\n#[wazi]\nkazi prova() -> Tupu { ubao_andika(1, kweli) }");
+    let (functions, constants) = extern_env_from_imports(&module);
+    semantic_check_with_env(&module, false, functions, constants).expect("with the import");
 }

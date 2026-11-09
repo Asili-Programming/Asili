@@ -1581,8 +1581,15 @@ impl<'a> Analyzer<'a> {
                             _ => sig.ret.clone(),
                         };
                     }
+                    let message = match crate::builtins::opt_in_module_of(name.as_str()) {
+                        Some(m) => format!(
+                            "kazi haijulikani: {name} (iko kwenye moduli ya hiari `{m}`: ongeza \
+                             `leta {m}`)"
+                        ),
+                        None => format!("kazi haijulikani: {name}"),
+                    };
                     self.errors.push(
-                        Diagnostic::new("SEM037", format!("kazi haijulikani: {name}"))
+                        Diagnostic::new("SEM037", message)
                             .with_stage("semantiki")
                             .with_span(*line, 1),
                     );

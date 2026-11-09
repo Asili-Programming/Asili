@@ -1,13 +1,16 @@
 # `wazi` (unsafe block) and hardware primitives design
 
-**Status: partly implemented.** The `#[wazi]` function attribute is a grant that the analyzer
-enforces: `syscall` and the virtual board's pin calls (`ubao_andika`, `ubao_soma`) may only be called
-from a `#[wazi]` function (SEM121), and such a function may not also be `#[salama]` (SEM122). The
-`wazi { ... }` block keyword is still not in the lexer or parser, and none of `Kiashiria`, `Pini`,
-`Bafa<T>` or the hardware functions exist. The grant design is in
+**Status: partly implemented.** The analyzer enforces `#[wazi]` as a function-level grant:
+`syscall` and the board's pin calls (`ubao_andika`, `ubao_soma`) require it (SEM121), and a
+`#[wazi]` function may not also be `#[salama]` (SEM122). The virtual board is implemented, and
+the ESP32 device target drives GPIO and reads/waits on its hardware clock; `#[wazi] kuu` is the
+ESP-IDF firmware entry point. The `wazi { ... }` block keyword is still not in the lexer or
+parser. The spec's `Kiashiria`, `Pini`, `Bafa<T>` and additional hardware functions
+(`vuta_vifaani`, `anwani_ya`, `tenga_kumbukumbu`, `piga_pini`) are not implemented as such. The
+grant design is in
 [peripheral-io-design.md](peripheral-io-design.md). Phase IV, per
 [docs/spec/07-execution-and-roadmap.md](../spec/07-execution-and-roadmap.md). This doc is
-forward-looking, and notes one real inconsistency in what's already built.
+forward-looking, with the remaining design questions below.
 
 ## What `wazi` is supposed to gate
 
@@ -26,30 +29,18 @@ forbids. Three spec sections describe what lives inside it:
   offload, `anwani_ya` — address-of, `tenga_kumbukumbu` — manual heap allocation, `piga_pini` —
   GPIO) and two typed handles, `Pini` (GPIO pin) and `Bafa<T>` (aligned accelerator buffer).
 
-None of `Kiashiria`, `Pini`, `Bafa<T>`, or any of the four hardware functions exist anywhere in
-`core/parser/src/ast.rs`'s `ValueType` enum or `core/evaluator/src/value/mod.rs`'s `Value` enum
-— confirmed by grep. Unlike `Mfululizo`/`Seti`/`Namba_Kuu`/`Namba_Sahihi` (see
-[data-shapes-design.md](data-shapes-design.md)), there isn't even a placeholder TODO comment
-naming these as pending `Value` variants. This is earlier-stage than the data-shapes work: no
-type-level recognition exists yet at all.
+`Kiashiria`, `Pini`, `Bafa<T>` and the four spec-named functions still have no implementation in
+the type system or evaluator. GPIO functionality does exist under `ubao`, with a virtual-board
+implementation and an ESP32 implementation. Unlike `Mfululizo`/`Seti`/`Namba_Kuu`/
+`Namba_Sahihi` (see [data-shapes-design.md](data-shapes-design.md)), no type-level recognition
+exists yet for the remaining handles.
 
-## An existing inconsistency: `syscall` is callable without any `wazi` gate
+## `syscall` gate
 
-`core/evaluator/src/builtins/syscall.rs` registers a raw `syscall(nr, a, b, c)` builtin — a
-direct analog to the "hardware-level control... inside `wazi` blocks" the spec describes,
-conceptually adjacent to (though not literally named in) the spec's hardware-primitives list.
-It's a stub today (`FIXME(Phase IV): always returns Anuani(0) — no actual syscall is issued`),
-but nothing about its wiring restricts it to a `wazi` context: it's registered like any other
-builtin module function, reachable from anywhere via `leta syscall` with no unsafe-block
-requirement, no special diagnostic, nothing distinguishing it from a call to `hisabati.jumla`.
-
-This matters for whenever `wazi` is actually implemented: **either `syscall` needs to be
-re-gated to require a `wazi` block once one exists** (a breaking change to any code that already
-calls it, however unlikely given it currently does nothing), **or `wazi`'s scope needs to be
-understood as narrower than "all raw hardware/syscall access"** (i.e., `syscall` was always
-meant to be usable without `wazi`, and `wazi` is specifically for the pointer/GPIO/accelerator
-surface the standard-library section names). This should be decided explicitly, not left to
-whichever gets implemented first.
+The earlier concern that `syscall` lacked a `wazi` gate is resolved: the semantic analyzer
+rejects calls outside a `#[wazi]` function (SEM121). It remains a stub
+(`FIXME(Phase IV)`: returns `Anuani(0)` without issuing a syscall). The same function-level grant
+is used for `ubao` pin access; a lexical `wazi { ... }` block is not implemented.
 
 ## Design questions
 
@@ -73,13 +64,10 @@ whichever gets implemented first.
   [concurrency-async-design.md](concurrency-async-design.md) — worth checking deliberately
   rather than assuming)? If they're meant to be the same thing, `Anuani` should either be
   renamed or the spec updated to use it, rather than introducing a second overlapping type.
-- **`Pini`/`Bafa<T>` are inherently platform-specific.** GPIO pin access has no meaning on a
-  desktop/server target — these types only make sense for an embedded target, which per the
-  roadmap's own Phase IV framing ("LLVM, embedded, manual memory") doesn't exist yet either
-  (no LLVM backend, no embedded-target build configuration anywhere in the repo). This suggests
-  `Pini`/`Bafa<T>`/`piga_pini` genuinely can't be implemented meaningfully before an embedded
-  compilation target exists — implementing them against this interpreter's current
-  desktop/server-only tree-walk evaluator would have nothing real underneath to control.
+- **`Pini`/`Bafa<T>` remain platform-specific design work.** Embedded targets now exist:
+  Cortex-M and ESP32 strict functions compile through `nguvu`, and `ubao` provides GPIO access on
+  ESP32. The spec-named typed handles and `piga_pini` still need a decision on whether they add
+  anything to the existing `ubao` interface.
 - **`tenga_kumbukumbu` (manual heap allocation) and the existing allocator-failure model.**
   `07-execution-and-roadmap.md`'s "Embedded / strict mode" section already specifies that
   allocation failure should surface as `Tokeo<Tupu, Kosa>` in strict/embedded configurations —
@@ -98,13 +86,13 @@ whichever gets implemented first.
    embedded target to make sense — an accelerator, an address-of operator, and manual heap
    allocation are all meaningful on desktop/server) can be implemented once (1) and (2) are
    settled.
-4. `Pini`/`Bafa<T>`/`piga_pini` (the GPIO/embedded-specific surface) should wait for an actual
-   embedded compilation target to exist — implementing them earlier has nothing real to control.
+4. Revisit `Pini`/`Bafa<T>`/`piga_pini` against the working device targets and `ubao` API before
+   adding a second GPIO surface.
 
 ## Cross-references
 
-- [implementation-status.md](implementation-status.md) — Phase IV is listed not started; the
-  `syscall`-without-`wazi`-gate finding here is new since that summary was last written.
+- [implementation-status.md](implementation-status.md) — Phase IV is partially implemented,
+  including the ESP32 device path. The earlier `syscall`-without-`wazi`-gate concern is resolved.
 - [concurrency-async-design.md](concurrency-async-design.md) — the sibling Phase IV doc with the
   same naming-discrepancy pattern (`sambamba`/`tenda`) that `Anuani`/`Kiashiria` should be
   checked against.

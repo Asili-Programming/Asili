@@ -799,3 +799,75 @@ fn narrow_list_elements() {
         &["t", "mipaka", "pana"],
     );
 }
+
+/// Division by a power-of-two constant runs as a multiplication by its (exact) reciprocal, and
+/// a constant integer converted to a double folds: the results stay those of the division,
+/// at the edges too — a halved smallest subnormal ties to even (0), overflow, signed zeros,
+/// infinities, NaN — and a divisor that is not a power of two is left alone.
+// Verifies: REQ-NUM-1
+#[test]
+fn negated_constants_fold_exactly() {
+    // `-10` is a negated integer constant: folded, then converted at build time where it is
+    // used as a double (a comparison, a sum, a returned value).
+    check(
+        "fneg",
+        r#"
+        kazi kata(x: Namba) -> Namba {
+            ikiwa x > 10 {
+                rejesha 10
+            } au_ikiwa x < -10 {
+                rejesha -10
+            }
+            rejesha x
+        }
+        kazi t() -> Orodha<Namba> {
+            weka r: Orodha<Namba> = []
+            r.ongeza(kata(25.5))
+            r.ongeza(kata(-25.5))
+            r.ongeza(kata(-3.25))
+            r.ongeza(kata(-10))
+            weka z: Namba = 0
+            r.ongeza(z + -7)
+            r.ongeza(-0 * z)
+            r.ongeza(-9007199254740992 + 1)
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}
+
+#[test]
+fn division_by_powers_of_two_and_folded_conversions() {
+    check(
+        "fdiv",
+        r#"
+        kazi t() -> Orodha<Namba> {
+            weka r: Orodha<Namba> = []
+            weka z: Namba = 0
+            weka x: Namba = 3
+            r.ongeza(x / 8)
+            r.ongeza(x / 0.5)
+            r.ongeza(x / -4)
+            r.ongeza(x / 3)
+            # 2^-1074 (the smallest subnormal) and 2^1023, built exactly.
+            weka tiny: Namba = 1
+            kwa k kutoka 0 hadi 1074 { tiny = tiny * 0.5 }
+            weka huge: Namba = 1
+            kwa k kutoka 0 hadi 1023 { huge = huge * 2 }
+            r.ongeza(tiny / 2)
+            r.ongeza((tiny * 3) / 2)
+            r.ongeza(huge / 0.5)
+            r.ongeza((z * -1) / 8)
+            r.ongeza((1 / z) / 2)
+            r.ongeza((z / z) / 4)
+            kwa i kutoka 0 hadi 4 {
+                r.ongeza(i / 2)
+                r.ongeza(-i / 16)
+            }
+            rejesha r
+        }
+        "#,
+        &["t"],
+    );
+}

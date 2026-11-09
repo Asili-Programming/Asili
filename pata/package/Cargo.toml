@@ -1,6 +1,7 @@
 [package]
 name = "pata-package"
 version = "0.2.3"
+license = "GPL-2.0-only"
 edition = "2021"
 
 [dependencies]

@@ -12,7 +12,7 @@
 //! Every virtual register also has a home stack slot: spilled registers live there, and
 //! register-resident ones are saved there around runtime calls when caller-saved.
 
-use super::ir::{Class, Func, Inst, VReg};
+use super::ir::{Class, Func, Home, Inst, VReg};
 use asili_parser::FxHashMap as HashMap;
 
 /// Where a virtual register lives: a machine register by its target number, or its stack slot.
@@ -30,6 +30,17 @@ pub struct Target {
     pub int_caller_saved: &'static [u8],
     pub float_callee_saved: &'static [u8],
     pub float_caller_saved: &'static [u8],
+    /// Whether values whose live ranges never overlap may share a home slot. Only for code
+    /// generators that never assume a slot still holds a value it stored earlier (x86-64 and
+    /// AArch64 track that, as `Home`, so they keep one slot per value).
+    pub share_slots: bool,
+    /// Whether integer register `k` and float register `k` are the same physical register (the
+    /// ESP32 keeps both classes in pairs of general registers), so they never hold two values
+    /// at once.
+    pub one_file: bool,
+    /// Whether registers defined once, by a constant, stay out of registers (the code
+    /// generator rebuilds each where it is read): for a target with few registers.
+    pub remat_constants: bool,
 }
 
 impl Target {
@@ -93,6 +104,12 @@ fn layout(func: &Func) -> Vec<usize> {
 }
 
 pub fn allocate(func: &Func, target: &Target) -> Allocation {
+    allocate_with(func, target, &[])
+}
+
+/// [`allocate`], with the registers marked in `kept_out` given neither a register nor a slot:
+/// the code generator keeps each in its own scratch registers for its whole (short) life.
+pub fn allocate_with(func: &Func, target: &Target, kept_out: &[bool]) -> Allocation {
     let n = func.classes.len();
     let nb = func.blocks.len();
     let order = layout(func);
@@ -217,6 +234,20 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
         false
     };
 
+    // Constants the code generator rebuilds where read (`Target::remat_constants`), and the
+    // registers it keeps out itself.
+    let rebuilt: Vec<bool> = func
+        .homes()
+        .iter()
+        .enumerate()
+        .map(|(v, h)| {
+            kept_out.get(v).copied().unwrap_or(false)
+                || (target.remat_constants
+                    && matches!(h, Home::Const(_))
+                    && !func.args.contains(&VReg(v as u32)))
+        })
+        .collect();
+
     // Coalescing: a copy between registers whose live ranges never overlap merges them into
     // one allocation unit, so both share a location and the copy disappears.
     let mut leader: Vec<usize> = (0..n).collect();
@@ -237,9 +268,16 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
                 find(&mut leader, dst.0 as usize),
                 find(&mut leader, src.0 as usize),
             );
-            // The incoming arguments keep their own units (the prologue stores them first).
+            // The incoming arguments keep their own units (the prologue stores them first), and
+            // rebuilt constants stay apart (they get no register).
             let arg = |v: usize| func.args.contains(&VReg(v as u32));
-            if x == y || arg(x) || arg(y) || overlaps(&ranges[x], &ranges[y]) {
+            if x == y
+                || arg(x)
+                || arg(y)
+                || rebuilt[x]
+                || rebuilt[y]
+                || overlaps(&ranges[x], &ranges[y])
+            {
                 continue;
             }
             let (keep, gone) = (x.min(y), x.max(y));
@@ -253,7 +291,7 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
 
     // Priority greedy assignment: densest-use units first.
     let mut todo: Vec<usize> = (0..n)
-        .filter(|&v| leader[v] == v && !ranges[v].is_empty())
+        .filter(|&v| leader[v] == v && !ranges[v].is_empty() && !rebuilt[v])
         .collect();
     todo.sort_by(|&a, &b| {
         let len = |v: usize| {
@@ -295,7 +333,7 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
         for c in candidates {
             let key = match c {
                 Loc::Int(r) => (false, r),
-                Loc::Float(r) => (true, r),
+                Loc::Float(r) => (!target.one_file, r),
                 Loc::Slot => unreachable!(),
             };
             let used = taken.entry(key).or_default();
@@ -330,18 +368,26 @@ pub fn allocate(func: &Func, target: &Target) -> Allocation {
             }
         }
     }
+    // A rebuilt constant (or a register kept out) is never read from or written to a slot.
+    for (needed, &r) in needs_slot.iter_mut().zip(&rebuilt) {
+        *needed &= !r;
+    }
     let mut slots = 0;
-    let slot = needs_slot
-        .iter()
-        .map(|&needed| {
-            slots += needed as u32;
-            if needed {
-                slots - 1
-            } else {
-                u32::MAX
-            }
-        })
-        .collect();
+    let slot = if target.share_slots {
+        share_slots(func, &needs_slot, &ranges, &mut leader, &mut slots)
+    } else {
+        needs_slot
+            .iter()
+            .map(|&needed| {
+                slots += needed as u32;
+                if needed {
+                    slots - 1
+                } else {
+                    u32::MAX
+                }
+            })
+            .collect()
+    };
     Allocation {
         loc,
         order,
@@ -402,6 +448,73 @@ fn brief(i: &Inst) -> String {
 }
 
 /// Two sorted range lists as one sorted list.
+/// Home slots shared by values that are never live at the same time: each allocation unit
+/// (coalesced values share one, and never overlap) that needs a slot takes the first slot none
+/// of whose occupants' live ranges overlap its own. The incoming arguments count as live at the
+/// function's start, where the prologue parks them.
+fn share_slots(
+    func: &Func,
+    needs_slot: &[bool],
+    ranges: &[Vec<(u32, u32)>],
+    leader: &mut [usize],
+    slots: &mut u32,
+) -> Vec<u32> {
+    fn find(leader: &mut [usize], v: usize) -> usize {
+        let mut r = v;
+        while leader[r] != r {
+            r = leader[r];
+        }
+        leader[v] = r;
+        r
+    }
+    let n = needs_slot.len();
+    let unit: Vec<usize> = (0..n).map(|v| find(leader, v)).collect();
+    let mut wanted = vec![false; n];
+    for v in 0..n {
+        if needs_slot[v] {
+            wanted[unit[v]] = true;
+        }
+    }
+    let mut spans: Vec<(usize, Vec<(u32, u32)>)> = (0..n)
+        .filter(|&u| wanted[u])
+        .map(|u| {
+            let mut r = ranges[u].clone();
+            if func.args.iter().any(|a| unit[a.0 as usize] == u) {
+                r = merge_sorted(r, vec![(0, 0)]);
+            }
+            (u, r)
+        })
+        .collect();
+    spans.sort_by_key(|(u, r)| (r.first().map_or(0, |x| x.0), *u));
+    let overlaps = |a: &[(u32, u32)], b: &[(u32, u32)]| {
+        a.iter()
+            .any(|&(s, e)| b.iter().any(|&(t, f)| s <= f && t <= e))
+    };
+    let mut occupied: Vec<Vec<(u32, u32)>> = Vec::new();
+    let mut unit_slot = vec![u32::MAX; n];
+    for (u, r) in spans {
+        let k = match occupied.iter().position(|o| !overlaps(o, &r)) {
+            Some(k) => k,
+            None => {
+                occupied.push(Vec::new());
+                occupied.len() - 1
+            }
+        };
+        occupied[k] = merge_sorted(std::mem::take(&mut occupied[k]), r);
+        unit_slot[u] = k as u32;
+    }
+    *slots = occupied.len() as u32;
+    (0..n)
+        .map(|v| {
+            if needs_slot[v] {
+                unit_slot[unit[v]]
+            } else {
+                u32::MAX
+            }
+        })
+        .collect()
+}
+
 fn merge_sorted(a: Vec<(u32, u32)>, b: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     let mut out = Vec::with_capacity(a.len() + b.len());
     let (mut a, mut b) = (a.into_iter().peekable(), b.into_iter().peekable());

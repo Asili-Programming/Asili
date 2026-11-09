@@ -712,6 +712,9 @@ impl Gen<'_> {
             Inst::CallDirect { .. } | Inst::StackPointer { .. } | Inst::CallBuffer { .. } => {
                 return Err("nguvu-wasm: kazi za moja kwa moja hazipo".into())
             }
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                return Err("nguvu-wasm: maagizo ya kifaa hayapo".into())
+            }
         }
         Ok(())
     }

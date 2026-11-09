@@ -22,6 +22,9 @@ pub const TARGET: Target = Target {
     float_caller_saved: &[
         0, 1, 2, 3, 4, 5, 6, 7, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     ],
+    share_slots: false,
+    one_file: false,
+    remat_constants: false,
 };
 
 /// Operand scratch registers.
@@ -718,6 +721,10 @@ impl<'f> Gen<'f> {
                         self.asm.str_d_idx(d, rb, ri);
                     }
                 }
+            }
+            // Made only by the ESP32's runtime inlining (`device::inline_runtime`).
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                unreachable!("device-only instruction in host code")
             }
             Inst::StackPointer { dst } => {
                 let d = self.int_target(*dst, S0);

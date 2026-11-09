@@ -24,6 +24,9 @@ pub const TARGET: Target = Target {
     int_caller_saved: &[],
     float_callee_saved: &[8, 9, 10, 11, 12, 13, 14, 15],
     float_caller_saved: &[],
+    share_slots: false,
+    one_file: false,
+    remat_constants: false,
 };
 
 /// The registers of integer pair `k`: `(low word, high word)`.
@@ -783,6 +786,9 @@ impl<'f> Gen<'f> {
                         self.asm.str_idx(p.0, b, i, width, shift);
                     }
                 }
+            }
+            Inst::IoLoad { .. } | Inst::IoStore { .. } | Inst::CycleCount { .. } => {
+                return Err("nguvu: pini na saa za ubao hazipatikani kwa Cortex-M bado".into())
             }
             Inst::StackPointer { dst } => {
                 let d = self.int_target(*dst, S0);

@@ -31,6 +31,12 @@ jobs:
       - name: Runtime never panics (clippy deny lints in the evaluator's runtime modules)
         run: cargo clippy -p asili-evaluator --lib
 
+      - name: Smaller runners (tenda-ndogo, tenda-msingi) build, with the same builtin names
+        run: |
+          cargo build -p asili-runner --no-default-features
+          cargo build -p asili-runner --no-default-features --features ruwaza
+          cargo test -p asili-evaluator --no-default-features --test builtin_names
+
       - name: Optimizer differential fuzzing (optimized vs unoptimized native code, 2,000 programs)
         run: ASILI_FUZZ_PROGRAMS=2000 cargo test --release -p asili-evaluator --test fuzz
 
@@ -42,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm, macos-14, windows-latest]
+        os: [ubuntu-24.04-arm, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

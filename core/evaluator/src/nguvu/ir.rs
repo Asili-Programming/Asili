@@ -102,6 +102,16 @@ pub enum RtFn {
     BoxBool = 16,
     ValMov = 17,
     ConstVal = 18,
+    /// Device code only (the host's runtime table has no such entry; `lower::Ctx::device`):
+    /// drive pin `args[0]` (a double) to `args[1] != 0` (an integer).
+    PinWrite = 19,
+    /// Device code only: the level, 0 or 1, of pin `args[0]` (a double).
+    PinRead = 20,
+    /// Device code only: wait `args[0]` milliseconds (an integer; not at all when not positive).
+    BoardWait = 21,
+    /// Device code only: the board's clock, whole milliseconds (an integer); restarted at 0
+    /// first when `args[0]` is not 0.
+    BoardClock = 22,
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +269,21 @@ pub enum Inst {
     StackPointer {
         dst: VReg,
     },
+    /// Device code: read the 32-bit memory-mapped register at address `addr` (its low word),
+    /// zero-extended. Never removed, merged or moved: reading a register can have effects.
+    IoLoad {
+        dst: VReg,
+        addr: VReg,
+    },
+    /// Device code: write the low word of `src` to the memory-mapped register at `addr`.
+    IoStore {
+        src: VReg,
+        addr: VReg,
+    },
+    /// Device code: the CPU's cycle counter (32 bits, zero-extended).
+    CycleCount {
+        dst: VReg,
+    },
     /// Address of this function's call buffer (`Func::call_buffer` bytes in its frame), where
     /// direct calls pass the callee's registers.
     CallBuffer {
@@ -325,6 +350,12 @@ pub const ENTRY_ARGS: &[VReg] = &[RT, HOST, FRAME, NUMS];
 /// A direct entry's: `(host, numeric registers)`; it reads the runtime table and the stack
 /// limit from the host when it needs them.
 pub const DIRECT_ARGS: &[VReg] = &[HOST, NUMS];
+/// A device export compiled from a direct entry (`device::export_interface`): the C
+/// interface's `(hoja, matokeo)` — the arguments' struct where the entry read its registers,
+/// and where its number goes.
+pub const EXPORT_ARGS: &[VReg] = &[NUMS, HOST];
+/// A device helper's (see `device`): the low and high word of its one 64-bit argument.
+pub const HELPER_ARGS: &[VReg] = &[VReg(0), VReg(1)];
 
 /// What a call site may assume about a register's home slot without storing it first.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -341,6 +372,12 @@ pub enum Home {
 impl Func {
     pub fn class(&self, v: VReg) -> Class {
         self.classes[v.0 as usize]
+    }
+
+    /// A fresh register of `class`.
+    pub fn new_vreg(&mut self, class: Class) -> VReg {
+        self.classes.push(class);
+        VReg(self.classes.len() as u32 - 1)
     }
 
     /// `Home` for every register.
@@ -378,6 +415,9 @@ impl Inst {
                 | Inst::StoreIndex { .. }
                 | Inst::Call { .. }
                 | Inst::CallDirect { .. }
+                | Inst::IoLoad { .. }
+                | Inst::IoStore { .. }
+                | Inst::CycleCount { .. }
         )
     }
 
@@ -410,7 +450,11 @@ impl Inst {
             } => vec![*src, *base, *index],
             Inst::Call { table, args, .. } => std::iter::once(*table).chain(args.clone()).collect(),
             Inst::CallDirect { args, .. } => args.clone(),
-            Inst::StackPointer { .. } | Inst::CallBuffer { .. } => vec![],
+            Inst::IoLoad { addr, .. } => vec![*addr],
+            Inst::IoStore { src, addr } => vec![*src, *addr],
+            Inst::StackPointer { .. } | Inst::CallBuffer { .. } | Inst::CycleCount { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -445,7 +489,11 @@ impl Inst {
                 std::iter::once(table).chain(args.iter_mut()).collect()
             }
             Inst::CallDirect { args, .. } => args.iter_mut().collect(),
-            Inst::StackPointer { .. } | Inst::CallBuffer { .. } => vec![],
+            Inst::IoLoad { addr, .. } => vec![addr],
+            Inst::IoStore { src, addr } => vec![src, addr],
+            Inst::StackPointer { .. } | Inst::CallBuffer { .. } | Inst::CycleCount { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -476,7 +524,11 @@ impl Inst {
             Inst::Store { .. } | Inst::StoreIndex { .. } => vec![],
             Inst::Call { dst, .. } => dst.iter().copied().collect(),
             Inst::CallDirect { dst, result, .. } => vec![*dst, *result],
-            Inst::StackPointer { dst } | Inst::CallBuffer { dst } => vec![*dst],
+            Inst::StackPointer { dst }
+            | Inst::CallBuffer { dst }
+            | Inst::IoLoad { dst, .. }
+            | Inst::CycleCount { dst } => vec![*dst],
+            Inst::IoStore { .. } => vec![],
         }
     }
 }
