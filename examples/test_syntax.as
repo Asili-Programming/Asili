@@ -43,6 +43,11 @@ kazi onyesha_waendeshaji() -> Tupu {
   weka bidhaa = 6 * 7
   weka mgawanyiko = 20 / 4
 
+  chapisha("Jumla: " + jumla kama Neno)
+  chapisha("Tofauti: " + tofauti kama Neno)
+  chapisha("Bidhaa: " + bidhaa kama Neno)
+  chapisha("Mgawanyiko: " + mgawanyiko kama Neno)
+
   # Comparison operators
   ikiwa idadi == 10 {
     chapisha("Sawa")
@@ -59,6 +64,8 @@ kazi onyesha_waendeshaji() -> Tupu {
 
   # Bitwise operators
   weka bits = 12 na_biti 8
+  chapisha("Bitwise AND: " + bits kama Neno)
+  rejesha
 }
 
 # Control flow keywords

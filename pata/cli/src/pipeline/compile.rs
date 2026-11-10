@@ -365,6 +365,7 @@ fn write_device(
     name: &str,
     lengo: asili_evaluator::nguvu::device::Lengo,
     slug: &str,
+    show_output: bool,
 ) -> Result<(), CliError> {
     let program =
         asili_evaluator::compile_module_explained(module).map_err(|e| CliError::new(e, 1))?;
@@ -405,18 +406,20 @@ fn write_device(
     };
     let object = write(format!("{name}-{slug}.o"), &built.object)?;
     let header = write(format!("{name}.h"), built.header.as_bytes())?;
-    println!(
-        "kifaa ({}): {} na {} — kazi: {}",
-        lengo.jina(),
-        object.display(),
-        header.display(),
-        built.exports.join(", ")
-    );
-    for (kazi, baiti) in &built.stack {
+    if show_output {
         println!(
-            "kifaa ({}): kazi '{kazi}' — mrundikano ≤ baiti {baiti}",
-            lengo.jina()
+            "kifaa ({}): {} na {} — kazi: {}",
+            lengo.jina(),
+            object.display(),
+            header.display(),
+            built.exports.join(", ")
         );
+        for (kazi, baiti) in &built.stack {
+            println!(
+                "kifaa ({}): kazi '{kazi}' — mrundikano ≤ baiti {baiti}",
+                lengo.jina()
+            );
+        }
     }
     Ok(())
 }
@@ -427,7 +430,12 @@ fn write_device(
 /// (`asili_evaluator::uwezo`): the runners beside `pata` (`tenda`, `tenda-msingi`, ...), and those
 /// `ASILI_TENDA` and `ASILI_TENDA_MSINGI` name. Without one the build only notes that the
 /// executable was skipped.
-fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliError> {
+fn write_standalone(
+    asb: &[u8],
+    target: &Path,
+    name: &str,
+    show_output: bool,
+) -> Result<(), CliError> {
     use asili_evaluator::uwezo;
     let suffix = std::env::consts::EXE_SUFFIX;
     let mut paths: Vec<PathBuf> = ["ASILI_TENDA", "ASILI_TENDA_MSINGI"]
@@ -473,10 +481,12 @@ fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliErro
         }
     }
     let Some((runner, runner_path, lacks)) = best else {
-        println!(
-            "programu huru haikujengwa: hakuna `tenda{suffix}` kando ya pata yenye uwezo wote \
-             unaohitajika (au weka ASILI_TENDA)"
-        );
+        if show_output {
+            println!(
+                "programu huru haikujengwa: hakuna `tenda{suffix}` kando ya pata yenye uwezo wote \
+                 unaohitajika (au weka ASILI_TENDA)"
+            );
+        }
         return Ok(());
     };
     let note = if lacks.is_empty() {
@@ -499,7 +509,9 @@ fn write_standalone(asb: &[u8], target: &Path, name: &str) -> Result<(), CliErro
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
     }
-    println!("programu huru: {}{note}", path.display());
+    if show_output {
+        println!("programu huru: {}{note}", path.display());
+    }
     Ok(())
 }
 
@@ -508,6 +520,7 @@ fn build_native_library(
     target: &Path,
     name: &str,
     profile: BuildProfile,
+    show_output: bool,
 ) -> Result<(), CliError> {
     use asili_evaluator::nguvu;
     let stale = target.join(nguvu::image_file_name(name));
@@ -521,7 +534,9 @@ fn build_native_library(
     } else {
         match nguvu::write_image(&program, target, name) {
             Ok(path) => {
-                println!("msimbo asilia: {}", path.display());
+                if show_output {
+                    println!("msimbo asilia: {}", path.display());
+                }
                 return Ok(());
             }
             Err(why) => why,
@@ -534,7 +549,9 @@ fn build_native_library(
             1,
         ));
     }
-    println!("picha ya msimbo asilia haikujengwa ({failure})");
+    if show_output {
+        println!("picha ya msimbo asilia haikujengwa ({failure})");
+    }
     Ok(())
 }
 
@@ -547,11 +564,12 @@ pub fn device_lengo(target: &str) -> Option<asili_evaluator::nguvu::device::Leng
     }
 }
 
-pub fn emit_build_artifacts(
+pub fn emit_build_artifacts_with_output(
     root: &Path,
     compiled: &CompileOutput,
     out_dir: Option<&Path>,
     profile: BuildProfile,
+    show_output: bool,
 ) -> Result<PathBuf, CliError> {
     let target = out_dir
         .map(|p| p.to_path_buf())
@@ -563,12 +581,15 @@ pub fn emit_build_artifacts(
     let asb = emit_asb(&compiled.module, &compiled.source)
         .map_err(|blocked| CliError::new(blocked, 1))?;
     // The bounds of `#[salama]` functions (the build already checked their rules).
-    if let Ok(program) = asili_evaluator::compile_module_explained(&compiled.module) {
-        for r in asili_evaluator::salama::kagua(&compiled.module, &program).unwrap_or_default() {
-            println!(
-                "salama: kazi '{}' — hatua ≤ {}, kumbukumbu ≤ baiti {}",
-                r.kazi, r.hatua, r.kumbukumbu
-            );
+    if show_output {
+        if let Ok(program) = asili_evaluator::compile_module_explained(&compiled.module) {
+            for r in asili_evaluator::salama::kagua(&compiled.module, &program).unwrap_or_default()
+            {
+                println!(
+                    "salama: kazi '{}' — hatua ≤ {}, kumbukumbu ≤ baiti {}",
+                    r.kazi, r.hatua, r.kumbukumbu
+                );
+            }
         }
     }
     let artifact = target.join(format!("{}.asb", compiled.config.name));
@@ -582,10 +603,10 @@ pub fn emit_build_artifacts(
     drop(bytecode_phase);
     {
         let _phase = asili_trace::phase("msimbo asilia");
-        build_native_library(&asb, &target, &compiled.config.name, profile)?;
+        build_native_library(&asb, &target, &compiled.config.name, profile, show_output)?;
     }
     if profile == BuildProfile::Release {
-        write_standalone(&asb, &target, &compiled.config.name)?;
+        write_standalone(&asb, &target, &compiled.config.name, show_output)?;
     }
     if let Some(lengo) = device_lengo(&compiled.target.0) {
         let slug = compiled.target.0.clone();
@@ -596,6 +617,7 @@ pub fn emit_build_artifacts(
             &compiled.config.name,
             lengo,
             &slug,
+            show_output,
         )?;
     }
 
@@ -867,7 +889,7 @@ mod tests {
         .unwrap();
         let compiled = compile_project(&root, None).expect("compiles");
         for profile in [BuildProfile::Dev, BuildProfile::Release] {
-            let err = emit_build_artifacts(&root, &compiled, None, profile)
+            let err = emit_build_artifacts_with_output(&root, &compiled, None, profile, true)
                 .expect_err("no syntax-tree artifact");
             assert!(
                 err.message.contains("kugeuzwa kuwa bytecode"),
@@ -1061,7 +1083,8 @@ mod tests {
         );
 
         let artifact =
-            emit_build_artifacts(&root, &compiled, None, BuildProfile::Dev).expect("emit .asb");
+            emit_build_artifacts_with_output(&root, &compiled, None, BuildProfile::Dev, true)
+                .expect("emit .asb");
         let bytes = fs::read(&artifact).expect("read .asb");
         let names: Vec<String> = asili_evaluator::load_asb_bytecode(&bytes)
             .expect("load_asb_bytecode")

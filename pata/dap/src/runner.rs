@@ -11,9 +11,7 @@
 use asili_evaluator::debug_hook::RealDebugHook;
 use asili_lexer::tokenize;
 use asili_parser::parse_tokens;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::server::DapSession;
 
@@ -25,21 +23,22 @@ use crate::server::DapSession;
 pub fn real_session() -> Arc<DapSession<RealDebugHook>> {
     let hook = Arc::new(RealDebugHook::new(Vec::new()));
     let hook_for_callback = Arc::clone(&hook);
+    let program_thread = Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
+    let thread_for_callback = Arc::clone(&program_thread);
 
-    // paused_at_line_handle() needs a constructed DapSession to call, but the callback that
-    // needs that handle has to be supplied to DapSession::new/with_on_configuration_done before
-    // construction finishes — build the session first with no callback, grab its handle, then
-    // attach the real callback via a second builder call (with_on_configuration_done replaces
-    // the field, it doesn't need to be set exactly once at construction time).
     let session = DapSession::new(Arc::clone(&hook));
-    let paused_at_line = session.paused_at_line_handle();
     let session = session.with_on_configuration_done(move |program, breakpoint_lines| {
-        launch_and_monitor(
-            Arc::clone(&hook_for_callback),
-            Arc::clone(&paused_at_line),
-            breakpoint_lines,
-            program,
-        );
+        let Ok(mut thread) = thread_for_callback.lock() else {
+            eprintln!("pata-dap: failed to lock the debuggee thread handle");
+            return;
+        };
+        if let Some(previous) = thread.take() {
+            if previous.join().is_err() {
+                eprintln!("pata-dap: previous debuggee thread panicked");
+            }
+        }
+        hook_for_callback.reset_for_restart();
+        *thread = launch_program(Arc::clone(&hook_for_callback), breakpoint_lines, program);
     });
     Arc::new(session)
 }
@@ -51,45 +50,41 @@ pub fn real_session() -> Arc<DapSession<RealDebugHook>> {
 /// waiting for the program to finish (the client polls via `stackTrace`/`variables`/`continue`
 /// instead), matching how `run()`'s own request loop keeps servicing requests concurrently with
 /// the target program actually executing.
-fn launch_and_monitor(
+fn launch_program(
     hook: Arc<RealDebugHook>,
-    paused_at_line: Arc<AtomicI64>,
     breakpoint_lines: Vec<i64>,
     program: Option<String>,
-) {
+) -> Option<std::thread::JoinHandle<()>> {
     let Some(path) = program else {
-        return;
+        eprintln!("pata-dap: launch request did not include a program path");
+        return None;
     };
-    let Ok(source) = std::fs::read_to_string(&path) else {
-        return;
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("pata-dap: failed to read {path}: {error}");
+            return None;
+        }
     };
-    let Ok(tokens) = tokenize(&source) else {
-        return;
+    let tokens = match tokenize(&source) {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            eprintln!("pata-dap: failed to tokenize {path}: {error:?}");
+            return None;
+        }
     };
-    let Ok(module) = parse_tokens(&tokens) else {
-        return;
+    let module = match parse_tokens(&tokens) {
+        Ok(module) => module,
+        Err(error) => {
+            eprintln!("pata-dap: failed to parse {path}: {error:?}");
+            return None;
+        }
     };
 
     hook.set_breakpoints(breakpoint_lines.into_iter().map(|l| l as usize).collect());
-
-    let hook_for_monitor = Arc::clone(&hook);
-    std::thread::spawn(move || {
-        // Mirrors hook.paused_at_line() into the shared AtomicI64 for the life of the debug
-        // session — there's no explicit "program finished" signal to wait on instead, so this
-        // thread simply polls at a short, cheap interval; the DAP client's own `disconnect`
-        // tears down the whole process when the session ends.
-        loop {
-            match hook_for_monitor.paused_at_line() {
-                Some(line) => paused_at_line.store(line as i64, Ordering::SeqCst),
-                None => paused_at_line.store(0, Ordering::SeqCst),
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    });
-
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         let _ = asili_evaluator::run_main_with_debug_hook(&module, Vec::new(), hook);
-    });
+    }))
 }
 
 #[cfg(test)]
@@ -97,9 +92,13 @@ mod tests {
     use super::*;
     use asili_evaluator::debug_hook::DebugHook;
     use dap::prelude::*;
-    use dap::requests::{LaunchRequestArguments, SetBreakpointsArguments};
+    use dap::requests::{
+        ContinueArguments, EvaluateArguments, LaunchRequestArguments, RestartArguments,
+        SetBreakpointsArguments, SetVariableArguments,
+    };
     use dap::types::SourceBreakpoint;
     use std::io::Write;
+    use std::time::Duration;
 
     fn req(seq: i64, command: Command) -> Request {
         Request { seq, command }
@@ -126,7 +125,7 @@ mod tests {
     fn configuration_done_launches_and_pauses_a_real_program_at_a_real_breakpoint() {
         let path = temp_as_file(
             "pause",
-            "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka a = 1\n  weka b = 2\n}",
+            "kazi kuu(hoja: Orodha<Neno>) -> Tupu {\n  weka a = 1\n  weka b = 2\n  weka c = 3\n}",
         );
         let session = real_session();
 
@@ -140,10 +139,16 @@ mod tests {
         session.handle(&req(1, Command::Launch(launch_args)));
 
         let mut bp_args = SetBreakpointsArguments::default();
-        bp_args.breakpoints = Some(vec![SourceBreakpoint {
-            line: 3,
-            ..Default::default()
-        }]);
+        bp_args.breakpoints = Some(vec![
+            SourceBreakpoint {
+                line: 3,
+                ..Default::default()
+            },
+            SourceBreakpoint {
+                line: 4,
+                ..Default::default()
+            },
+        ]);
         session.handle(&req(2, Command::SetBreakpoints(bp_args)));
 
         session.handle(&req(3, Command::ConfigurationDone));
@@ -157,6 +162,87 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        let generation = session.hook().pause_generation();
+        let (response, _) = session.handle(&req(
+            6,
+            Command::Evaluate(EvaluateArguments {
+                expression: "a".into(),
+                ..Default::default()
+            }),
+        ));
+        assert!(response.success);
+        assert!(matches!(
+            response.body,
+            Some(ResponseBody::Evaluate(result)) if result.result == "Namba(1.0)"
+        ));
+        let (response, _) = session.handle(&req(
+            7,
+            Command::SetVariable(SetVariableArguments {
+                variables_reference: 1,
+                name: "a".into(),
+                value: "9".into(),
+                ..Default::default()
+            }),
+        ));
+        assert!(response.success);
+        assert_eq!(
+            match response.body {
+                Some(ResponseBody::SetVariable(result)) => Some(result.value),
+                _ => None,
+            }
+            .as_deref(),
+            Some("Namba(9.0)")
+        );
+        session.handle(&req(
+            4,
+            Command::Continue(ContinueArguments {
+                thread_id: 1,
+                single_thread: None,
+            }),
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.hook().pause_generation() <= generation {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "updated program did not stop again at the breakpoint"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            session
+                .hook()
+                .current_bindings()
+                .into_iter()
+                .find(|(name, _)| name == "a")
+                .map(|(_, value)| value)
+                .as_deref(),
+            Some("Namba(9.0)")
+        );
+
+        let generation = session.hook().pause_generation();
+        let (response, _) = session.handle(&req(
+            5,
+            Command::Restart(RestartArguments { arguments: None }),
+        ));
+        assert!(response.success);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.hook().pause_generation() <= generation {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "restarted program did not stop at the breakpoint"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            session
+                .hook()
+                .current_bindings()
+                .into_iter()
+                .find(|(name, _)| name == "a")
+                .map(|(_, value)| value)
+                .as_deref(),
+            Some("Namba(1.0)")
+        );
         session.hook().resume();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

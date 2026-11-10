@@ -33,18 +33,31 @@ pub fn run(args: &[String]) -> CliResult {
     }
 
     if coverage {
-        let (results, metrics) =
-            run_project_tests_with_coverage(Path::new("."), filter.as_deref())?;
+        let run = || run_project_tests_with_coverage(Path::new("."), filter.as_deref());
+        let (results, metrics) = if json {
+            let _output = asili_evaluator::ProgramOutputToStderr::begin();
+            run()?
+        } else {
+            run()?
+        };
         return report_results(&results, json, Some(&metrics));
     }
 
-    let results = run_project_tests_parallel(
-        Path::new("."),
-        filter.as_deref(),
-        fail_fast,
-        num_threads,
-        timeout,
-    )?;
+    let run = || {
+        run_project_tests_parallel(
+            Path::new("."),
+            filter.as_deref(),
+            fail_fast,
+            num_threads,
+            timeout,
+        )
+    };
+    let results = if json {
+        let _output = asili_evaluator::ProgramOutputToStderr::begin();
+        run()?
+    } else {
+        run()?
+    };
     report_results(&results, json, None)
 }
 
@@ -279,7 +292,10 @@ mod tests {
     }
 
     fn temp_project_partial_coverage() -> std::path::PathBuf {
-        crate::test_support::temp_project("jaribu-chanjo", "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[jaribio]\nkazi t1() -> Tupu {\nikiwa kweli {\nweka a = 1\n} vinginevyo {\nweka b = 2\n}\nrejesha\n}")
+        crate::test_support::temp_project(
+            "jaribu-chanjo",
+            "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[jaribio]\nkazi t1() -> Tupu {\nikiwa kweli {\nweka a = 1\n} vinginevyo {\nweka b = 2\n}\nrejesha\n}",
+        )
     }
 
     /// Real end-to-end: a #[kabla] fixture that panics must fail the test through the actual
@@ -300,7 +316,10 @@ mod tests {
     }
 
     fn temp_project_with_fixtures() -> std::path::PathBuf {
-        crate::test_support::temp_project("jaribu-fixtures", "leta matumizi\nkazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[kabla]\nkazi mazingira_mabovu() -> Tupu { paparika(\"kabla imeshindwa\") }\n#[jaribio]\nkazi t1() -> Tupu { rejesha }")
+        crate::test_support::temp_project(
+            "jaribu-fixtures",
+            "leta matumizi\nkazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[kabla]\nkazi mazingira_mabovu() -> Tupu { paparika(\"kabla imeshindwa\") }\n#[jaribio]\nkazi t1() -> Tupu { rejesha }",
+        )
     }
 
     #[test]
@@ -359,10 +378,16 @@ mod tests {
     }
 
     fn temp_project_infinite_loop() -> std::path::PathBuf {
-        crate::test_support::temp_project("jaribu-timeout", "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[jaribio]\nkazi t_milele() -> Tupu { wakati milele { } }")
+        crate::test_support::temp_project(
+            "jaribu-timeout",
+            "kazi kuu(hoja: Orodha<Neno>) -> Tupu { }\n#[jaribio]\nkazi t_milele() -> Tupu { wakati milele { } }",
+        )
     }
 
     fn temp_project() -> std::path::PathBuf {
-        crate::test_support::temp_project("jaribu", "leta matumizi\nkazi kuu(hoja: Orodha<Neno>) -> Tupu { chapisha(\"x\") }\n#[jaribio]\nkazi t_fail() -> Tupu { paparika(\"x\") }")
+        crate::test_support::temp_project(
+            "jaribu",
+            "leta matumizi\nkazi kuu(hoja: Orodha<Neno>) -> Tupu { chapisha(\"x\") }\n#[jaribio]\nkazi t_fail() -> Tupu { paparika(\"x\") }",
+        )
     }
 }

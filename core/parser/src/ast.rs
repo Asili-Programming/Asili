@@ -774,7 +774,7 @@ impl fmt::Display for ValueType {
             ValueType::NjiaRxBounded(t) => write!(f, "NjiaRxBounded<{}>", t),
             ValueType::Fungo(t) => write!(f, "Fungo<{}>", t),
             ValueType::TypeVar(name) => write!(f, "{}", name),
-            ValueType::Unknown => write!(f, "Unknown"),
+            ValueType::Unknown => write!(f, "Haijulikani"),
         }
     }
 }
