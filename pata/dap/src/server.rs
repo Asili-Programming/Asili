@@ -20,12 +20,19 @@
 //! `SetBreakpoints`/`StackTrace` responses, independent of however a real hook tracks the same
 //! information on the evaluator side.
 
+use dap::events::{ContinuedEventBody, Event, StoppedEventBody};
 use dap::prelude::*;
-use dap::types::{Breakpoint, Capabilities, Scope, Source, StackFrame, Thread, Variable};
+use dap::types::{
+    Breakpoint, Capabilities, Scope, Source, StackFrame, StoppedEventReason, Thread, Variable,
+};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 
-use asili_evaluator::debug_hook::DebugHook;
+use asili_evaluator::debug_hook::{DebugHook, DebugPauseReason};
 
 pub struct DapSession<H: DebugHook> {
     hook: Arc<H>,
@@ -92,6 +99,8 @@ impl<H: DebugHook> DapSession<H> {
             Command::Initialize(_) => {
                 let capabilities = Capabilities {
                     supports_configuration_done_request: Some(true),
+                    supports_set_variable: Some(true),
+                    supports_restart_request: Some(true),
                     ..Default::default()
                 };
                 (
@@ -163,7 +172,8 @@ impl<H: DebugHook> DapSession<H> {
                 )
             }
             Command::Continue(_) => {
-                self.hook.resume();
+                self.set_paused_line(0);
+                self.hook.continue_execution();
                 (
                     ok_response(
                         req,
@@ -171,8 +181,105 @@ impl<H: DebugHook> DapSession<H> {
                             all_threads_continued: Some(true),
                         }),
                     ),
-                    vec![],
+                    vec![Event::Continued(ContinuedEventBody {
+                        thread_id: 1,
+                        all_threads_continued: Some(true),
+                    })],
                 )
+            }
+            Command::Next(_) => {
+                self.set_paused_line(0);
+                self.hook.step_over();
+                self.hook.resume();
+                (
+                    ack(req),
+                    vec![Event::Continued(ContinuedEventBody {
+                        thread_id: 1,
+                        all_threads_continued: Some(true),
+                    })],
+                )
+            }
+            Command::StepIn(_) => {
+                self.set_paused_line(0);
+                self.hook.step_in();
+                self.hook.resume();
+                (
+                    ack(req),
+                    vec![Event::Continued(ContinuedEventBody {
+                        thread_id: 1,
+                        all_threads_continued: Some(true),
+                    })],
+                )
+            }
+            Command::StepOut(_) => {
+                self.set_paused_line(0);
+                self.hook.step_out();
+                self.hook.resume();
+                (
+                    ack(req),
+                    vec![Event::Continued(ContinuedEventBody {
+                        thread_id: 1,
+                        all_threads_continued: Some(true),
+                    })],
+                )
+            }
+            Command::Pause(_) => {
+                self.hook.request_pause();
+                (ack(req), vec![])
+            }
+            Command::Evaluate(args) => match self.hook.evaluate(&args.expression) {
+                Some(result) => (
+                    ok_response(
+                        req,
+                        ResponseBody::Evaluate(responses::EvaluateResponse {
+                            result,
+                            variables_reference: 0,
+                            ..Default::default()
+                        }),
+                    ),
+                    vec![],
+                ),
+                None => (req.clone().error("usemi wa evaluate hakipatikani"), vec![]),
+            },
+            Command::SetVariable(args) => {
+                if args.variables_reference != 1 {
+                    return (
+                        req.clone().error("rejea ya vigeu haiwezi kuhaririwa"),
+                        vec![],
+                    );
+                }
+                match self.hook.set_variable(&args.name, &args.value) {
+                    Some(value) => (
+                        ok_response(
+                            req,
+                            ResponseBody::SetVariable(responses::SetVariableResponse {
+                                value,
+                                ..Default::default()
+                            }),
+                        ),
+                        vec![],
+                    ),
+                    None => (
+                        req.clone()
+                            .error("kigeu hakipatikani au hakiwezi kubadilishwa"),
+                        vec![],
+                    ),
+                }
+            }
+            Command::Restart(_) => {
+                let Some(on_configuration_done) = &self.on_configuration_done else {
+                    return (
+                        req.clone()
+                            .error("kuanzisha upya kunahitaji kipindi cha utatuzi halisi"),
+                        vec![],
+                    );
+                };
+                self.hook.restart();
+                self.set_paused_line(0);
+                let program = self.source_path.lock().unwrap().clone();
+                let lines = self.breakpoint_lines.lock().unwrap().clone();
+                on_configuration_done(program, lines);
+                (ack(req), vec![])
             }
             Command::StackTrace(_) => {
                 let source_path = self.source_path.lock().unwrap().clone();
@@ -308,7 +415,7 @@ pub fn run<H, R, W>(hook: Arc<H>, input: R, output: W)
 where
     H: DebugHook,
     R: Read,
-    W: Write,
+    W: Write + Send,
 {
     run_session(Arc::new(DapSession::new(hook)), input, output);
 }
@@ -320,31 +427,85 @@ pub fn run_session<H, R, W>(session: Arc<DapSession<H>>, input: R, output: W)
 where
     H: DebugHook,
     R: Read,
-    W: Write,
+    W: Write + Send,
 {
     let mut server = dap::server::Server::new(BufReader::new(input), BufWriter::new(output));
-
-    loop {
-        match server.poll_request() {
-            Ok(Some(req)) => {
-                let is_disconnect = matches!(req.command, Command::Disconnect(_));
-                let (response, events) = session.handle(&req);
-                if server.respond(response).is_err() {
-                    break;
+    let output = Arc::clone(&server.output);
+    let paused_at_line = session.paused_at_line_handle();
+    let session_for_monitor = Arc::clone(&session);
+    let stop_monitor = Arc::new(AtomicBool::new(false));
+    let monitor_stop = Arc::clone(&stop_monitor);
+    std::thread::scope(|scope| {
+        let monitor = scope.spawn(move || {
+            let mut previous_generation = 0;
+            while !monitor_stop.load(Ordering::SeqCst) {
+                let line = session_for_monitor
+                    .hook()
+                    .paused_at_line()
+                    .map_or(0, |line| line as i64);
+                paused_at_line.store(line, Ordering::SeqCst);
+                let generation = session_for_monitor.hook().pause_generation();
+                if line > 0 && generation > previous_generation {
+                    let reason = match session_for_monitor.hook().pause_reason() {
+                        Some(DebugPauseReason::Step) => StoppedEventReason::Step,
+                        Some(DebugPauseReason::Pause) => StoppedEventReason::Pause,
+                        _ => StoppedEventReason::Breakpoint,
+                    };
+                    let event = Event::Stopped(StoppedEventBody {
+                        reason,
+                        description: None,
+                        thread_id: Some(1),
+                        preserve_focus_hint: None,
+                        text: None,
+                        all_threads_stopped: Some(true),
+                        hit_breakpoint_ids: None,
+                    });
+                    match output.lock() {
+                        Ok(mut output) => {
+                            if let Err(error) = output.send_event(event) {
+                                eprintln!("pata-dap: failed to send stopped event: {error}");
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            eprintln!("pata-dap: failed to lock DAP output for stopped event");
+                            break;
+                        }
+                    }
                 }
-                for event in events {
-                    if server.send_event(event).is_err() {
+                if line > 0 {
+                    previous_generation = generation;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        loop {
+            match server.poll_request() {
+                Ok(Some(req)) => {
+                    let is_disconnect = matches!(req.command, Command::Disconnect(_));
+                    let (response, events) = session.handle(&req);
+                    if server.respond(response).is_err() {
+                        break;
+                    }
+                    for event in events {
+                        if server.send_event(event).is_err() {
+                            break;
+                        }
+                    }
+                    if is_disconnect {
                         break;
                     }
                 }
-                if is_disconnect {
-                    break;
-                }
+                Ok(None) => break,
+                Err(_) => break,
             }
-            Ok(None) => break, // input closed
-            Err(_) => break,
         }
-    }
+        stop_monitor.store(true, Ordering::SeqCst);
+        if monitor.join().is_err() {
+            eprintln!("pata-dap: stopped-event monitor thread panicked");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -541,7 +702,7 @@ mod tests {
     #[test]
     fn an_unimplemented_command_returns_a_real_error_response() {
         let s = session();
-        let (resp, _) = s.handle(&req(10, Command::Pause(Default::default())));
+        let (resp, _) = s.handle(&req(10, Command::Attach(Default::default())));
         assert!(
             !resp.success,
             "an unimplemented command must fail, not silently succeed"

@@ -36,10 +36,15 @@ mod out {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static BLOCK: AtomicBool = AtomicBool::new(false);
+    static STDERR_PROGRAM_OUTPUT: AtomicBool = AtomicBool::new(false);
     static BUF: parking_lot::Mutex<Vec<u8>> = parking_lot::Mutex::new(Vec::new());
     const LIMIT: usize = 32 * 1024;
 
     pub fn write_line(s: &str) {
+        if STDERR_PROGRAM_OUTPUT.load(Ordering::Relaxed) {
+            eprintln!("{s}");
+            return;
+        }
         if !BLOCK.load(Ordering::Relaxed) {
             println!("{s}");
             return;
@@ -68,6 +73,22 @@ mod out {
     /// Buffer program output until dropped (a no-op when stdout is a terminal, where each line
     /// should appear as it is written).
     pub struct BlockOutput(bool);
+
+    /// Route program `chapisha` output to stderr while a CLI command emits machine-readable
+    /// JSON on stdout.
+    pub struct ProgramOutputToStderr(bool);
+
+    impl ProgramOutputToStderr {
+        pub fn begin() -> Self {
+            Self(STDERR_PROGRAM_OUTPUT.swap(true, Ordering::SeqCst))
+        }
+    }
+
+    impl Drop for ProgramOutputToStderr {
+        fn drop(&mut self) {
+            STDERR_PROGRAM_OUTPUT.store(self.0, Ordering::SeqCst);
+        }
+    }
 
     impl BlockOutput {
         pub fn begin() -> Self {
@@ -102,7 +123,7 @@ mod out {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use out::{flush as flush_stdout, BlockOutput};
+pub use out::{flush as flush_stdout, BlockOutput, ProgramOutputToStderr};
 
 /// Nothing is buffered without std I/O.
 #[cfg(target_arch = "wasm32")]

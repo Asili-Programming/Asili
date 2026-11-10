@@ -1,6 +1,6 @@
 [package]
 name = "pata-cli"
-version = "0.7.0"
+version = "0.8.0"
 license = "GPL-2.0-only"
 edition = "2021"
 

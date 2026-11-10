@@ -26,6 +26,12 @@ Flags:
   leaves it to the runner to build at start-up; `release` requires the native image (a platform
   without a backend fails the build), writes a standalone executable and never uses the build
   cache. `embedded` is rejected as not implemented yet, and unknown names are rejected
+- `--json`: Emit one JSON object on stdout with `sawa`, project name, source, target, primary
+  artifact, all emitted artifact paths, cache state, timing messages (when `--muda` is also set),
+  and an empty `makosa` array. On failure, stdout contains `{"sawa":false,"makosa":[...]}` with
+  the message and exit code. Program execution and trace output cannot be combined with `--json`.
+- Unknown options are rejected instead of being silently forwarded. Program arguments are
+  accepted only after `--tenda`, and then forwarded unchanged to `kuu`.
 - `--muda`: Print phase-latency timings (`kuchanganua` = compile, `kutoa` = emit) after a
   successful build, via `pata_cli::pipeline::performance::PerformanceMetrics`/`ScopedTimer`.
   Works on both the normal build path and the single-file cache-hit early-return path.
@@ -42,6 +48,7 @@ Success:
   no backend cannot run the program). Leftover `<name>.so`/`<name>.ll` files from the retired
   LLVM backend are removed.
 - `--tenda` runs the artifact just built exactly as `pata tenda` would (native code when present)
+- `--json` output is parseable JSON without progress or artifact messages mixed into stdout
 - `--namna release` also writes a standalone executable `<pato>/<name>` (`<name>.exe` on
   Windows), printing `programu huru: <path>`: a runner with the artifact and its native image
   appended, so `./kilele/<name> [hoja...]` runs the program directly with no other files and no

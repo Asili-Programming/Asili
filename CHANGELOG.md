@@ -6,8 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-10
+
 ### Added
 
+- **Pata-DAP stepping and pause**: `DebugHook` now supports step-in, step-over, step-out, and
+  pause-at-next-statement controls using evaluator call depth; `pata-dap` sends DAP `stopped` and
+  `continued` events so VS Code reflects real breakpoints and stepping rather than only internal
+  evaluator state.
+- **Machine-readable Pata build results**: `pata jenga --json` now reports project/target metadata,
+  artifact paths and structured failures; unknown `jenga` options are rejected instead of being
+  silently passed to the program.
 - **ESP32 device target** (`pata jenga --lengo esp32`): strict (`#[salama]`) functions compile to
   Xtensa LX6 machine code with Asili's own backend (`nguvu::xt32` encoder, `nguvu::codegen_xt`),
   written as `<name>-esp32.o` (ELF, windowed ABI) beside the same C header and interface as the
@@ -78,6 +87,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Pata-DAP variable mutation**: debugger edits to visible numeric locals now reload into native
+  registers after a breakpoint resumes; previously the DAP response showed the new value while the
+  running program continued with the old one.
+- **`pata jaribu --json` output**: test programs' `chapisha` output now goes to stderr, leaving
+  stdout as one valid JSON document for Test Explorer and other machine consumers.
 - **Sudoku benchmark portability**: use the host runner when the musl Rust target is installed
   but its required cross-compiler is not, instead of failing while building `aws-lc-sys`.
 - **`make install`**: the Makefile had been emptied (with the move of the VS Code extension to its

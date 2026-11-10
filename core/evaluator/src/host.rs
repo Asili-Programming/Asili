@@ -536,7 +536,7 @@ impl<'p> Host<'p> {
             _ => {
                 return Err(EvalError::TypeErr(format!(
                     "mwito wa njia '{method}' unahitaji Neno, Orodha, jenum au umbo"
-                )))
+                )));
             }
         };
         let index = self.program.user_method(kind, &target, method)?;
@@ -708,6 +708,24 @@ impl<'p> Host<'p> {
             }
             _ => {}
         }
+        let debug_bindings = if self.debug.is_some() {
+            match op {
+                Opcode::Line { binds, .. } => Some(
+                    binds
+                        .iter()
+                        .map(|(name, operand)| {
+                            (
+                                name.clone(),
+                                format!("{:?}", operand_value(frame, *operand)),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let n = &mut frame.nums;
         match op {
             Opcode::CheckDepth => {
@@ -720,15 +738,16 @@ impl<'p> Host<'p> {
                     lines.insert(*line as usize);
                 }
                 if let Some(hook) = &self.debug {
+                    if hook.restart_requested() {
+                        return Flow::Fail(EvalError::Unknown("debug restart requested".into()));
+                    }
                     // A fresh snapshot before `should_pause` may block, so a `variables` request
                     // made while paused sees this line's values: the locals visible here, then
                     // the predefined names.
-                    let mut bindings: Vec<(String, String)> = binds
-                        .iter()
-                        .map(|(name, op)| {
-                            (name.clone(), format!("{:?}", operand_value(frame, *op)))
-                        })
-                        .collect();
+                    let mut bindings = debug_bindings.unwrap_or_default();
+                    hook.record_writable_names(
+                        binds.iter().map(|(name, _)| name.clone()).collect(),
+                    );
                     bindings.extend(
                         crate::env::global_constants()
                             .into_iter()
@@ -736,7 +755,56 @@ impl<'p> Host<'p> {
                             .map(|(n, v)| (n.to_string(), format!("{v:?}"))),
                     );
                     hook.record_bindings(bindings);
-                    hook.should_pause(*line as usize);
+                    let paused = hook.should_pause_at(*line as usize, self.depth);
+                    if hook.restart_requested() {
+                        return Flow::Fail(EvalError::Unknown("debug restart requested".into()));
+                    }
+                    if paused {
+                        let updated_bindings = hook.current_bindings();
+                        for (name, operand) in binds {
+                            let Some((_, value)) =
+                                updated_bindings.iter().find(|(binding, _)| binding == name)
+                            else {
+                                continue;
+                            };
+                            match operand.ty {
+                                Ty::Num => {
+                                    if let Some(number) = value
+                                        .strip_prefix("Namba(")
+                                        .and_then(|value| value.strip_suffix(')'))
+                                        .and_then(|value| value.parse::<f64>().ok())
+                                    {
+                                        n[operand.reg as usize] = number;
+                                    }
+                                }
+                                Ty::Bool => {
+                                    if let Some(boolean) = value
+                                        .strip_prefix("Ukweli(")
+                                        .and_then(|value| value.strip_suffix(')'))
+                                    {
+                                        n[operand.reg as usize] =
+                                            if boolean == "true" { 1.0 } else { 0.0 };
+                                    }
+                                }
+                                Ty::List => {}
+                                Ty::Val => {
+                                    if let Some(number) = value
+                                        .strip_prefix("Namba(")
+                                        .and_then(|value| value.strip_suffix(')'))
+                                        .and_then(|value| value.parse::<f64>().ok())
+                                    {
+                                        frame.vals[operand.reg as usize] = Value::Namba(number);
+                                    } else if let Some(boolean) = value
+                                        .strip_prefix("Ukweli(")
+                                        .and_then(|value| value.strip_suffix(')'))
+                                    {
+                                        frame.vals[operand.reg as usize] =
+                                            Value::Ukweli(boolean == "true");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // The board builtins' own work (`builtins::ubao`), on typed registers.
@@ -1254,7 +1322,7 @@ fn store_value(frame: &mut Frame, dst: Operand, v: Value) -> Result<(), EvalErro
             other => {
                 return Err(EvalError::TypeErr(format!(
                     "operesheni inahitaji Namba, ilipata {other:?}"
-                )))
+                )));
             }
         },
         Ty::Bool => frame.nums[dst.reg as usize] = flag(matches!(v, Value::Ukweli(true))),

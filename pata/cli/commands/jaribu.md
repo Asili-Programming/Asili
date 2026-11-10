@@ -22,7 +22,8 @@ Flags:
   cancellation hook, so a timed-out test's thread keeps running in the background rather than
   being forcibly killed — the timeout stops the suite from *waiting* on it, not the thread itself
   from existing.
-- `--json` — output structured JSON instead of text; includes test count, pass/fail breakdown, per-test details
+- `--json` — output structured JSON instead of text; includes test count, pass/fail breakdown, per-test details.
+  Program output from `chapisha` is sent to stderr so stdout remains one parseable JSON document.
 - `--chanjo` — run with real line-level code coverage tracking: every source statement line
   actually executed by at least one test, not a function-name-presence check (two tests
   exercising different branches of the same function report genuinely different coverage).

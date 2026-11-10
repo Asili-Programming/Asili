@@ -312,11 +312,7 @@ pub(crate) fn num_reads(op: &Opcode) -> Vec<Reg> {
         | Opcode::MakeMap { .. }
         | Opcode::CheckDepth => Vec::new(),
         // The debugger reads the numeric locals it shows.
-        Opcode::Line { binds, .. } => binds
-            .iter()
-            .filter(|(_, op)| matches!(op.ty, Ty::Num | Ty::Bool))
-            .map(|(_, op)| op.reg)
-            .collect(),
+        Opcode::Line { binds, .. } => line_num_registers(binds),
     }
 }
 
@@ -396,9 +392,18 @@ pub(crate) fn num_writes(op: &Opcode) -> Vec<Reg> {
         | Opcode::Field { .. }
         | Opcode::MakeEnum { .. }
         | Opcode::MakeMap { .. }
-        | Opcode::CheckDepth
-        | Opcode::Line { .. } => Vec::new(),
+        | Opcode::CheckDepth => Vec::new(),
+        // A debugger may change a visible numeric local while this instruction is paused.
+        Opcode::Line { binds, .. } => line_num_registers(binds),
     }
+}
+
+fn line_num_registers(binds: &[(String, crate::bytecode::Operand)]) -> Vec<Reg> {
+    binds
+        .iter()
+        .filter(|(_, operand)| matches!(operand.ty, Ty::Num | Ty::Bool))
+        .map(|(_, operand)| operand.reg)
+        .collect()
 }
 
 /// List registers whose storage an instruction may reallocate or replace.
@@ -1447,7 +1452,7 @@ fn transfer(op: &Opcode, facts: &[NumFact], lists: &[Option<NumFact>]) -> Vec<(R
             return num_writes(other)
                 .into_iter()
                 .map(|r| (r, NumFact::TOP))
-                .collect()
+                .collect();
         }
     };
     vec![fact]

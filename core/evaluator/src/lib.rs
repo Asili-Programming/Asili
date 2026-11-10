@@ -7,7 +7,6 @@ pub mod alloc;
 pub mod aot;
 mod asb;
 pub mod builtins;
-pub mod uwezo;
 pub mod bundle;
 mod bytecode;
 mod bytecode_verify;
@@ -22,6 +21,9 @@ mod native;
 pub mod nguvu;
 mod numlist;
 mod platform;
+pub mod uwezo;
+#[cfg(not(target_arch = "wasm32"))]
+pub use platform::ProgramOutputToStderr;
 mod repl;
 pub mod salama;
 mod scalars;
@@ -30,8 +32,8 @@ mod spawn;
 mod stack;
 mod sync;
 mod tir;
-mod value;
 pub mod ubao;
+mod value;
 
 pub use crate::builtins::BuiltinFn;
 pub use asb::{artifact_formats, load_asb_bytecode, parse_format, AsbLoadError};

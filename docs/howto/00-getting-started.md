@@ -40,7 +40,7 @@ From an Asili project directory:
 pata jaribu
 ```
 
-This discovers all `#[jaribio]` functions and runs them. Use `pata jaribu --list` to list test names without running them.
+This discovers all `#[jaribio]` functions and runs them. Use `pata jaribu --orodha` to list test names without running them.
 
 ## New project
 
