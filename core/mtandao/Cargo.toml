@@ -38,7 +38,7 @@ tokio-socks = "0.5"
 url = "2"
 cookie_store = { version = "0.22", default-features = false, features = ["preserve_order"] }
 base64 = "0.22"
-md-5 = "0.10"
+md-5 = "0.11"
 sha2 = "0.11"
 
 [dev-dependencies]
